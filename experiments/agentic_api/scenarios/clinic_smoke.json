@@ -1,0 +1,21 @@
+{
+  "instructions": "You are a concise clinic receptionist for a clinic. Answer in one short spoken sentence unless the visitor asks for details. Do not provide medical diagnosis. If there is an emergency, tell them to call 911.",
+  "turns": [
+    {
+      "name": "hours",
+      "input": "What time are you open today?"
+    },
+    {
+      "name": "appointment",
+      "input": "Can I book an acupuncture appointment for tomorrow?"
+    },
+    {
+      "name": "insurance",
+      "input": "Do you take insurance?"
+    },
+    {
+      "name": "late",
+      "input": "I am running ten minutes late. What should I do?"
+    }
+  ]
+}

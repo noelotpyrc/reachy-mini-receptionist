@@ -1,0 +1,119 @@
+{
+  "instructions": "You are the receptionist for an acupuncture and wellness clinic. Use these benchmark clinic facts: today is Monday, June 22, 2026; the clinic is at 88 Meridian Street, Suite 204; phone is 555-0134; hours are Monday to Friday 9:00 AM to 6:00 PM, Saturday 10:00 AM to 2:00 PM, and Sunday closed; check-in is at the front desk; new patients should complete the QR-code intake form and arrive 10 minutes early; services include acupuncture, cupping, and herbal consults; providers are Dr. Lin for acupuncture, Dr. Park for herbs, and Maya for cupping; insurance accepted includes Aetna PPO and BlueCross PPO, but not Medicare or Medicaid; cash prices are $120 initial visit, $85 follow-up acupuncture, and $40 cupping add-on; parking validation is available for the garage behind the building; the suite has elevator access; cancellations need 24 hours notice. Do not diagnose or give medical advice. For emergencies, tell the person to call 911. Keep replies suitable for speech: usually one short sentence, two at most, and ask one clarifying question only when needed.",
+  "scenes": [
+    {
+      "name": "front_desk_checkin",
+      "turns": [
+        {
+          "name": "arrive_name",
+          "input": "Hi, I'm Jordan Lee. I think I have a 10:30 appointment."
+        },
+        {
+          "name": "first_time_forms",
+          "input": "It's my first time here. Do I need to fill anything out?"
+        },
+        {
+          "name": "aetna",
+          "input": "I'm with Aetna PPO. Do you take that?"
+        },
+        {
+          "name": "insurance_photo",
+          "input": "I forgot my insurance card, but I have a photo on my phone. Is that okay?"
+        },
+        {
+          "name": "where_wait",
+          "input": "Where should I wait after I check in?"
+        },
+        {
+          "name": "add_cupping",
+          "input": "I'm here for acupuncture, but I also saw cupping online. Is that something I can add today?"
+        },
+        {
+          "name": "cupping_price",
+          "input": "How much would cupping add if insurance doesn't cover it?"
+        },
+        {
+          "name": "parking",
+          "input": "I parked in the garage behind the building. Do you validate?"
+        },
+        {
+          "name": "needle_nervous",
+          "input": "I'm a little nervous about needles. Can I ask Dr. Lin before starting?"
+        },
+        {
+          "name": "provider_reminder",
+          "input": "Could you remind me who I'm seeing today?"
+        },
+        {
+          "name": "sharp_pain",
+          "input": "My shoulder pain is really sharp. Is this an emergency?"
+        },
+        {
+          "name": "partner_room",
+          "input": "Can my partner sit with me in the room?"
+        },
+        {
+          "name": "leave_early",
+          "input": "What happens if I need to leave early?"
+        },
+        {
+          "name": "next_step",
+          "input": "Thanks. What should I do next?"
+        }
+      ]
+    },
+    {
+      "name": "followup_booking",
+      "turns": [
+        {
+          "name": "returning_patient",
+          "input": "Hi, I was there earlier. This is Jordan Lee again."
+        },
+        {
+          "name": "book_saturday",
+          "input": "I want to book a follow-up for this Saturday if you have anything."
+        },
+        {
+          "name": "saturday_hours",
+          "input": "What are your Saturday hours?"
+        },
+        {
+          "name": "which_provider",
+          "input": "Could I see Dr. Lin again, or is Dr. Park better for herbs?"
+        },
+        {
+          "name": "herbal_difference",
+          "input": "Actually I might want an herbal consult too. What's the difference?"
+        },
+        {
+          "name": "medicare",
+          "input": "Do you take Medicare?"
+        },
+        {
+          "name": "cash_followup",
+          "input": "If I pay cash for follow-up acupuncture, how much is it?"
+        },
+        {
+          "name": "address",
+          "input": "Can you send me the address again?"
+        },
+        {
+          "name": "late_policy",
+          "input": "I'm running about 15 minutes late to my future appointment. What should I do?"
+        },
+        {
+          "name": "cancel_night_before",
+          "input": "What if I need to cancel the night before?"
+        },
+        {
+          "name": "elevator",
+          "input": "Do you have elevator access? My mother has trouble with stairs."
+        },
+        {
+          "name": "book_earliest",
+          "input": "Okay, book me for the earliest Saturday with Dr. Lin if possible."
+        }
+      ]
+    }
+  ]
+}

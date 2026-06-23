@@ -1,0 +1,61 @@
+[project]
+name = "reachy-mini-brain"
+version = "0.1.0"
+description = "Reception runtime and tooling for Reachy Mini robot"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "reachy-mini",
+    "click",
+    "numpy",
+    "opencv-python",
+    "scipy",
+]
+
+[project.optional-dependencies]
+audio = [
+    "faster-whisper",
+    "piper-tts",
+    "soundfile",
+    "pathvalidate",
+    "silero-vad",
+]
+# Vision pipeline dependencies used by official-runtime perception and the legacy daemon.
+vision = [
+    "rfdetr",
+    "supervision",
+]
+# Wave detection (MediaPipe gesture recognizer). Pretrained model auto-downloads
+# to ~/.cache/reachy_mini/ on first use.
+gesture = [
+    "mediapipe",
+]
+# Legacy reception-daemon brain backend.
+brain = [
+    "pydantic-ai-slim[openai]",
+]
+sim = ["reachy-mini[mujoco]"]
+livekit = [
+    "livekit>=1.0",
+    "livekit-agents>=1.0",
+    "livekit-plugins-silero>=1.0",
+    "livekit-plugins-turn-detector>=1.0",
+]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+# Legacy fallback entry points; official-runtime is the accepted live path.
+reception = "reachy_mini_brain.reception:cli"
+review-audio = "reachy_mini_brain.review_audio:cli"
+# Current official-runtime helpers.
+livekit-replay = "reachy_mini_brain.official_runtime.replay_livekit:cli"
+backend-benchmark = "reachy_mini_brain.official_runtime.benchmark_backends:cli"
+livekit-agent = "reachy_mini_brain.official_runtime.livekit_agent:main"
+reception-vision-replay = "reachy_mini_brain.official_runtime.replay_vision:cli"
+official-runtime-live = "reachy_mini_brain.official_runtime.live_app:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reachy_mini_brain"]
