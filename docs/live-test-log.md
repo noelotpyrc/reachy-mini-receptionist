@@ -10,6 +10,74 @@ Each entry uses three buckets:
 
 ---
 
+## 2026-06-25 — deploy-checkout preflight playback: start clipped until robot reboot
+
+**Setup:** m1max + real robot, new Git-managed deploy checkout
+`/Users/leon/projects/reachy_mini_receptionist_deploy`, OPS preflight audio playback only:
+
+```text
+.venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli --confirm-physical --json-output preflight audio-playback
+```
+
+This test used the known-good preflight WAV:
+
+```text
+/Users/leon/projects/reachy_mini_receptionist_deploy/artifacts/official-runtime-live/audio/playable/audio-response-resp_db3304df3e804556b0aaa7ed7990048f-official-live-20260623-122844-01-pcm16.wav
+```
+
+Artifacts:
+
+- clipped pre-reboot playback runs:
+  `official-audio-preflight-20260625-130650`,
+  `official-audio-preflight-20260625-130956`,
+  `official-audio-preflight-20260625-131235`
+- smooth post-reboot playback run:
+  `official-audio-preflight-20260625-131441`
+
+### 🟢 Good
+- **New m1max deploy checkout was runnable.** Readiness checks passed before robot-touching tests:
+  deploy checkout at commit `77b2a56`, `.venv` present, `.env` present, preflight WAV present,
+  backend stopped, runner stopped, robot daemon reachable, media released, motors disabled.
+- **After a full robot reboot, the same preflight playback sounded smooth.** User feedback for
+  `official-audio-preflight-20260625-131441`: smooth. Machine logs again showed audio warmup OK,
+  the full WAV loaded and pushed (`1.504s`, `24064` samples), scripted playback completed, and
+  session cleanup finished.
+
+### 🔴 Bad
+- **Before reboot, the robot clipped the beginning of the known WAV.** User feedback:
+  - `official-audio-preflight-20260625-130650`: only the late half was spoken.
+  - `official-audio-preflight-20260625-130956`: not complete; heard roughly "hi, can I help",
+    omitting the leading "how".
+  - `official-audio-preflight-20260625-131235`: same missing leading word.
+- **Machine logs did not report a sender-side short write.** For the failed runs, the runtime still
+  logged the full WAV as loaded and pushed (`1.504s`, `24064` samples) and returned OPS status `ok`.
+  Therefore the current artifacts prove the app attempted to send the full audio, but they do not
+  prove what the robot speaker actually played.
+
+### 🟡 Ugly / diagnosis
+- **This appears stateful on the robot/runtime side, but that is not settled.** The strongest
+  observed fact is that the same preflight WAV and same deploy checkout failed repeatedly before
+  reboot, then passed after reboot. This resembles earlier cases where robot audio behavior
+  recovered after reboot, but it is still an observation, not a root cause.
+- **The WebRTC shutdown warning is low diagnostic value for this symptom.** Failed and successful
+  runs can log `send failed because receiver is gone` during session teardown after playback has
+  already completed. Treat it as a cleanup-side warning unless a future artifact shows it happening
+  before or during audio push.
+- **Hypotheses for later debugging, not fixes yet:**
+  - robot WebRTC/audio sink starts in a stale state and drops the first frames after a session starts;
+  - robot audio device / daemon state degrades over time and reboot clears it;
+  - media-session setup reports "ready" before the speaker path is fully primed;
+  - less likely from today's evidence alone: m1max code/venv corruption, because the post-reboot run
+    used the same deploy checkout and same WAV.
+
+### Decision / Next
+- Keep the known WAV preflight as a required human gate before live conversation.
+- If the clipped-start symptom returns, collect exact run IDs and compare pre/post reboot again before
+  changing code.
+- Future debugging should instrument or test robot-side playback readiness directly: first-audio
+  arrival at the robot, speaker/sink priming state, whether a daemon/media restart is enough, and
+  whether full robot reboot is the only reliable recovery.
+
 ## 2026-06-23 — official-runtime preflight/live validation after S2S policy-speech rollback
 
 **Setup:** m1max + real robot, `scripts/m1max/live_ops.sh preflight` followed by
