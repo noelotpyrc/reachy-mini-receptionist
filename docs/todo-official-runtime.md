@@ -126,8 +126,8 @@ app/service deferred, action layer kept transport-agnostic for a future service.
 operator can pre-run → (live) → post-run and read aggregate status without reading code;
 OPS writes/reads a latest-run pointer for #6.
 
-**Accepted:** first pass is built and accepted. See `docs/ops-test-todos.md` for the completed
-offline, m1max, robot, and human-gated checks.
+**Accepted:** first pass is built and accepted. See `docs/archive/reviews/ops-test-todos.md` for
+the completed offline, m1max, robot, and human-gated checks.
 
 ### 6. Run-summary / diagnosis visibility (the keystone)  `[ ]`
 **Goal:** Turn "I have to re-experience the robot" into "I scrub the run timeline." Build a

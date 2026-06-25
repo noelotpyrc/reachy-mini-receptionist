@@ -27,7 +27,7 @@ accepted OPS v1:
 - Workflow/status/backend paths are covered by focused tests.
 - The m1max clean deployment path and uv-managed venv are the default.
 - Onsite robot/human gates and the offline backend churn test are accepted in
-  `docs/ops-test-todos.md`.
+  `docs/archive/reviews/ops-test-todos.md`.
 
 The detailed notes below are retained as the original implementation review record.
 

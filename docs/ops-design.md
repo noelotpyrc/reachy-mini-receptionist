@@ -1,6 +1,7 @@
 # OPS design — backend / robot / runner
 
-**Status:** first-pass built and accepted for TODO #5 (`docs/todo-official-runtime.md`).
+**Status:** first-pass built and accepted for TODO #5 (`docs/todo-official-runtime.md`;
+acceptance record: `docs/archive/reviews/ops-test-todos.md`).
 Reframes the original "ops management tools" item around **operational domains** instead of an
 ad-hoc command list.
 
