@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REACHY_REPO="${REACHY_REPO:-/Users/leon/projects/reachy_mini_receptionist_clean}"
+REACHY_REPO="${REACHY_REPO:-/Users/leon/projects/reachy_mini_receptionist_deploy}"
 OFFICIAL_APP_REPO="${OFFICIAL_APP_REPO:-/Users/leon/projects/reachy_mini_conversation_app}"
 ROBOT_HOST="${ROBOT_HOST:-192.168.1.165}"
 ROBOT_API="${ROBOT_API:-http://${ROBOT_HOST}:8000}"
@@ -49,7 +49,7 @@ Environment:
   STOP_BACKEND_ON_EXIT=0
   CONVERSATION_CUES=1
   CAPTURE_VISION=1
-  PREFLIGHT_WAV=/Users/leon/projects/reachy_mini_receptionist_clean/artifacts/official-runtime-live/audio/playable/audio-response-resp_db3304df3e804556b0aaa7ed7990048f-official-live-20260623-122844-01-pcm16.wav
+  PREFLIGHT_WAV=/Users/leon/projects/reachy_mini_receptionist_deploy/artifacts/official-runtime-live/audio/playable/audio-response-resp_db3304df3e804556b0aaa7ed7990048f-official-live-20260623-122844-01-pcm16.wav
   POLICY_PREFLIGHT_DURATION=90
   POLICY_PREFLIGHT_TIMEOUT=30
   POLICY_PREFLIGHT_GAP=3           # gap between scripted goodbye and greet after goodbye audio finishes

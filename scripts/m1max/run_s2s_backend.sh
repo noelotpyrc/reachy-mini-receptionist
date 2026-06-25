@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BACKEND_DIR="${BACKEND_DIR:-/Users/leon/projects/speech_to_speech_backend}"
-ENV_FILE="${ENV_FILE:-/Users/leon/projects/reachy_mini_receptionist_clean/.env}"
+ENV_FILE="${ENV_FILE:-/Users/leon/projects/reachy_mini_receptionist_deploy/.env}"
 
 S2S_HOST="${S2S_HOST:-127.0.0.1}"
 S2S_PORT="${S2S_PORT:-8765}"

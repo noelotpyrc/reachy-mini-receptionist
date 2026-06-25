@@ -71,7 +71,7 @@ src/reachy_mini_brain/
 ```bash
 # Current live-test path on m1max
 ssh leon@100.127.86.67
-cd ~/projects/reachy_mini_receptionist_clean
+cd ~/projects/reachy_mini_receptionist_deploy
 scripts/m1max/live_ops.sh status
 scripts/m1max/live_ops.sh preflight     # requires human confirmation before live test
 LIVE_DURATION=900 scripts/m1max/live_ops.sh clean-run

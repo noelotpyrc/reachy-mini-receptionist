@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REACHY_REPO="${REACHY_REPO:-/Users/leon/projects/reachy_mini_receptionist_clean}"
+REACHY_REPO="${REACHY_REPO:-/Users/leon/projects/reachy_mini_receptionist_deploy}"
 OFFICIAL_APP_REPO="${OFFICIAL_APP_REPO:-/Users/leon/projects/reachy_mini_conversation_app}"
 ENV_FILE="${ENV_FILE:-$REACHY_REPO/.env}"
 RUNTIME_PYTHON="${OFFICIAL_RUNTIME_PYTHON:-}"
