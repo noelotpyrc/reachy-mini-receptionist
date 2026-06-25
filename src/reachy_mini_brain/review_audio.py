@@ -27,7 +27,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = PROJECT_ROOT / "artifacts"
 DEFAULT_REMOTE = "leon@100.127.86.67"
-DEFAULT_REMOTE_ARTIFACTS = "/Users/leon/projects/reachy_mini/artifacts"
+DEFAULT_REMOTE_ARTIFACTS = "/Users/leon/projects/reachy_mini_receptionist_clean/artifacts"
 SAMPLE_RATE = 16000
 
 

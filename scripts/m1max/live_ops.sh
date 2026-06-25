@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REACHY_REPO="${REACHY_REPO:-/Users/leon/projects/reachy_mini}"
+REACHY_REPO="${REACHY_REPO:-/Users/leon/projects/reachy_mini_receptionist_clean}"
 OFFICIAL_APP_REPO="${OFFICIAL_APP_REPO:-/Users/leon/projects/reachy_mini_conversation_app}"
 ROBOT_HOST="${ROBOT_HOST:-192.168.1.165}"
 ROBOT_API="${ROBOT_API:-http://${ROBOT_HOST}:8000}"
@@ -34,9 +34,9 @@ Commands:
   backend      Start the S2S backend if the websocket port is not listening.
   stop-backend Stop only the S2S backend.
   stop-all     Stop live runner/backend, release media, sleep robot, disable motors.
-  preflight    Run compact playback probe, then scripted goodbye/greet policy probe.
+  preflight    Run live-app playback probe, then scripted goodbye/greet policy probe.
   preflight-audio
-               Snapshot robot state, play the known-good WAV through m1max WebRTC, then clean up.
+               Snapshot robot state, play the known-good WAV through live-app audio sink, then clean up.
   preflight-policy-flow
                Programmatically trigger goodbye then greet through the live policy/backend/speaker path.
   clean-run    Full manual-stop live cycle: clean-stop -> backend -> wake -> live -> cleanup.
@@ -49,7 +49,7 @@ Environment:
   STOP_BACKEND_ON_EXIT=0
   CONVERSATION_CUES=1
   CAPTURE_VISION=1
-  PREFLIGHT_WAV=/Users/leon/projects/reachy_mini/artifacts/official-runtime-live/audio/playable/audio-response-resp_db3304df3e804556b0aaa7ed7990048f-official-live-20260623-122844-01-pcm16.wav
+  PREFLIGHT_WAV=/Users/leon/projects/reachy_mini_receptionist_clean/artifacts/official-runtime-live/audio/playable/audio-response-resp_db3304df3e804556b0aaa7ed7990048f-official-live-20260623-122844-01-pcm16.wav
   POLICY_PREFLIGHT_DURATION=90
   POLICY_PREFLIGHT_TIMEOUT=30
   POLICY_PREFLIGHT_GAP=3           # gap between scripted goodbye and greet after goodbye audio finishes
@@ -324,13 +324,27 @@ preflight_audio() {
   wake_robot
   robot_snapshot "after-wake"
 
-  log "Playing known-good WAV through m1max -> robot WebRTC path"
+  local run_id
+  run_id="official-audio-preflight-$(date +%Y%m%d-%H%M%S)"
+  log "Playing known-good WAV through live-app audio sink: $run_id"
   (
     cd "$REACHY_REPO"
-    PYTHONPATH="$REACHY_REPO/src${PYTHONPATH:+:$PYTHONPATH}" \
-      "$OFFICIAL_APP_REPO/.venv/bin/python" \
-      -m reachy_mini_brain.audio \
-      play-sound "$PREFLIGHT_WAV"
+    scripts/m1max/run_official_runtime_live.sh \
+      --run-id "$run_id" \
+      --duration 30 \
+      --robot-host "$ROBOT_HOST" \
+      --warmup-audio \
+      --no-warmup-video \
+      --record-audio \
+      --no-record-video \
+      --no-capture-vision \
+      --no-perception \
+      --no-gestures \
+      --no-audio-gate \
+      --no-ready-cue \
+      --no-conversation-cues \
+      --scripted-playback-wav "$PREFLIGHT_WAV" \
+      --scripted-playback-post-roll-s 3.0
   )
 
   log "Playback probe finished; cleaning up robot state"

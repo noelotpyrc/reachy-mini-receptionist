@@ -110,22 +110,30 @@ written and waiting on a go/no-go; product path still imports and tests pass.
 
 ## Phase 2 — Build the loop-accelerating infrastructure (before experiments)
 
-### 5. OPS management tools  `[ ]`
-**Goal:** Remove the ops confusion seen during live tests with a small, clear command set.
-**Steps:** clean commands (extend `scripts/m1max/live_ops.sh` or a sibling) for:
-- backend status / start / stop
-- daemon (runtime) start / stop / sleep / wake
-- current robot + runtime status readout
-- artifact sync (pull latest run from m1max) + **latest-run summary** — this last one
-  should call the run-summary tool from #6, not reimplement it.
-**Done when:** one documented command each; a fresh operator can bring up, check status,
-and tear down without reading code.
+### 5. OPS management tools  `[x]`
+**Goal:** Remove the ops confusion seen during live tests with a small, clear command set, shaped
+so it can later grow into an operator app without building that app now.
+
+**Design — see `docs/ops-design.md`** (settled). In brief: organize around **3 resources × phases**
+— resources **Backend OPS** / **Robot OPS** / **Runner OPS** (each owns lifecycle + status; Backend
+& Robot persist across runs, Runner is per-run and owns live-ops), composed by thin **pre-run** /
+**post-run** workflows. Status is a cross-cutting structured read; the safe-action read-only-vs-
+physical flag lives in the API as authorization vs machine verification vs human quality gate.
+**Architecture decided:** Python **library + dev CLI** replaces `live_ops.sh` as the source of truth;
+app/service deferred, action layer kept transport-agnostic for a future service.
+
+**Done when:** each resource has start/stop/status and each phase is one documented command; a fresh
+operator can pre-run → (live) → post-run and read aggregate status without reading code;
+OPS writes/reads a latest-run pointer for #6.
+
+**Accepted:** first pass is built and accepted. See `docs/ops-test-todos.md` for the completed
+offline, m1max, robot, and human-gated checks.
 
 ### 6. Run-summary / diagnosis visibility (the keystone)  `[ ]`
-**Goal:** Turn "I have to re-experience the robot" into "I read the run summary." Build a
-compact per-run review tool on the **official-runtime artifact schema** (do **not** port
-the legacy `review_audio.py` — it's welded to the dead daemon format; build fresh on the
-cleaner `run_id`+`ts`+`response_id` rows under `artifacts/official-runtime-live/`).
+**Goal:** Turn "I have to re-experience the robot" into "I scrub the run timeline." Build a
+Rerun per-run renderer on the **official-runtime artifact schema** (do **not** port the legacy
+`review_audio.py` — it's welded to the dead daemon format; build fresh on the cleaner
+`run_id`+`ts`+`response_id` rows under `artifacts/official-runtime-live/`).
 **Steps:**
 - Render, per response, the lifecycle:
   `user transcript -> thinking cue started -> response.created -> first audio -> audio done`,
@@ -134,12 +142,30 @@ cleaner `run_id`+`ts`+`response_id` rows under `artifacts/official-runtime-live/
   write-only with no consumer) onto the same timeline by wall-clock `ts`, so each piece of
   human feedback sits next to the events around it.
 - Surface **missing-cue / suppression reasons** (e.g. `start_suppressed`) inline.
-- Detect the run schema (official vs legacy) or just target official; one tool, one output
-  (compact text/markdown summary + machine-readable JSON).
-**Done when:** running it on a recorded run prints a readable timeline that a human can use
-to diagnose UX without replaying the session; markers show up aligned.
+- Target the official-runtime schema for v1; the primary output is the Rerun timeline. Emit
+  lightweight text/JSON only for practical handoff data such as WAV path + sample offset hints.
+**Done when:** running it on a recorded run opens or writes a readable Rerun timeline that a human
+can use to diagnose UX without replaying the session; markers show up aligned, and audio spans
+include listenable WAV path hints.
 **Note:** This is the consumer the marker tool was built for, and the long-deferred
 "merged timeline" from `docs/data-harness.md` gap #8.
+
+**Recommended substrate — Rerun (see `docs/rerun-integration.md`).** Rather than hand-roll a
+renderer, build this on [Rerun](https://rerun.io), the time-aligned multimodal viewer the
+official SDK already ships an integration for (`reachy_mini/utils/rerun.py`, robot state +
+camera). #6 v1 is a **read-only renderer over existing artifacts**: no robot, no runtime
+instrumentation gate, and no schema rewrite. It reads the current multi-lane artifact layout
+(`events`, `realtime`, `policies`, `markers`), classifies rows by `type` prefix, and uses the
+runner machine's wall-clock `ts` as the canonical timeline clock. Backend conversation rows
+(`hf.*`) stay in the events lane; direct runtime milestones stay in the realtime lane.
+
+Minimum accepted v1: timeline+markers with transcript/response narrative, suppression /
+missed-cue annotations, derived per-turn latency scalars, audio RMS, and WAV path + sample
+offset hints for human listening. Derive first-mic / first-forwarded / first-audio and
+transcript→response→first-audio→done latencies offline from existing rows so historical runs work
+too. Defer portable `.rrd`/ops `open latest run` wiring, audio waveform, detections, video, live
+observer mode, and runtime cleanup items until after v1. Add pinned `rerun-sdk==0.33.1` as an
+optional diagnosis dependency, not a core runtime/ops dependency.
 
 ---
 

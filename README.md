@@ -17,9 +17,8 @@ as the default live-test path unless explicitly comparing against legacy behavio
 ## Setup
 
 ```bash
-uv venv && uv pip install -e .
-uv pip install -e ".[audio]"   # for listen/speak commands
-uv pip install -e ".[audio,vision,gesture,brain]"  # full local dev stack
+uv sync --extra official-runtime --extra vision --extra gesture --extra diagnosis --extra dev
+uv sync --extra audio --extra brain  # optional: legacy listen/speak + legacy brain tools
 ```
 
 ## Structure
@@ -72,7 +71,7 @@ src/reachy_mini_brain/
 ```bash
 # Current live-test path on m1max
 ssh leon@100.127.86.67
-cd ~/projects/reachy_mini
+cd ~/projects/reachy_mini_receptionist_clean
 scripts/m1max/live_ops.sh status
 scripts/m1max/live_ops.sh preflight     # requires human confirmation before live test
 LIVE_DURATION=900 scripts/m1max/live_ops.sh clean-run

@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "Reception runtime and tooling for Reachy Mini robot"
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "reachy-mini",
+    "reachy-mini>=1.8.0",
     "click",
     "numpy",
-    "opencv-python",
+    "opencv-python>=4.13.0.92",
     "scipy",
 ]
 
@@ -22,12 +22,39 @@ audio = [
 # Vision pipeline dependencies used by official-runtime perception and the legacy daemon.
 vision = [
     "rfdetr",
-    "supervision",
+    "supervision>=0.27,<0.29",
 ]
 # Wave detection (MediaPipe gesture recognizer). Pretrained model auto-downloads
 # to ~/.cache/reachy_mini/ on first use.
 gesture = [
-    "mediapipe",
+    "mediapipe>=0.10.14,<0.11",
+]
+# Dependencies required when the accepted official-runtime path imports the
+# official Reachy Mini conversation app handler source checkout.
+official-runtime = [
+    "aiortc>=1.13.0",
+    "av",
+    "fastrtc>=0.0.34",
+    "gradio==5.50.1.dev1",
+    "gstreamer-bundle==1.28.3",
+    "gstreamer-cli==1.28.3",
+    "gstreamer-ext-runtime==1.28.3",
+    "gstreamer-gtk==1.28.3",
+    "gstreamer-libs==1.28.3",
+    "gstreamer-plugins==1.28.3",
+    "gstreamer-plugins-gpl==1.28.3",
+    "gstreamer-plugins-gpl-restricted==1.28.3",
+    "gstreamer-plugins-libs==1.28.3",
+    "gstreamer-plugins-restricted==1.28.3",
+    "gstreamer-python==1.28.3",
+    "huggingface-hub==1.3.0",
+    "httpx>=0.28.1",
+    "python-dotenv",
+    "openai>=2.30.0",
+    "google-genai>=1.0.0",
+    "reachy_mini_dances_library",
+    "reachy_mini_toolbox",
+    "mcp>=1.27.1",
 ]
 # Legacy reception-daemon brain backend.
 brain = [
@@ -39,6 +66,9 @@ livekit = [
     "livekit-agents>=1.0",
     "livekit-plugins-silero>=1.0",
     "livekit-plugins-turn-detector>=1.0",
+]
+diagnosis = [
+    "rerun-sdk==0.33.1",
 ]
 dev = ["pytest", "ruff"]
 
@@ -52,10 +82,18 @@ backend-benchmark = "reachy_mini_brain.official_runtime.benchmark_backends:cli"
 livekit-agent = "reachy_mini_brain.official_runtime.livekit_agent:main"
 reception-vision-replay = "reachy_mini_brain.official_runtime.replay_vision:cli"
 official-runtime-live = "reachy_mini_brain.official_runtime.live_app:cli"
+reception-ops = "reachy_mini_brain.official_runtime.ops_cli:main"
+official-runtime-playback-probe = "reachy_mini_brain.official_runtime.playback_probe:cli"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+# The accepted live runtime is deployed from m1max/macOS. Restrict uv's lock
+# resolution so Linux-only Reachy SDK dependencies (notably PyGObject) are not
+# built while creating the macOS robot runtime environment.
+environments = ["sys_platform == 'darwin'"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/reachy_mini_brain"]

@@ -82,7 +82,7 @@ DEFAULT_POLICY_AUDIO_CACHE_DIR = PROJECT_ROOT / "artifacts" / "policy-audio-cach
 @click.option("--livekit-dispatch-agent/--no-livekit-dispatch-agent", default=True, show_default=True)
 @click.option(
     "--scripted-policy-flow",
-    type=click.Choice(["none", "goodbye-greet"]),
+    type=click.Choice(["none", "goodbye", "greet", "goodbye-greet"]),
     default="none",
     show_default=True,
     help="Inject a deterministic policy flow after runtime startup.",
@@ -100,6 +100,24 @@ DEFAULT_POLICY_AUDIO_CACHE_DIR = PROJECT_ROOT / "artifacts" / "policy-audio-cach
     default=30.0,
     show_default=True,
     help="Maximum seconds to wait for each scripted policy audio response.",
+)
+@click.option(
+    "--scripted-policy-greeting",
+    default=None,
+    help="Override the deterministic greeting text for scripted policy preflights.",
+)
+@click.option(
+    "--scripted-playback-wav",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Play one fixed WAV through the live app audio sink, then exit.",
+)
+@click.option(
+    "--scripted-playback-post-roll-s",
+    type=float,
+    default=0.5,
+    show_default=True,
+    help="Seconds to keep the live app open after scripted WAV playback.",
 )
 def cli(**kwargs: Any) -> None:
     """Run the ported official-runtime path on a live Reachy Mini."""
@@ -152,6 +170,9 @@ async def _run_live(
     scripted_policy_flow: str,
     scripted_policy_gap_s: float,
     scripted_policy_timeout_s: float,
+    scripted_policy_greeting: str | None,
+    scripted_playback_wav: Path | None,
+    scripted_playback_post_roll_s: float,
 ) -> None:
     backend_instructions = instructions if instructions is not None else instructions_file.read_text(encoding="utf-8")
     recorder = ArtifactRecorder(
@@ -182,6 +203,9 @@ async def _run_live(
             "scripted_policy_flow": scripted_policy_flow,
             "scripted_policy_gap_s": scripted_policy_gap_s,
             "scripted_policy_timeout_s": scripted_policy_timeout_s,
+            "scripted_policy_greeting": scripted_policy_greeting,
+            "scripted_playback_wav": str(scripted_playback_wav) if scripted_playback_wav is not None else None,
+            "scripted_playback_post_roll_s": scripted_playback_post_roll_s,
         },
         record_audio=record_audio,
         record_video=record_video,
@@ -201,7 +225,10 @@ async def _run_live(
     camera_provider = ReachyCameraFrameProvider(mini)
 
     movement_gate = PlaybackMovementGate(on_change=lambda active, reason: recorder.realtime("movement_gate", active=active, reason=reason))
-    reception_policy = ReceptionPolicy(ReceptionPolicySettings(audio_gate_until_wave=audio_gate))
+    policy_settings: dict[str, Any] = {"audio_gate_until_wave": audio_gate}
+    if scripted_policy_greeting is not None:
+        policy_settings["greeting"] = scripted_policy_greeting
+    reception_policy = ReceptionPolicy(ReceptionPolicySettings(**policy_settings))
     _record_milestone(
         recorder,
         run_id,
@@ -271,6 +298,24 @@ async def _run_live(
     runtime_observer = CompositeRuntimeObserver(reception_policy, recorder, movement_gate)
     audio_source = ReachyAudioSource(mini, max_duration_s=duration, stop_event=stop_event)
     audio_sink = ReachyAudioSink(mini)
+    if scripted_playback_wav is not None:
+        try:
+            await _run_scripted_playback_wav(
+                wav_path=scripted_playback_wav,
+                audio_sink=audio_sink,
+                event_sink=event_sink,
+                recorder=recorder,
+                run_id=run_id,
+                post_roll_s=scripted_playback_post_roll_s,
+            )
+        finally:
+            stop_event.set()
+            await audio_sink.close()
+            await asyncio.to_thread(robot_session.stop)
+            recorder.close()
+        click.echo(f"official runtime live artifacts: {recorder.manifest_path}")
+        return
+
     handler = _build_handler(
         backend=backend,
         event_sink=event_sink,
@@ -570,39 +615,42 @@ async def _run_scripted_policy_flow(
 ) -> None:
     _record_milestone(recorder, run_id, "scripted_policy_flow_started", flow=flow)
     try:
-        if flow == "goodbye-greet":
-            steps = [
-                (
-                    "depart",
-                    RuntimeEvent(
-                        kind="vision.depart",
-                        source="official_runtime.scripted_policy_flow",
-                        data={
-                            "kind": "depart",
-                            "id": "scripted-depart",
-                            "area": 0.15,
-                            "cx": 0.5,
-                            "cy": 0.42,
-                            "scripted": True,
-                        },
-                    ),
-                ),
-                (
-                    "approach",
-                    RuntimeEvent(
-                        kind="vision.approach",
-                        source="official_runtime.scripted_policy_flow",
-                        data={
-                            "kind": "approach",
-                            "id": "scripted-approach",
-                            "area": 0.12,
-                            "cx": 0.5,
-                            "cy": 0.42,
-                            "scripted": True,
-                        },
-                    ),
-                ),
-            ]
+        depart_step = (
+            "depart",
+            RuntimeEvent(
+                kind="vision.depart",
+                source="official_runtime.scripted_policy_flow",
+                data={
+                    "kind": "depart",
+                    "id": "scripted-depart",
+                    "area": 0.15,
+                    "cx": 0.5,
+                    "cy": 0.42,
+                    "scripted": True,
+                },
+            ),
+        )
+        approach_step = (
+            "approach",
+            RuntimeEvent(
+                kind="vision.approach",
+                source="official_runtime.scripted_policy_flow",
+                data={
+                    "kind": "approach",
+                    "id": "scripted-approach",
+                    "area": 0.12,
+                    "cx": 0.5,
+                    "cy": 0.42,
+                    "scripted": True,
+                },
+            ),
+        )
+        if flow == "goodbye":
+            steps = [depart_step]
+        elif flow == "greet":
+            steps = [approach_step]
+        elif flow == "goodbye-greet":
+            steps = [depart_step, approach_step]
         else:
             raise ValueError(f"unsupported scripted policy flow: {flow}")
 
@@ -631,6 +679,55 @@ async def _run_scripted_policy_flow(
         raise
     finally:
         stop_event.set()
+
+
+async def _run_scripted_playback_wav(
+    *,
+    wav_path: Path,
+    audio_sink: Any,
+    event_sink: EventSink,
+    recorder: ArtifactRecorder,
+    run_id: str,
+    post_roll_s: float,
+) -> None:
+    _record_milestone(recorder, run_id, "scripted_playback_started", wav_path=str(wav_path))
+    frame = load_policy_audio_frame(wav_path)
+    sample_rate, audio = frame
+    frame_data = _policy_audio_frame_data(sample_rate, audio)
+    metadata = {
+        "event_type": "scripted_playback",
+        "path": str(wav_path),
+    }
+    _record_milestone(recorder, run_id, "scripted_playback_audio_loaded", **frame_data)
+    event_sink.emit(
+        RuntimeEvent(
+            kind="assistant.audio.started",
+            source="official_runtime.scripted_playback",
+            data={"metadata": metadata, **frame_data},
+        )
+    )
+    recorder.record_output_audio_frame(sample_rate, audio, metadata=metadata)
+    event_sink.emit(
+        RuntimeEvent(
+            kind="audio.output_frame",
+            source="official_runtime.scripted_playback",
+            data={"metadata": metadata, **frame_data},
+        )
+    )
+    await audio_sink.write(frame)
+    drain = getattr(audio_sink, "drain", None)
+    if callable(drain):
+        await drain()
+    if post_roll_s > 0:
+        await asyncio.sleep(post_roll_s)
+    event_sink.emit(
+        RuntimeEvent(
+            kind="assistant.audio.done",
+            source="official_runtime.scripted_playback",
+            data={"reason": "scripted_playback", "path": str(wav_path)},
+        )
+    )
+    _record_milestone(recorder, run_id, "scripted_playback_completed", **frame_data)
 
 
 async def _trigger_ready_cue(

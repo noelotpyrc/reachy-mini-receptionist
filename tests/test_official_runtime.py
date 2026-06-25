@@ -47,7 +47,7 @@ from reachy_mini_brain.official_runtime import (
 from reachy_mini_brain.official_runtime.replay_livekit import cli as livekit_replay_cli
 from reachy_mini_brain.official_runtime.replay_vision import cli as vision_replay_cli
 from reachy_mini_brain.official_runtime.live_app import cli as live_app_cli
-from reachy_mini_brain.official_runtime.live_app import _play_cached_policy_speech
+from reachy_mini_brain.official_runtime.live_app import _play_cached_policy_speech, _run_scripted_playback_wav
 from reachy_mini_brain.official_runtime.benchmark_backends import _summarize_run
 from reachy_mini_brain.official_runtime.policy_audio_cache import PolicyAudioCache
 from reachy_mini_brain import robot
@@ -441,6 +441,42 @@ def test_cached_policy_speech_missing_file_does_not_fall_back_to_backend(tmp_pat
     assert events.kinds() == ["policy.speech_cache_missing"]
 
 
+def test_scripted_playback_wav_uses_live_audio_sink_and_records_output(tmp_path):
+    wav_path = tmp_path / "preflight.wav"
+    audio = np.arange(320, dtype=np.int16)
+    _write_pcm_wav(wav_path, 16_000, audio)
+    recorder = ArtifactRecorder(tmp_path / "artifacts", run_id="scripted-playback", record_audio=True)
+
+    async def run():
+        events = InMemoryEventSink()
+        sink = _CollectingAudioSink()
+        await _run_scripted_playback_wav(
+            wav_path=wav_path,
+            audio_sink=sink,
+            event_sink=events,
+            recorder=recorder,
+            run_id="scripted-playback",
+            post_roll_s=0,
+        )
+        return events, sink
+
+    events, sink = asyncio.run(run())
+    recorder.close()
+
+    assert len(sink.frames) == 1
+    assert sink.frames[0][0] == 16_000
+    assert np.array_equal(sink.frames[0][1], audio)
+    assert sink.drained is True
+    assert events.kinds() == [
+        "assistant.audio.started",
+        "audio.output_frame",
+        "assistant.audio.done",
+    ]
+    manifest = json.loads(recorder.manifest_path.read_text(encoding="utf-8"))
+    streams = {entry["stream"]: entry for entry in manifest["artifacts"]["audio"]}
+    assert streams["output"]["samples"] == 320
+
+
 def test_reception_policy_idle_tick_closes_conversation():
     async def run():
         clock = _Clock()
@@ -582,6 +618,7 @@ def test_official_runtime_live_cli_help_loads_without_robot_dependencies():
     assert "Run the ported official-runtime path" in result.output
     assert "--hf-connection-mode" in result.output
     assert "--ready-cue" in result.output
+    assert "--scripted-playback-wav" in result.output
 
 
 def test_reachy_audio_source_reads_fake_robot_audio_as_int16():

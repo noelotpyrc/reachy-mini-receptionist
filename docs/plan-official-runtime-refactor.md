@@ -147,7 +147,7 @@ Repository roles:
 - `reachy_mini_conversation_app`: upstream/reference checkout only. Do not continue product
   development there. Use it to inspect official behavior or to pull selected code/design ideas into
   `reachy_mini`.
-- `m1max:/Users/leon/projects/reachy_mini`: deployment/test mirror of this repo. Do not hand-edit
+- `m1max:/Users/leon/projects/reachy_mini_receptionist_clean`: deployment/test mirror of this repo. Do not hand-edit
   there except for machine-local env or emergency live-test debugging; sync changes from local.
 
 Cleanup decisions:
