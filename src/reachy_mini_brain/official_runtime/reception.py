@@ -226,6 +226,7 @@ def _event_kind(event: RuntimeEvent) -> str:
 
 
 def _transcript_from_event(event: RuntimeEvent) -> str | None:
+    kind = _normalized_realtime_kind(event.kind)
     transcript_kinds = {
         "conversation.item.input_audio_transcription.completed",
         "realtime.conversation.item.input_audio_transcription.completed",
@@ -234,9 +235,9 @@ def _transcript_from_event(event: RuntimeEvent) -> str | None:
         "livekit.room.transcription",
         "backend.transcript.final",
     }
-    if event.kind not in transcript_kinds:
+    if kind not in transcript_kinds:
         return None
-    if event.kind == "livekit.room.transcription" and event.data.get("final") is False:
+    if kind == "livekit.room.transcription" and event.data.get("final") is False:
         return None
     role = event.data.get("role")
     if role not in (None, "", "user", "transcript", "user_transcript"):
@@ -247,3 +248,9 @@ def _transcript_from_event(event: RuntimeEvent) -> str | None:
     if not isinstance(text, str):
         return None
     return text.strip() or None
+
+
+def _normalized_realtime_kind(kind: str) -> str:
+    if kind.startswith("hf.realtime."):
+        return kind.removeprefix("hf.realtime.")
+    return kind

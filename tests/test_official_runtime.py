@@ -35,6 +35,7 @@ from reachy_mini_brain.official_runtime import (
     RulePolicy,
     RuntimeContext,
     RuntimeEvent,
+    S2SRealtimeHandler,
     WavAudioSource,
     camera_question,
     encode_bgr_frame_as_jpeg,
@@ -616,6 +617,7 @@ def test_official_runtime_live_cli_help_loads_without_robot_dependencies():
 
     assert result.exit_code == 0
     assert "Run the ported official-runtime path" in result.output
+    assert "s2s-local" in result.output
     assert "--hf-connection-mode" in result.output
     assert "--ready-cue" in result.output
     assert "--scripted-playback-wav" in result.output
@@ -1410,6 +1412,31 @@ class _FakeLiveKitBridge:
             return None
 
 
+class _FakeWebSocket:
+    def __init__(self):
+        self.sent = []
+        self.incoming = asyncio.Queue()
+        self.closed = False
+
+    async def send(self, message):
+        self.sent.append(json.loads(message))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.closed and self.incoming.empty():
+            raise StopAsyncIteration
+        item = await self.incoming.get()
+        if item is StopAsyncIteration:
+            raise StopAsyncIteration
+        return json.dumps(item)
+
+    async def close(self):
+        self.closed = True
+        await self.incoming.put(StopAsyncIteration)
+
+
 def test_livekit_handler_wraps_bridge_with_official_handler_contract():
     async def run():
         events = InMemoryEventSink()
@@ -1440,6 +1467,94 @@ def test_livekit_handler_wraps_bridge_with_official_handler_contract():
         ]
 
     asyncio.run(run())
+
+
+def test_s2s_realtime_handler_sends_session_and_audio_without_official_app():
+    async def run():
+        events = InMemoryEventSink()
+        websocket = _FakeWebSocket()
+
+        async def connect_factory(url):
+            assert url == "ws://127.0.0.1:8765/v1/realtime"
+            return websocket
+
+        handler = S2SRealtimeHandler(
+            realtime_ws_url="ws://127.0.0.1:8765/v1/realtime",
+            instructions="You are a clinic receptionist.",
+            event_sink=events,
+            voice="Sohee",
+            startup_timeout_s=1.0,
+            connect_factory=connect_factory,
+        )
+        await websocket.incoming.put({"type": "session.created", "session": {"id": "sess-1"}})
+        await handler.start_up()
+        await handler.receive((16_000, np.arange(160, dtype=np.int16)))
+        await handler.shutdown()
+        return events, websocket
+
+    events, websocket = asyncio.run(run())
+
+    assert websocket.closed is True
+    assert websocket.sent[0]["type"] == "session.update"
+    assert websocket.sent[0]["session"]["audio"]["output"]["voice"] == "Sohee"
+    assert websocket.sent[1]["type"] == "input_audio_buffer.append"
+    assert isinstance(websocket.sent[1]["audio"], str)
+    assert "hf.session.snapshot" in events.kinds()
+    assert "hf.realtime.session.created" in events.kinds()
+
+
+def test_s2s_realtime_handler_emits_transcript_audio_and_text_requests():
+    async def run():
+        events = InMemoryEventSink()
+        websocket = _FakeWebSocket()
+
+        async def connect_factory(url):
+            return websocket
+
+        handler = S2SRealtimeHandler(
+            realtime_ws_url="ws://127.0.0.1:8765/v1/realtime",
+            instructions="You are a clinic receptionist.",
+            event_sink=events,
+            startup_timeout_s=1.0,
+            connect_factory=connect_factory,
+        )
+        await websocket.incoming.put({"type": "session.created"})
+        await handler.start_up()
+        audio = np.array([1, -2, 3, -4], dtype=np.int16)
+        encoded_audio = __import__("base64").b64encode(audio.astype("<i2").tobytes()).decode("ascii")
+        await websocket.incoming.put(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "item-1",
+                "transcript": "I need directions.",
+            }
+        )
+        await websocket.incoming.put(
+            {
+                "type": "response.output_audio.delta",
+                "response_id": "resp-1",
+                "delta": encoded_audio,
+            }
+        )
+        transcript = await asyncio.wait_for(handler.emit(), timeout=1.0)
+        frame = await asyncio.wait_for(handler.emit(), timeout=1.0)
+        ok = await handler.request_text_response("Welcome.")
+        await handler.shutdown()
+        return events, websocket, transcript, frame, ok
+
+    events, websocket, transcript, frame, ok = asyncio.run(run())
+
+    assert ok is True
+    assert transcript["role"] == "user"
+    assert transcript["transcript"] == "I need directions."
+    assert frame[0] == 16_000
+    assert np.array_equal(frame[1], np.array([1, -2, 3, -4], dtype=np.int16))
+    assert frame[2]["response_id"] == "resp-1"
+    assert websocket.sent[-2]["type"] == "conversation.item.create"
+    assert websocket.sent[-1]["type"] == "response.create"
+    assert "hf.realtime.conversation.item.input_audio_transcription.completed" in events.kinds()
+    assert "hf.realtime.response.output_audio.delta" in events.kinds()
+    assert "hf.response.metadata" in events.kinds()
 
 
 def test_jsonl_event_sink_writes_runtime_events(tmp_path):

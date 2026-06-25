@@ -2,7 +2,6 @@
 set -Eeuo pipefail
 
 REACHY_REPO="${REACHY_REPO:-/Users/leon/projects/reachy_mini_receptionist_deploy}"
-OFFICIAL_APP_REPO="${OFFICIAL_APP_REPO:-/Users/leon/projects/reachy_mini_conversation_app}"
 ROBOT_HOST="${ROBOT_HOST:-192.168.1.165}"
 ROBOT_API="${ROBOT_API:-http://${ROBOT_HOST}:8000}"
 S2S_HOST="${S2S_HOST:-127.0.0.1}"

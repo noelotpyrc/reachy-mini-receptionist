@@ -2487,6 +2487,7 @@ dependencies = [
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' and sys_platform == 'darwin'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*' and sys_platform == 'darwin'" },
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' and sys_platform == 'darwin'" },
+    { name = "websockets", marker = "sys_platform == 'darwin'" },
 ]
 
 [package.optional-dependencies]
@@ -2597,6 +2598,7 @@ requires-dist = [
     { name = "silero-vad", marker = "extra == 'audio'" },
     { name = "soundfile", marker = "extra == 'audio'" },
     { name = "supervision", marker = "extra == 'vision'", specifier = ">=0.27,<0.29" },
+    { name = "websockets", specifier = ">=15.0.1" },
 ]
 provides-extras = ["audio", "vision", "gesture", "official-runtime", "brain", "sim", "livekit", "diagnosis", "dev"]
 

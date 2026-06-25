@@ -19,6 +19,7 @@ from .policies import PolicyEngine, RulePolicy
 from .policy_audio_cache import PolicyAudioCache
 from .reception import ReceptionPolicy, ReceptionPolicySettings
 from .robot_io import ReachyAudioSink, ReachyAudioSource, ReachyCameraFrameProvider, ReachyRobotSession
+from .s2s_realtime import S2SRealtimeHandler
 from .stream_runtime import CompositeRuntimeObserver, OfficialStyleStreamRuntime
 from .wav_replay import WavAudioSink, WavAudioSource, run_wav_replay
 
@@ -60,6 +61,7 @@ __all__ = [
     "RulePolicy",
     "RuntimeContext",
     "RuntimeEvent",
+    "S2SRealtimeHandler",
     "WavAudioSink",
     "WavAudioSource",
     "load_project_env",

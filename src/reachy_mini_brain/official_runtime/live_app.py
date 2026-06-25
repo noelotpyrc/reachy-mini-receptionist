@@ -26,6 +26,7 @@ from .policies import PolicyEngine
 from .policy_audio_cache import PolicyAudioCache, load_policy_audio_frame
 from .reception import ReceptionPolicy, ReceptionPolicySettings
 from .robot_io import ReachyAudioSink, ReachyAudioSource, ReachyCameraFrameProvider, ReachyRobotSession
+from .s2s_realtime import S2SRealtimeHandler
 from .stream_runtime import CompositeRuntimeObserver, OfficialStyleStreamRuntime
 
 
@@ -37,7 +38,7 @@ DEFAULT_POLICY_AUDIO_CACHE_DIR = PROJECT_ROOT / "artifacts" / "policy-audio-cach
 
 
 @click.command()
-@click.option("--backend", type=click.Choice(["hf-official", "livekit"]), default="hf-official", show_default=True)
+@click.option("--backend", type=click.Choice(["s2s-local", "hf-official", "livekit"]), default="s2s-local", show_default=True)
 @click.option("--run-id", default=None, help="Run id. Defaults to timestamped id.")
 @click.option("--artifact-root", type=click.Path(path_type=Path), default=DEFAULT_ARTIFACT_ROOT)
 @click.option("--duration", type=float, default=120.0, show_default=True, help="Maximum live run duration in seconds.")
@@ -947,6 +948,13 @@ def _build_handler(
             hf_token=hf_token,
             camera_worker=camera_worker,
             reachy_mini=reachy_mini,
+        )
+    if backend == "s2s-local":
+        return S2SRealtimeHandler(
+            event_sink=event_sink,
+            realtime_ws_url=hf_realtime_ws_url,
+            instructions=instructions,
+            voice=hf_voice,
         )
     if backend == "livekit":
         config = LiveKitBackendConfig(

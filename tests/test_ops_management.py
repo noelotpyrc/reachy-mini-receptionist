@@ -108,8 +108,11 @@ def test_build_live_command_includes_official_runtime_defaults(tmp_path):
     assert "--capture-vision" in command
     assert "--record-audio" in command
     assert "--record-video" in command
+    backend_index = command.index("--backend")
+    assert command[backend_index + 1] == "s2s-local"
     assert env["HF_REALTIME_WS_URL"] == "ws://127.0.0.1:8765/v1/realtime"
     assert env["REACHY_HOST"] == "192.0.2.10"
+    assert "REACHY_MINI_CONVERSATION_APP_SRC" not in env
 
 
 def test_build_policy_command_can_target_single_greet(tmp_path):
@@ -180,8 +183,12 @@ def test_build_audio_playback_command_uses_live_app_scripted_playback(tmp_path):
 
 def test_base_env_resets_pythonpath_without_gstreamer_overrides(tmp_path, monkeypatch):
     config = make_config(tmp_path)
+    repo_python = config.repo_path / ".venv" / "bin" / "python"
+    repo_python.parent.mkdir(parents=True)
+    repo_python.write_text("", encoding="utf-8")
+    config = ops_core.OpsConfig(**{**config.__dict__, "python_bin": repo_python})
     gi_python = (
-        config.official_app_repo
+        config.repo_path
         / ".venv"
         / "lib"
         / "python3.12"
@@ -202,28 +209,25 @@ def test_base_env_resets_pythonpath_without_gstreamer_overrides(tmp_path, monkey
     assert "GI_TYPELIB_PATH" not in env
     assert "GST_PLUGIN_PATH" not in env
     assert "GST_PLUGIN_SCANNER_1_0" not in env
+    assert "OFFICIAL_APP_REPO" not in env
 
 
 def test_default_python_prefers_clean_repo_venv(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     official = tmp_path / "official"
     repo_python = repo / ".venv" / "bin" / "python"
-    official_python = official / ".venv" / "bin" / "python"
     repo_python.parent.mkdir(parents=True)
-    official_python.parent.mkdir(parents=True)
     repo_python.write_text("", encoding="utf-8")
-    official_python.write_text("", encoding="utf-8")
     monkeypatch.delenv("OFFICIAL_RUNTIME_PYTHON", raising=False)
 
     assert ops_core._default_python_bin(repo_path=repo, official_app_repo=official) == repo_python
 
 
-def test_audio_playback_validation_does_not_require_official_app_venv(tmp_path):
+def test_audio_playback_validation_does_not_require_official_app_source(tmp_path):
     config = make_config(tmp_path)
     script = config.repo_path / "scripts" / "m1max" / "run_official_runtime_live.sh"
     script.parent.mkdir(parents=True)
     script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (config.official_app_repo / "src").mkdir()
 
     assert ops_core._validate_audio_playback_launch_paths(config) == []
 
@@ -349,7 +353,6 @@ def test_official_runtime_playback_probe_uses_session_and_audio_sink(tmp_path):
 
 def test_start_runner_saves_actual_runner_pid_and_caffeinate_pid(tmp_path, monkeypatch):
     config = make_config(tmp_path)
-    (config.official_app_repo / "src").mkdir()
     calls: list[list[str]] = []
 
     class FakeProc:
@@ -379,7 +382,6 @@ def test_start_runner_saves_actual_runner_pid_and_caffeinate_pid(tmp_path, monke
 
 def test_start_runner_can_enable_raw_video_recording(tmp_path, monkeypatch):
     config = make_config(tmp_path)
-    (config.official_app_repo / "src").mkdir()
     calls: list[list[str]] = []
 
     class FakeProc:

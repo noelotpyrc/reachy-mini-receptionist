@@ -799,7 +799,6 @@ def build_audio_playback_command(config: OpsConfig, wav_path: Path, *, run_id: s
     env = _base_env(config)
     env.update(
         {
-            "REACHY_MINI_CONVERSATION_APP_SRC": str(config.official_app_repo / "src"),
             "HF_REALTIME_CONNECTION_MODE": "local",
             "HF_REALTIME_WS_URL": f"ws://{config.s2s_host}:{config.s2s_port}/v1/realtime",
             "REACHY_HOST": config.robot_host,
@@ -855,7 +854,6 @@ def build_live_command(
     env = _base_env(config)
     env.update(
         {
-            "REACHY_MINI_CONVERSATION_APP_SRC": str(config.official_app_repo / "src"),
             "HF_REALTIME_CONNECTION_MODE": "local",
             "HF_REALTIME_WS_URL": f"ws://{config.s2s_host}:{config.s2s_port}/v1/realtime",
             "REACHY_HOST": config.robot_host,
@@ -866,7 +864,7 @@ def build_live_command(
         "-m",
         "reachy_mini_brain.official_runtime.live_app",
         "--backend",
-        "hf-official",
+        "s2s-local",
         "--hf-connection-mode",
         "local",
         "--hf-realtime-ws-url",
@@ -989,9 +987,6 @@ def _validate_backend_launch_paths(config: OpsConfig) -> list[str]:
 def _validate_live_launch_paths(config: OpsConfig) -> list[str]:
     errors = _validate_repo_path(config)
     errors.extend(_validate_python_path(config))
-    official_src = config.official_app_repo / "src"
-    if not official_src.exists():
-        errors.append(f"missing official app source directory: {official_src}")
     return errors
 
 
@@ -1001,9 +996,6 @@ def _validate_audio_playback_launch_paths(config: OpsConfig) -> list[str]:
     script = config.repo_path / "scripts" / "m1max" / "run_official_runtime_live.sh"
     if not script.exists():
         errors.append(f"missing live runner script: {script}")
-    official_src = config.official_app_repo / "src"
-    if not official_src.exists():
-        errors.append(f"missing official app source directory: {official_src}")
     return errors
 
 
@@ -1026,13 +1018,10 @@ def _base_env(config: OpsConfig) -> dict[str, str]:
     env.pop("GST_PLUGIN_SCANNER_1_0", None)
     python_paths = [str(config.repo_path / "src")]
     gi_path = _gstreamer_python_path_for_python(config.python_bin)
-    if gi_path is None:
-        gi_path = _gstreamer_python_path_for_repo(config.official_app_repo)
     if gi_path is not None:
         python_paths.append(str(gi_path))
     env["PYTHONPATH"] = ":".join(python_paths)
     env["REACHY_REPO"] = str(config.repo_path)
-    env["OFFICIAL_APP_REPO"] = str(config.official_app_repo)
     env["ENV_FILE"] = str(config.repo_path / ".env")
     return env
 
@@ -1060,9 +1049,6 @@ def _default_python_bin(*, repo_path: Path, official_app_repo: Path) -> Path:
     repo_python = repo_path / ".venv" / "bin" / "python"
     if repo_python.exists():
         return repo_python
-    official_python = official_app_repo / ".venv" / "bin" / "python"
-    if official_python.exists():
-        return official_python
     return Path(sys.executable)
 
 
