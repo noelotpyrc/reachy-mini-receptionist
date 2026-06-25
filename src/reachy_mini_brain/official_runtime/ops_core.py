@@ -64,6 +64,8 @@ class OpsConfig:
     stop_backend_on_exit: bool
     conversation_cues: bool
     capture_vision: bool
+    record_audio: bool
+    record_video: bool
     python_bin: Path
     backend_start_timeout_s: float
     keep_awake: bool
@@ -110,6 +112,8 @@ class OpsConfig:
             stop_backend_on_exit=_env_bool("STOP_BACKEND_ON_EXIT", default=False),
             conversation_cues=_env_bool("CONVERSATION_CUES", default=True),
             capture_vision=_env_bool("CAPTURE_VISION", default=True),
+            record_audio=_env_bool("RECORD_AUDIO", default=True),
+            record_video=_env_bool("RECORD_VIDEO", default=False),
             python_bin=python_bin,
             backend_start_timeout_s=float(os.environ.get("BACKEND_START_TIMEOUT", "45")),
             keep_awake=_env_bool("OPS_KEEP_AWAKE", default=True),
@@ -456,6 +460,8 @@ def start_runner(
     warmup_video: bool = True,
     conversation_cues: bool | None = None,
     capture_vision: bool | None = None,
+    record_audio: bool | None = None,
+    record_video: bool | None = None,
 ) -> ActionResult:
     _require_physical_authorization("runner.start", authorized)
     existing = runner_status(config)
@@ -495,6 +501,8 @@ def start_runner(
         warmup_video=warmup_video,
         conversation_cues=config.conversation_cues if conversation_cues is None else conversation_cues,
         capture_vision=config.capture_vision if capture_vision is None else capture_vision,
+        record_audio=config.record_audio if record_audio is None else record_audio,
+        record_video=config.record_video if record_video is None else record_video,
         scripted_policy_flow="none",
     )
     proc, caffeinate_pid = _launch_background(command, cwd=config.repo_path, env=env, logfile=logfile, keep_awake=config.keep_awake)
@@ -513,6 +521,8 @@ def start_runner(
             "warmup_video": warmup_video,
             "conversation_cues": config.conversation_cues if conversation_cues is None else conversation_cues,
             "capture_vision": config.capture_vision if capture_vision is None else capture_vision,
+            "record_audio": config.record_audio if record_audio is None else record_audio,
+            "record_video": config.record_video if record_video is None else record_video,
             "keep_awake": config.keep_awake,
             "caffeinate_pid": caffeinate_pid,
         },
@@ -661,6 +671,8 @@ def preflight_policy(
         warmup_video=False,
         conversation_cues=False,
         capture_vision=False,
+        record_audio=True,
+        record_video=False,
         scripted_policy_flow=flow,
         scripted_policy_gap_s=config.policy_preflight_gap_s,
         scripted_policy_timeout_s=config.policy_preflight_timeout_s,
@@ -719,6 +731,29 @@ def start_session(config: OpsConfig, *, authorized: bool) -> list[ActionResult]:
         start_backend(config),
         wake_robot(config, authorized=True),
         start_runner(config, authorized=True),
+    ]
+
+
+def start_session_with_options(
+    config: OpsConfig,
+    *,
+    authorized: bool,
+    record_audio: bool | None = None,
+    record_video: bool | None = None,
+    capture_vision: bool | None = None,
+) -> list[ActionResult]:
+    _require_physical_authorization("session.start", authorized)
+    return [
+        stop_runner(config, authorized=True, include_unmanaged=True),
+        start_backend(config),
+        wake_robot(config, authorized=True),
+        start_runner(
+            config,
+            authorized=True,
+            record_audio=record_audio,
+            record_video=record_video,
+            capture_vision=capture_vision,
+        ),
     ]
 
 
@@ -810,6 +845,8 @@ def build_live_command(
     warmup_video: bool,
     conversation_cues: bool,
     capture_vision: bool,
+    record_audio: bool,
+    record_video: bool,
     scripted_policy_flow: str = "none",
     scripted_policy_gap_s: float | None = None,
     scripted_policy_timeout_s: float | None = None,
@@ -846,6 +883,8 @@ def build_live_command(
         "--gestures" if gestures else "--no-gestures",
         "--audio-gate" if audio_gate else "--no-audio-gate",
         "--conversation-cues" if conversation_cues else "--no-conversation-cues",
+        "--record-audio" if record_audio else "--no-record-audio",
+        "--record-video" if record_video else "--no-record-video",
         "--capture-vision" if capture_vision else "--no-capture-vision",
     ]
     if scripted_policy_flow != "none":

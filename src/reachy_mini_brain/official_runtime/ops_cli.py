@@ -88,9 +88,26 @@ def runner_status_cmd(ctx: click.Context) -> None:
 
 
 @runner.command("start")
+@click.option("--record-audio/--no-record-audio", default=None, help="Persist raw/input/output audio artifacts for this run.")
+@click.option("--record-video/--no-record-video", default=None, help="Persist raw video MKV artifacts for this run.")
+@click.option("--capture-vision/--no-capture-vision", default=None, help="Persist per-frame vision capture JSONL for this run.")
 @click.pass_context
-def runner_start_cmd(ctx: click.Context) -> None:
-    _emit(ctx, ops_core.start_runner(_config(ctx), authorized=_authorized(ctx)))
+def runner_start_cmd(
+    ctx: click.Context,
+    record_audio: bool | None,
+    record_video: bool | None,
+    capture_vision: bool | None,
+) -> None:
+    _emit(
+        ctx,
+        ops_core.start_runner(
+            _config(ctx),
+            authorized=_authorized(ctx),
+            record_audio=record_audio,
+            record_video=record_video,
+            capture_vision=capture_vision,
+        ),
+    )
 
 
 @runner.command("stop")
@@ -128,11 +145,28 @@ def sleep_robot_cmd(ctx: click.Context) -> None:
 
 
 @cli.command("start-session")
+@click.option("--record-audio/--no-record-audio", default=None, help="Persist raw/input/output audio artifacts for this run.")
+@click.option("--record-video/--no-record-video", default=None, help="Persist raw video MKV artifacts for this run.")
+@click.option("--capture-vision/--no-capture-vision", default=None, help="Persist per-frame vision capture JSONL for this run.")
 @click.pass_context
-def start_session_cmd(ctx: click.Context) -> None:
+def start_session_cmd(
+    ctx: click.Context,
+    record_audio: bool | None,
+    record_video: bool | None,
+    capture_vision: bool | None,
+) -> None:
     """Ensure backend/robot are ready and start one live runner."""
 
-    _emit_many(ctx, ops_core.start_session(_config(ctx), authorized=_authorized(ctx)))
+    _emit_many(
+        ctx,
+        ops_core.start_session_with_options(
+            _config(ctx),
+            authorized=_authorized(ctx),
+            record_audio=record_audio,
+            record_video=record_video,
+            capture_vision=capture_vision,
+        ),
+    )
 
 
 @cli.command("stop-session")

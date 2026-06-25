@@ -35,6 +35,8 @@ def make_config(tmp_path: Path) -> ops_core.OpsConfig:
         stop_backend_on_exit=False,
         conversation_cues=True,
         capture_vision=True,
+        record_audio=True,
+        record_video=False,
         python_bin=Path("/usr/bin/python3"),
         backend_start_timeout_s=1,
         keep_awake=True,
@@ -91,6 +93,8 @@ def test_build_live_command_includes_official_runtime_defaults(tmp_path):
         warmup_video=True,
         conversation_cues=True,
         capture_vision=True,
+        record_audio=True,
+        record_video=True,
         scripted_policy_flow="none",
     )
 
@@ -102,6 +106,8 @@ def test_build_live_command_includes_official_runtime_defaults(tmp_path):
     assert "--audio-gate" in command
     assert "--conversation-cues" in command
     assert "--capture-vision" in command
+    assert "--record-audio" in command
+    assert "--record-video" in command
     assert env["HF_REALTIME_WS_URL"] == "ws://127.0.0.1:8765/v1/realtime"
     assert env["REACHY_HOST"] == "192.0.2.10"
 
@@ -119,6 +125,8 @@ def test_build_policy_command_can_target_single_greet(tmp_path):
         warmup_video=False,
         conversation_cues=False,
         capture_vision=False,
+        record_audio=True,
+        record_video=False,
         scripted_policy_flow="greet",
         scripted_policy_gap_s=3,
         scripted_policy_timeout_s=30,
@@ -133,6 +141,8 @@ def test_build_policy_command_can_target_single_greet(tmp_path):
     assert "--no-perception" in command
     assert "--no-gestures" in command
     assert "--no-audio-gate" in command
+    assert "--record-audio" in command
+    assert "--no-record-video" in command
 
 
 def test_build_audio_playback_command_uses_live_app_scripted_playback(tmp_path):
@@ -363,6 +373,30 @@ def test_start_runner_saves_actual_runner_pid_and_caffeinate_pid(tmp_path, monke
     assert state is not None
     assert state.pid == 4321
     assert state.requested_config["caffeinate_pid"] == 9876
+    assert state.requested_config["record_audio"] is True
+    assert state.requested_config["record_video"] is False
+
+
+def test_start_runner_can_enable_raw_video_recording(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    (config.official_app_repo / "src").mkdir()
+    calls: list[list[str]] = []
+
+    class FakeProc:
+        pid = 4321
+
+    monkeypatch.setattr(ops_core, "runner_status", lambda config: ops_core.ActionResult(action="runner.status", status="stopped"))
+    monkeypatch.setattr(ops_core, "_launch_background", lambda command, **kwargs: calls.append(command) or (FakeProc(), None))
+
+    result = ops_core.start_runner(config, authorized=True, run_id="official-live-video", record_video=True)
+
+    assert result.status == "ok"
+    assert "--record-video" in calls[0]
+    assert "--record-audio" in calls[0]
+    state = ops_core.load_runner_state(config)
+    assert state is not None
+    assert state.requested_config["record_video"] is True
+    assert state.requested_config["record_audio"] is True
 
 
 def test_runner_cli_start_requires_confirmation(tmp_path, monkeypatch):
