@@ -1,6 +1,6 @@
 # Hugging Face Speech-to-Speech Backend on m1max
 
-Date: 2026-06-15
+Date: 2026-06-15; runtime ownership updated 2026-07-01
 
 ## Purpose
 
@@ -24,6 +24,18 @@ are the same family.
 
 ## m1max Setup
 
+The backend runtime is managed from the product/controller repo, not by hand-editing the backend
+folder. From `/Users/leon/projects/reachy_mini_receptionist_deploy`:
+
+```bash
+scripts/m1max/setup_s2s_backend.sh
+```
+
+That creates or updates the runtime venv with Python 3.12+ (using uv when `python3.12` is not on the
+non-login shell `PATH`), installs `speech-to-speech==0.2.10`, verifies the `speech-to-speech` CLI and
+Parakeet STT import, and writes `runtime-info.json`. It refuses to update the venv while the backend
+port is listening unless explicitly overridden.
+
 Backend directory:
 
 ```text
@@ -42,19 +54,39 @@ Installed package:
 speech-to-speech==0.2.10
 ```
 
-Launcher synced from this repo:
+Launcher from this repo:
 
 ```text
 scripts/m1max/run_s2s_backend.sh
--> /Users/leon/projects/speech_to_speech_backend/run_s2s_backend.sh
 ```
 
-Current startup command:
+Current startup command from the deploy repo:
 
 ```bash
-cd /Users/leon/projects/speech_to_speech_backend
-S2S_HOST=100.127.86.67 S2S_PROVIDER=openrouter ./run_s2s_backend.sh
+cd /Users/leon/projects/reachy_mini_receptionist_deploy
+S2S_HOST=100.127.86.67 S2S_PROVIDER=openrouter scripts/m1max/run_s2s_backend.sh
 ```
+
+Direct OpenRouter model swap:
+
+```bash
+S2S_PROVIDER=openrouter \
+S2S_MODEL_NAME=openai/gpt-5.4-mini \
+scripts/m1max/run_s2s_backend.sh
+```
+
+Hermes / agentic wrapper experiment, assuming the wrapper exposes an OpenAI-compatible `/v1` endpoint:
+
+```bash
+S2S_RESPONSES_BASE_URL=http://127.0.0.1:8787/v1 \
+S2S_MODEL_NAME=wrapper-routed \
+S2S_RESPONSES_API_KEY=local-wrapper \
+scripts/m1max/run_s2s_backend.sh
+```
+
+The clinic receptionist context is not owned by this launcher. The live app loads
+`profiles/clinic_receptionist/instructions.txt`, sends it in realtime `session.update`, and records
+the instruction source/hash in run artifacts.
 
 Current running process:
 

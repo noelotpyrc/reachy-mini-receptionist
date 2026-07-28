@@ -1,6 +1,6 @@
 # Agentic Backend Research: Hermes / Context Memory
 
-Status: active next-feature research, updated 2026-06-23.
+Status: active next-feature research, updated 2026-07-01.
 
 This document supersedes the earlier LiveKit-first backend-replacement framing. The accepted live path
 is now:
@@ -57,6 +57,23 @@ Do not change these in the first pass:
 
 The wrapper must be swappable with the existing direct OpenRouter Responses call, so we can A/B latency
 and quality without changing the live robot runtime.
+
+## 2026-07-01 Context Wiring Status
+
+The first context/config pass is implemented in the product repo:
+
+- `official_runtime.live_app` loads `profiles/clinic_receptionist/instructions.txt` by default.
+- `S2SRealtimeHandler` sends those instructions in realtime `session.update.session.instructions`.
+- Run config and `hf.session.snapshot` artifacts record `instructions_source`, `instructions_sha256`,
+  and `instructions_chars`.
+- `scripts/m1max/run_s2s_backend.sh` supports direct OpenRouter model swaps with `S2S_PROVIDER=openrouter`
+  and `S2S_MODEL_NAME=...`.
+- The same launcher supports a Hermes/agentic wrapper if it exposes an OpenAI-compatible `/v1` endpoint:
+  set `S2S_RESPONSES_BASE_URL=http://127.0.0.1:<port>/v1`, optional `S2S_RESPONSES_API_KEY=...`, and
+  `S2S_MODEL_NAME=<wrapper-routed-model>`.
+
+This pass does not require a live robot test. The remaining work for this item is the text-only or
+preflight comparison that decides whether the wrapper quality gain is worth the latency.
 
 ## Why This Is The Right Boundary Now
 
@@ -223,13 +240,17 @@ Point the local S2S backend LLM slot at the wrapper instead of OpenRouter.
 Expected shape:
 
 ```text
-S2S_PROVIDER=openrouter-like
-responses_api_base_url=http://127.0.0.1:<port>/v1
-model_name=<wrapper-routed-model>
+S2S_RESPONSES_BASE_URL=http://127.0.0.1:<port>/v1
+S2S_MODEL_NAME=<wrapper-routed-model>
+S2S_RESPONSES_API_KEY=<optional-wrapper-key>
 ```
 
-Exact flags depend on the installed `speech-to-speech` backend, so verify against
-`scripts/m1max/run_s2s_backend.sh` and the backend help before changing live ops.
+Direct OpenRouter fallback remains:
+
+```text
+S2S_PROVIDER=openrouter
+S2S_MODEL_NAME=<openrouter-model-name>
+```
 
 Done when:
 
