@@ -40,6 +40,22 @@ across runs; only restart it to change model/voice/config or when wedged.
 - Status: port live, warm, model + voice loaded, remote-LLM/OpenRouter reachable.
 - Safety: **safe** (no robot).
 
+**Runtime ownership decision (2026-06-25):**
+- Keep `/Users/leon/projects/speech_to_speech_backend` as the canonical backend runtime folder.
+  The name stays generic because the backend can serve apps beyond Reachy.
+- Treat that folder as a managed external runtime: `.venv`, backend logs, and service runtime
+  state only. It is **not** the product/controller repo and should not receive product code edits.
+- The product/controller repo owns backend lifecycle and launch flags:
+  - local dev: `/Users/noel/projects/reachy_mini_receptionist_clean`
+  - m1max deploy: `/Users/leon/projects/reachy_mini_receptionist_deploy`
+  - setup/update: `scripts/m1max/setup_s2s_backend.sh`
+  - launcher: `scripts/m1max/run_s2s_backend.sh`
+- The backend package is currently Hugging Face `speech-to-speech==0.2.10`, exposed locally as
+  `ws://127.0.0.1:8765/v1/realtime`.
+- `setup_s2s_backend.sh` creates or refreshes the backend runtime venv with Python 3.12+ (using uv
+  when needed), verifies the backend CLI and Parakeet STT import, and does not delete logs/runtime
+  artifacts.
+
 ### Robot OPS — the robot via its official `:8000` daemon — *persistent*
 Mostly **proxies the official daemon** — don't reinvent robot status; aggregate what `:8000`
 already exposes (`/api/daemon/*`, `/api/state/full`, media, motors).
@@ -139,8 +155,9 @@ Examples:
   live_ops.sh` does this imperatively; the library formalizes it.
 - **m1max defaults, env-overridable.** Default paths target the current m1max deployment
   (`/Users/leon/projects/...` and the known-good preflight WAV). Off-m1max use should set
-  `REACHY_REPO`, `OFFICIAL_APP_REPO`, `OFFICIAL_RUNTIME_PYTHON`, and `PREFLIGHT_WAV`; missing
-  launch paths must fail clearly before starting processes.
+  `REACHY_REPO`, `OFFICIAL_RUNTIME_PYTHON`, and `PREFLIGHT_WAV`; missing launch paths must fail
+  clearly before starting processes. The normal accepted runtime uses the native `s2s-local`
+  handler and must not require an official app source checkout.
 
 ## Operator workflow surface (today's CLI → tomorrow's buttons)
 
@@ -160,7 +177,7 @@ Examples:
 | `sleep-robot` / `wake-robot` | Robot OPS primitives |
 | `backend {start,stop,restart,status}` | Backend OPS primitives |
 | `latest-run` | prints latest run pointer for #6 |
-| `review <run_id>` | launches #6 / Rerun (read-only) |
+| `review <run_id>` | launches #6 renderer (read-only) — **canonical exposure for review; not yet implemented** (a #6 deliverable; `ops_cli` lacks it today). Calls the #6 renderer *library*; `rerun-sdk` loads lazily only on the Rerun render path |
 
 ## Relationship to #6 (diagnosis)
 

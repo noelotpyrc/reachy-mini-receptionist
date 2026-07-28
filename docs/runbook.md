@@ -1,49 +1,177 @@
-# Runbook — bring up the reception robot
+# Runbook - bring up the reception robot
 
-## Current Official-Runtime Live Test Flow
+## Current Live Path
 
-Use this path for the refactored official-runtime live tests. Do not start the live runner directly
-for normal physical tests; use the ops wrapper so stale processes, media ownership, wake/sleep, and
-teardown are handled by one owner.
+Use the accepted official-runtime path for normal live tests:
+
+```text
+m1max deploy repo
+  -> OPS CLI
+  -> local Hugging Face speech-to-speech backend on :8765
+  -> official_runtime.live_app --backend s2s-local
+  -> Reachy Mini robot runtime
+```
+
+Do not start `official_runtime.live_app` directly for physical tests. Use OPS so stale runners,
+backend state, media ownership, wake/sleep, and teardown are handled by one owner.
+
+## Canonical Repos And Runtime Folders
+
+Product/controller repo:
+
+- Local dev: `/Users/noel/projects/reachy_mini_receptionist_clean`
+- m1max deploy: `/Users/leon/projects/reachy_mini_receptionist_deploy`
+
+S2S backend runtime folder:
+
+- m1max runtime: `/Users/leon/projects/speech_to_speech_backend`
+- Contains the `speech-to-speech==0.2.10` venv, backend logs, and runtime state.
+- This is a managed external runtime folder, not product source code and not a place for product
+  edits.
+
+The product/controller repo owns backend lifecycle, launch flags, and documentation through
+`scripts/m1max/setup_s2s_backend.sh`, `scripts/m1max/run_s2s_backend.sh`, and the OPS CLI. The
+backend folder owns only the installed service runtime.
+
+## Backend LLM Context And Model Knobs
+
+The default clinic receptionist context is `profiles/clinic_receptionist/instructions.txt`. The live
+app sends that text in the realtime `session.update` instructions field and records
+`instructions_source`, `instructions_sha256`, and `instructions_chars` in run artifacts.
+
+For direct OpenRouter model swaps, keep the backend launcher on OpenRouter and set the model:
+
+```bash
+S2S_PROVIDER=openrouter S2S_MODEL_NAME=openai/gpt-5.4-mini scripts/m1max/run_s2s_backend.sh
+```
+
+For a Hermes / agentic wrapper experiment, point the S2S Responses slot at the wrapper's
+OpenAI-compatible `/v1` endpoint:
+
+```bash
+S2S_RESPONSES_BASE_URL=http://127.0.0.1:8787/v1 \
+S2S_MODEL_NAME=wrapper-routed \
+S2S_RESPONSES_API_KEY=local-wrapper \
+scripts/m1max/run_s2s_backend.sh
+```
+
+## Start A Live Test
 
 Run from m1max:
 
 ```bash
-cd ~/projects/reachy_mini
+ssh leon@100.127.86.67
+cd ~/projects/reachy_mini_receptionist_deploy
+
+# Safe status: backend + runner + latest-run pointer.
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli status
+
+# Optional fuller read-only status, including robot daemon state.
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli status --include-robot
+```
+
+Run preflight before a normal live session when time allows:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli \
+  --confirm-physical preflight
+```
+
+Start the live session:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli \
+  --confirm-physical start-session --record-audio --capture-vision
+```
+
+Add `--record-video` only when raw MKV video is needed. It increases artifact size.
+
+Stop and clean up:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli \
+  --confirm-physical stop-session
+```
+
+Expected post-run state:
+
+- Live runner stopped.
+- Robot slept.
+- Motors disabled.
+- Backend left warm by default.
+
+## Compatibility Wrapper
+
+`scripts/m1max/live_ops.sh` still exists as a compatibility wrapper, but it is no longer the source
+of truth. Prefer the Python OPS CLI above for new work.
+
+The equivalent wrapper commands are:
+
+```bash
 scripts/m1max/live_ops.sh status
 scripts/m1max/live_ops.sh preflight
 LIVE_DURATION=900 scripts/m1max/live_ops.sh clean-run
+scripts/m1max/live_ops.sh clean-stop
 ```
 
-Start `clean-run` only after the human preflight check is acceptable. The preflight sequence exercises
-the robot speaker path with a known-good WAV, then runs scripted goodbye -> greet through the same
-policy/backend/speaker path used by live reception.
+## Backend Lifecycle
 
-While the test runs, drop time-stamped feedback markers from a second pane so your
-subjective reactions become queryable timestamps instead of memory. Press Enter to stamp
-"now" (type a few words first for an inline note); annotate the rest after Ctrl-D:
+Backend lifecycle is intentionally separate from robot lifecycle. Keep the S2S backend warm across
+robot tests unless:
+
+- model, voice, provider, or backend config changes;
+- backend state appears wedged;
+- a cold-start timing measurement is needed.
+
+Create or update the managed backend runtime venv from this repo:
 
 ```bash
-.venv/bin/python scripts/m1max/mark.py        # locks onto the open run automatically
+scripts/m1max/setup_s2s_backend.sh
 ```
 
-This writes `artifacts/markers-<run_id>.jsonl`, aligned by wall-clock `ts` to
-events/audio/video for later review.
+The setup script creates/updates `/Users/leon/projects/speech_to_speech_backend/.venv` with Python
+3.12+, installs the pinned `speech-to-speech==0.2.10`, verifies the backend CLI and Parakeet STT
+import, and writes `runtime-info.json`. It can use uv for venv creation when `python3.12` is not on
+the non-login shell `PATH`. It refuses to update the venv while the backend port is listening unless
+`--skip-running-check` is passed. It does not delete backend logs, model caches, or run artifacts.
 
-Expected lifecycle:
+Useful commands:
 
-1. `clean-run` stops stale live-runner processes only.
-2. It releases media, sends `goto_sleep`, and disables motors.
-3. It starts the m1max speech-to-speech backend only if the websocket port is not already listening.
-4. It acquires robot media, enables motors, and sends `wake_up`.
-5. It starts exactly one official-runtime live runner.
-6. On stop/interruption, it terminates the live runner, releases media, sleeps the robot, disables
-   motors, and leaves the backend warm by default.
+```bash
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli backend status
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli backend start
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli backend restart
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli backend stop
+```
 
-Backend lifecycle is intentionally separate from robot lifecycle. Keep the backend running across
-robot tests unless you are changing model/voice/config, suspect backend state is wedged, or want a
-full cold-start timing measurement. Use `scripts/m1max/live_ops.sh stop-backend` to stop only the
-backend, or `scripts/m1max/live_ops.sh stop-all` for a full process shutdown plus robot sleep.
+Current backend contract:
+
+- Backend package: Hugging Face `speech-to-speech==0.2.10`
+- Runtime folder: `/Users/leon/projects/speech_to_speech_backend`
+- WebSocket: `ws://127.0.0.1:8765/v1/realtime`
+- Live handler: native `s2s-local`, not the official app's handler
+- STT: `parakeet-tdt`
+- LLM slot: `responses-api` via remote provider path, currently OpenRouter by default
+- TTS: `qwen3`, voice `Sohee`
+
+The accepted live app talks to this backend directly. It should not require
+`/Users/leon/projects/reachy_mini_conversation_app`.
+
+## Mark Live Feedback
+
+While the test runs, drop time-stamped feedback markers from a second pane so subjective reactions
+become queryable timestamps instead of memory. Press Enter to stamp "now"; type a few words first
+for an inline note. Annotate the rest after Ctrl-D.
+
+```bash
+cd ~/projects/reachy_mini_receptionist_deploy
+.venv/bin/python scripts/m1max/mark.py
+```
+
+This writes `artifacts/markers-<run_id>.jsonl`, aligned by wall-clock `ts` to events/audio/video
+for later review.
+
+## Readiness Milestones
 
 Milestone logging is intentionally split. No single line means "the robot is ready for everything."
 Watch for separate lines like:
@@ -56,6 +184,7 @@ official-runtime milestone <run-id>: robot_video_warmup_ok
 official-runtime milestone <run-id>: gesture_detector_init_start gestures=['Open_Palm'] threshold=0.5
 official-runtime milestone <run-id>: gesture_detector_ready gestures=['Open_Palm'] threshold=0.5 load_ms=...
 official-runtime milestone <run-id>: backend_handler_started
+official-runtime milestone <run-id>: software_pipeline_initialized
 official-runtime milestone <run-id>: input_loop_starting
 official-runtime milestone <run-id>: first_mic_frame_captured forwarded=False
 official-runtime milestone <run-id>: audio_gate_opened audio_gate_open=True reason='wave'
@@ -63,90 +192,57 @@ official-runtime milestone <run-id>: first_mic_frame_forwarded_to_backend
 official-runtime milestone <run-id>: first_backend_audio_pushed_to_robot
 ```
 
-With `--audio-gate`, `first_mic_frame_captured` does not mean the backend is receiving speech.
+With audio gate enabled, `first_mic_frame_captured` does not mean the backend is receiving speech.
 Backend forwarding begins only after the wave policy opens the audio gate.
 
-With `--gestures`, `robot_video_warmup_ok` only proves camera frames are flowing. Wave readiness is
-the separate `gesture_detector_ready` milestone. Gesture diagnostics are recorded in
+With gestures enabled, `robot_video_warmup_ok` only proves camera frames are flowing. Wave readiness
+is the separate `gesture_detector_ready` milestone. Gesture diagnostics are recorded in
 `events-<run-id>-NN.jsonl` as `vision.gesture_candidate`, `vision.gesture_suppressed`, and
 `vision.gesture_emitted`; reception ingress is recorded as `policy.wave_received`.
 
-To stop manually during a Codex-run live test, tell Codex `stop`; it should interrupt the wrapper and
-let the wrapper perform teardown. If stopping from a shell, press `Ctrl-C` once and wait for the final
-`live_ops.sh status` snapshot.
+## Artifacts
 
-## Legacy Reception Daemon Flow
-
-How to start the daemon and get reactions (greet / goodbye / wave) working, on
-**m1max** (the brain computer). Two setup steps are easy to miss — see Gotchas.
-
-All commands run on m1max: `ssh leon@100.127.86.67` (Tailscale). Robot daemon at
-`192.168.1.165` (`REACHY_HOST`), control socket at `/tmp/reachy_mini_reception.sock`.
-
-## 1. Start the daemon (must be from the `claude-test` tmux session)
-
-The daemon shells out to `claude -p` for the brain, which needs keychain auth — that
-only works from the GUI-rooted tmux session. **Don't launch it from a plain SSH shell.**
+Latest-run pointer:
 
 ```bash
-# attach the session:  tmux attach -t claude-test   (or send-keys into it)
-cd ~/projects/reachy_mini && export REACHY_HOST=192.168.1.165 && \
-  nohup caffeinate -dimsu .venv/bin/python -m reachy_mini_brain.reception serve \
-    --perception --gestures --brain --brain-model haiku \
-    --vision-interval 0.2 --save-turns > /tmp/reception_brain.log 2>&1 &
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli latest-run
 ```
 
-`caffeinate` keeps the Mac awake; `nohup` survives the SSH session closing. The daemon
-prints a `run_id` and writes `artifacts/runs/run-<run_id>.json`.
+Main artifact roots on m1max:
 
-## 2. Turn on the workers (serve comes up IDLE)
+- Run manifests: `artifacts/official-runtime-live/runs/run-<run_id>.json`
+- Runtime log: `artifacts/logs/<run_id>.log`
+- Audio WAVs/sidecars: `artifacts/official-runtime-live/audio/`
+- Event/realtime/policy/capture JSONL: under `artifacts/official-runtime-live/`
+- Optional raw video MKV: `artifacts/official-runtime-live/video/`
+- Markers: `artifacts/markers-<run_id>.jsonl`
 
-`serve` starts with **vision=off, voice=off** and recording off. Toggle what you need:
+## Manual Stop Rules
+
+If Codex started the run, tell Codex `stop`; Codex should run `stop-session` and report artifact
+pointers.
+
+If stopping from a shell:
 
 ```bash
-reception() { .venv/bin/python -m reachy_mini_brain.reception "$@"; }
-reception vision on          # perception + gestures (required for any detection)
-reception record on          # raw video  -> artifacts/video-<run_id>-NN.mkv   (needs vision on)
-reception capture on         # per-frame tracks/events -> capture-<run_id>-NN.jsonl
-reception audio-record on    # raw Cat-1 mic audio -> audio-<run_id>-NN.wav + .jsonl   (optional)
-# voice turns on automatically when a wave starts a conversation — leave it off
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli \
+  --confirm-physical stop-session
 ```
 
-## 3. Start the alert engine (SEPARATE process — this is what reacts)
-
-The daemon only *detects* and logs events. A second process turns events into robot
-reactions. **Without it, the robot sees you but never greets/waves back.**
+Use backend stop only when intentionally shutting down the warm backend:
 
 ```bash
-nohup .venv/bin/python -m reachy_mini_brain.alert_engine --cooldown 5 \
-  > /tmp/alert_engine.log 2>&1 &
+PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli backend stop
 ```
 
-Event → action: `approach → greet`, `depart → goodbye`, `wave → start a conversation`
-(voice on + brain; be ready to talk). Restrict with `--types approach,depart` to skip the
-live-conversation path.
+## Legacy Reception Daemon
 
-## 4. Verify
+The old `reachy_mini_brain.reception` daemon + `alert_engine` flow is legacy fallback/reference
+only. It should not be used for normal live tests unless explicitly comparing against legacy
+behavior.
 
-```bash
-reception status                              # run_id, vision/voice, session connected
-tail -f /tmp/alert_engine.log                 # should print reactions as you approach/wave
-grep <run_id> artifacts/events.jsonl | tail   # approach/depart/wave events being written
-```
+Historical details live in:
 
-## 5. Teardown
-
-```bash
-reception shutdown          # finalizes record/capture/audio, removes the socket
-pkill -f alert_engine       # stop the alert engine separately
-```
-
-## Gotchas (why this runbook exists)
-
-1. **Launch the daemon from the `claude-test` tmux session**, not a plain SSH shell —
-   `claude -p` needs keychain auth that only the GUI-rooted session has.
-2. **The alert engine is a separate process.** `serve` + `vision on` makes the robot
-   *detect* approaches/waves (events land in `events.jsonl`), but nothing reacts until
-   `alert_engine` is running. Both of us missed this on the first try.
-3. **One session only** — the daemon and the official Control app can't both hold the
-   robot. Stop one before the other. If `serve` can't connect, check nothing else owns it.
+- `docs/archive/legacy/plan-reception.md`
+- `docs/archive/legacy/plan.md`
+- `docs/archive/legacy/progress.md`

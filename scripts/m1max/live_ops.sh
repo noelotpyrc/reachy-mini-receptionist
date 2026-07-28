@@ -15,7 +15,10 @@ PREFLIGHT_WAV="${PREFLIGHT_WAV:-$REACHY_REPO/artifacts/official-runtime-live/aud
 POLICY_PREFLIGHT_DURATION="${POLICY_PREFLIGHT_DURATION:-90}"
 POLICY_PREFLIGHT_TIMEOUT="${POLICY_PREFLIGHT_TIMEOUT:-30}"
 POLICY_PREFLIGHT_GAP="${POLICY_PREFLIGHT_GAP:-3}"
+POLICY_PREFLIGHT_GREETING="${POLICY_PREFLIGHT_GREETING:-}"
 PREFLIGHT_BETWEEN_PROBES_GAP="${PREFLIGHT_BETWEEN_PROBES_GAP:-3}"
+LIVE_STOP_GRACE="${LIVE_STOP_GRACE:-30}"
+BACKEND_STOP_GRACE="${BACKEND_STOP_GRACE:-2}"
 
 LIVE_PATTERN="reachy_mini_brain.official_runtime.live_app"
 BACKEND_PATTERN="speech-to-speech --mode realtime"
@@ -38,6 +41,10 @@ Commands:
                Snapshot robot state, play the known-good WAV through live-app audio sink, then clean up.
   preflight-policy-flow
                Programmatically trigger goodbye then greet through the live policy/backend/speaker path.
+  preflight-policy-greet
+               Same path, greet only (one "welcome" line).
+  preflight-policy-goodbye
+               Same path, goodbye only (one farewell line).
   clean-run    Full manual-stop live cycle: clean-stop -> backend -> wake -> live -> cleanup.
 
 Environment:
@@ -52,7 +59,10 @@ Environment:
   POLICY_PREFLIGHT_DURATION=90
   POLICY_PREFLIGHT_TIMEOUT=30
   POLICY_PREFLIGHT_GAP=3           # gap between scripted goodbye and greet after goodbye audio finishes
+  POLICY_PREFLIGHT_GREETING=""     # override greeting text; empty uses the reception policy default
   PREFLIGHT_BETWEEN_PROBES_GAP=3   # gap between playback probe and policy-flow probe
+  LIVE_STOP_GRACE=30                # seconds to let live runner close recordings before SIGKILL
+  BACKEND_STOP_GRACE=2              # seconds to let S2S backend exit before SIGKILL
 EOF
 }
 
@@ -78,14 +88,15 @@ backend_pids() {
 
 kill_pids() {
   local label="$1"
-  shift
+  local grace="$2"
+  shift 2
   local pids=("$@")
   if [[ "${#pids[@]}" -eq 0 ]]; then
     return 0
   fi
   log "Stopping ${label}: ${pids[*]}"
   kill -TERM "${pids[@]}" 2>/dev/null || true
-  sleep 2
+  sleep "$grace"
   local alive=()
   local pid
   for pid in "${pids[@]}"; do
@@ -107,7 +118,7 @@ stop_live() {
     [[ -n "$pid" ]] && pids+=("$pid")
   done < <(live_pids)
   if [[ "${#pids[@]}" -gt 0 ]]; then
-    kill_pids "live runner" "${pids[@]}"
+    kill_pids "live runner" "$LIVE_STOP_GRACE" "${pids[@]}"
   fi
 }
 
@@ -119,7 +130,7 @@ stop_backend() {
     [[ -n "$pid" ]] && pids+=("$pid")
   done < <(backend_pids)
   if [[ "${#pids[@]}" -gt 0 ]]; then
-    kill_pids "S2S backend" "${pids[@]}"
+    kill_pids "S2S backend" "$BACKEND_STOP_GRACE" "${pids[@]}"
   fi
 }
 
@@ -357,7 +368,8 @@ EOF
 }
 
 preflight_policy_flow() {
-  log "Policy-flow preflight: scripted goodbye -> greet through live policy/backend/speaker path"
+  local flow="${1:-goodbye-greet}"
+  log "Policy-flow preflight: scripted ${flow} through live policy/backend/speaker path"
   log "Stopping stale live runner and putting robot in a known idle state"
   clean_stop
   start_backend_if_needed
@@ -367,7 +379,13 @@ preflight_policy_flow() {
   status
 
   local run_id
-  run_id="official-policy-preflight-$(date +%Y%m%d-%H%M%S)"
+  run_id="official-policy-preflight-${flow}-$(date +%Y%m%d-%H%M%S)"
+  local -a greeting_args
+  greeting_args=()
+  if [[ -n "$POLICY_PREFLIGHT_GREETING" ]]; then
+    log "Overriding greeting text: $POLICY_PREFLIGHT_GREETING"
+    greeting_args+=(--scripted-policy-greeting "$POLICY_PREFLIGHT_GREETING")
+  fi
   log "Starting scripted policy flow run: $run_id"
   trap cleanup_after_run EXIT INT TERM
   (
@@ -379,7 +397,8 @@ preflight_policy_flow() {
       --robot-host "$ROBOT_HOST" \
       --no-perception --no-gestures --no-audio-gate --ready-cue --no-warmup-video \
       --no-conversation-cues --no-capture-vision \
-      --scripted-policy-flow goodbye-greet \
+      --scripted-policy-flow "$flow" \
+      ${greeting_args[@]+"${greeting_args[@]}"} \
       --scripted-policy-gap-s "$POLICY_PREFLIGHT_GAP" \
       --scripted-policy-timeout-s "$POLICY_PREFLIGHT_TIMEOUT"
   ) &
@@ -399,10 +418,18 @@ preflight_policy_flow() {
     stop_backend
   fi
 
+  local expected
+  case "$flow" in
+    greet) expected="one welcome." ;;
+    goodbye) expected="one goodbye." ;;
+    *) expected="one goodbye, then one welcome." ;;
+  esac
+
   cat <<EOF
 [live-ops] POLICY PREFLIGHT COMPLETE:
 [live-ops] - Run id: $run_id
-[live-ops] - Expected physical output: one goodbye, then one welcome.
+[live-ops] - Flow: $flow
+[live-ops] - Expected physical output: $expected
 [live-ops] - Check events/audio artifacts under artifacts/official-runtime-live for response latency and WAV output.
 EOF
   return "$run_status"
@@ -450,7 +477,13 @@ case "${1:-}" in
     preflight_audio
     ;;
   preflight-policy-flow)
-    preflight_policy_flow
+    preflight_policy_flow goodbye-greet
+    ;;
+  preflight-policy-greet)
+    preflight_policy_flow greet
+    ;;
+  preflight-policy-goodbye)
+    preflight_policy_flow goodbye
     ;;
   clean-run)
     clean_run

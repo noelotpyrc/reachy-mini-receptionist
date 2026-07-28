@@ -84,7 +84,10 @@ livekit-agent = "reachy_mini_brain.official_runtime.livekit_agent:main"
 reception-vision-replay = "reachy_mini_brain.official_runtime.replay_vision:cli"
 official-runtime-live = "reachy_mini_brain.official_runtime.live_app:cli"
 reception-ops = "reachy_mini_brain.official_runtime.ops_cli:main"
+reception-audio-review = "reachy_mini_brain.official_runtime.audio_review:cli"
 official-runtime-playback-probe = "reachy_mini_brain.official_runtime.playback_probe:cli"
+prepare-s2s-replay-fixture = "reachy_mini_brain.official_runtime.s2s_replay_fixture:cli"
+run-s2s-replay = "reachy_mini_brain.official_runtime.s2s_replay:cli"
 
 [build-system]
 requires = ["hatchling"]

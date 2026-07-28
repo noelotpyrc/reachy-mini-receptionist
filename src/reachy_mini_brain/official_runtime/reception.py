@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -16,7 +17,7 @@ class ReceptionPolicySettings:
     """Configuration for deterministic clinic reception UX."""
 
     cooldown_s: float = 15.0
-    greeting: str = "Welcome!"
+    greeting: str = "Welcome to the clinic, how can I help?"
     farewell: str = "Goodbye! Have a nice day!"
     conversation_opener: str = "Hi! How can I help?"
     conversation_idle_timeout_s: float = 45.0
@@ -24,6 +25,7 @@ class ReceptionPolicySettings:
     audio_gate_until_wave: bool = True
     speech_capability: str = "speak_text"
     antenna_capability: str = "antenna_pulse"
+    conversation_session_capability: str = "begin_conversation_session"
     goodbye_tokens: tuple[str, ...] = ("goodbye", "bye", "that's all", "that is all")
     clock: Callable[[], float] = field(default=time.monotonic, repr=False)
 
@@ -39,6 +41,7 @@ class ReceptionPolicy:
         self._conversation_started_at: float | None = None
         self._last_conversation_activity: float | None = None
         self._last_action_ts: dict[str, float] = {}
+        self._conversation_open_lock = asyncio.Lock()
 
     @property
     def conversation_active(self) -> bool:
@@ -116,28 +119,48 @@ class ReceptionPolicy:
         context: RuntimeContext,
         capabilities: CapabilityRegistry,
     ) -> None:
-        cooldown_remaining = self._cooldown_remaining("wave")
-        self._policy_event(
-            context,
-            "wave_received",
-            event=event.data,
-            conversation_active=self._conversation_active,
-            cooldown_ready=cooldown_remaining <= 0,
-            cooldown_remaining_s=round(cooldown_remaining, 3),
-        )
-        if self._conversation_active:
-            self._policy_event(context, "conversation_already_active", event=event.data)
+        async with self._conversation_open_lock:
+            cooldown_remaining = self._cooldown_remaining("wave")
+            self._policy_event(
+                context,
+                "wave_received",
+                event=event.data,
+                conversation_active=self._conversation_active,
+                cooldown_ready=cooldown_remaining <= 0,
+                cooldown_remaining_s=round(cooldown_remaining, 3),
+            )
+            if self._conversation_active:
+                self._policy_event(context, "conversation_already_active", event=event.data)
+                return
+            if cooldown_remaining > 0:
+                self._policy_event(context, "cooldown_skip", event_kind=event.kind, action="conversation_open")
+                return
+
+            await self._begin_conversation_session(context, capabilities)
+            now = self.settings.clock()
+            self._last_action_ts["wave"] = now
+            self._conversation_active = True
+            self._conversation_started_at = now
+            self._last_conversation_activity = now
+            self._policy_event(
+                context,
+                "conversation_opened",
+                event=event.data,
+                audio_gate_open=self.should_forward_audio(),
+            )
+            await self._pulse(context, capabilities)
+            await self._speak(context, capabilities, self.settings.conversation_opener, reason="wave", event=event)
+
+    async def _begin_conversation_session(
+        self,
+        context: RuntimeContext,
+        capabilities: CapabilityRegistry,
+    ) -> None:
+        name = self.settings.conversation_session_capability
+        if not name or name not in capabilities.names():
             return
-        if not self._cooldown_ready("wave"):
-            self._policy_event(context, "cooldown_skip", event_kind=event.kind, action="conversation_open")
-            return
-        now = self.settings.clock()
-        self._conversation_active = True
-        self._conversation_started_at = now
-        self._last_conversation_activity = now
-        self._policy_event(context, "conversation_opened", event=event.data, audio_gate_open=self.should_forward_audio())
-        await self._pulse(context, capabilities)
-        await self._speak(context, capabilities, self.settings.conversation_opener, reason="wave", event=event)
+        await capabilities.invoke(name, context)
+        self._policy_event(context, "conversation_session_ready", capability=name)
 
     def _handle_user_transcript(self, transcript: str, context: RuntimeContext) -> None:
         if not self._conversation_active:

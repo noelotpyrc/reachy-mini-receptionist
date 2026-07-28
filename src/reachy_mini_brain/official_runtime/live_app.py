@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import math
 import os
 import signal
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import click
 
@@ -35,6 +38,28 @@ load_project_env()
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "artifacts" / "official-runtime-live"
 DEFAULT_PROFILE_INSTRUCTIONS = PROJECT_ROOT / "profiles" / "clinic_receptionist" / "instructions.txt"
 DEFAULT_POLICY_AUDIO_CACHE_DIR = PROJECT_ROOT / "artifacts" / "policy-audio-cache" / "sohee"
+
+
+def _load_backend_instructions(
+    *,
+    instructions_file: Path,
+    instructions: str | None,
+) -> tuple[str, dict[str, Any]]:
+    if instructions is not None:
+        text = instructions
+        source = "inline"
+    else:
+        text = instructions_file.read_text(encoding="utf-8")
+        source = str(instructions_file)
+    return text, _instruction_provenance(text, source=source)
+
+
+def _instruction_provenance(instructions: str, *, source: str) -> dict[str, Any]:
+    return {
+        "instructions_source": source,
+        "instructions_sha256": hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
+        "instructions_chars": len(instructions),
+    }
 
 
 @click.command()
@@ -175,7 +200,10 @@ async def _run_live(
     scripted_playback_wav: Path | None,
     scripted_playback_post_roll_s: float,
 ) -> None:
-    backend_instructions = instructions if instructions is not None else instructions_file.read_text(encoding="utf-8")
+    backend_instructions, instructions_provenance = _load_backend_instructions(
+        instructions_file=instructions_file,
+        instructions=instructions,
+    )
     recorder = ArtifactRecorder(
         artifact_root,
         run_id=run_id,
@@ -199,6 +227,7 @@ async def _run_live(
             "hf_voice": hf_voice,
             "hf_connection_mode": hf_connection_mode,
             "hf_realtime_ws_url_set": bool(hf_realtime_ws_url),
+            **instructions_provenance,
             "official_app_src": str(official_app_src),
             "policy_audio_cache_dir": str(policy_audio_cache_dir),
             "scripted_policy_flow": scripted_policy_flow,
@@ -213,8 +242,9 @@ async def _run_live(
         capture_vision=capture_vision,
     )
     stop_event = asyncio.Event()
+    stop_callbacks: list[Callable[[], None]] = []
     loop = asyncio.get_running_loop()
-    _install_signal_handlers(loop, stop_event)
+    _install_signal_handlers(loop, stop_event, stop_callbacks)
 
     robot_session = ReachyRobotSession(
         host=robot_host,
@@ -311,9 +341,11 @@ async def _run_live(
             )
         finally:
             stop_event.set()
-            await audio_sink.close()
-            await asyncio.to_thread(robot_session.stop)
-            recorder.close()
+            try:
+                await audio_sink.close()
+                await asyncio.to_thread(robot_session.stop)
+            finally:
+                recorder.close()
         click.echo(f"official runtime live artifacts: {recorder.manifest_path}")
         return
 
@@ -321,6 +353,8 @@ async def _run_live(
         backend=backend,
         event_sink=event_sink,
         instructions=backend_instructions,
+        instructions_source=instructions_provenance["instructions_source"],
+        instructions_sha256=instructions_provenance["instructions_sha256"],
         hf_voice=hf_voice,
         hf_connection_mode=hf_connection_mode,
         hf_realtime_ws_url=hf_realtime_ws_url,
@@ -337,6 +371,7 @@ async def _run_live(
         reachy_mini=mini,
     )
     handler_holder["handler"] = handler
+    _register_handler_conversation_session(capabilities, handler)
     ready_cue_task: asyncio.Task[None] | None = None
     scripted_flow_task: asyncio.Task[None] | None = None
 
@@ -370,6 +405,7 @@ async def _run_live(
         emit_timeout=0.1,
         drain_idle_polls=200,
     )
+    stop_callbacks.append(runtime.stop)
     vision_task: asyncio.Task[None] | None = None
     vision_ready = asyncio.Event()
 
@@ -410,6 +446,7 @@ async def _run_live(
             await scripted_flow_task
     finally:
         stop_event.set()
+        runtime.stop()
         if scripted_flow_task is not None and not scripted_flow_task.done():
             scripted_flow_task.cancel()
             try:
@@ -438,8 +475,10 @@ async def _run_live(
                 pass
         await policy_engine.stop()
         await policy_sink.drain()
-        await asyncio.to_thread(robot_session.stop)
-        recorder.close()
+        try:
+            await asyncio.to_thread(robot_session.stop)
+        finally:
+            recorder.close()
 
     click.echo(f"official runtime live artifacts: {recorder.manifest_path}")
 
@@ -447,6 +486,21 @@ async def _run_live(
 def _record_milestone(recorder: ArtifactRecorder, run_id: str, name: str, **data: Any) -> None:
     recorder.realtime("runtime.milestone", milestone=name, **data)
     click.echo(_format_milestone(run_id, name, data), err=True)
+
+
+def _register_handler_conversation_session(
+    capabilities: CapabilityRegistry,
+    handler: Any,
+) -> bool:
+    begin_conversation_session = getattr(handler, "begin_conversation_session", None)
+    if not callable(begin_conversation_session):
+        return False
+
+    async def begin_handler_conversation_session(context: RuntimeContext) -> Any:
+        return await begin_conversation_session()
+
+    capabilities.register("begin_conversation_session", begin_handler_conversation_session)
+    return True
 
 
 def _format_milestone(run_id: str, name: str, data: dict[str, Any]) -> str:
@@ -658,12 +712,16 @@ async def _run_scripted_policy_flow(
         for index, (label, event) in enumerate(steps, start=1):
             marker = event_waiter.marker()
             _record_milestone(recorder, run_id, "scripted_policy_step_started", step=label, index=index)
-            await policy_engine.handle_event(event)
-            audio_event = await event_waiter.wait_for(
-                lambda runtime_event: runtime_event.kind == "assistant.audio.done",
-                after=marker,
-                timeout_s=timeout_s,
-            )
+            sway = asyncio.create_task(_sway_head(), name="scripted-policy-head-sway")
+            try:
+                await policy_engine.handle_event(event)
+                audio_event = await event_waiter.wait_for(
+                    lambda runtime_event: runtime_event.kind == "assistant.audio.done",
+                    after=marker,
+                    timeout_s=timeout_s,
+                )
+            finally:
+                await _stop_head_sway(sway)
             _record_milestone(
                 recorder,
                 run_id,
@@ -802,6 +860,50 @@ def _set_antennas(antennas: tuple[float, float]) -> None:
     robot.set_target(antennas=antennas)
 
 
+def _set_head(pose: tuple[float, float, float]) -> None:
+    from reachy_mini_brain import robot
+
+    pitch, roll, yaw = pose
+    robot.set_target(pitch=pitch, roll=roll, yaw=yaw)
+
+
+HEAD_SWAY_YAW_DEG = 20.0
+HEAD_SWAY_PERIOD_S = 2.0
+HEAD_SWAY_CYCLES = 2
+
+
+async def _sway_head(
+    *,
+    update_interval_s: float = 0.1,
+    ramp_s: float = 0.4,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Turn the head left/right during scripted policy preflight speech."""
+
+    duration_s = HEAD_SWAY_CYCLES * HEAD_SWAY_PERIOD_S
+    started = clock()
+    while True:
+        elapsed = clock() - started
+        if elapsed >= duration_s:
+            break
+        envelope = min(1.0, elapsed / ramp_s) if ramp_s > 0 else 1.0
+        yaw = HEAD_SWAY_YAW_DEG * math.sin(2.0 * math.pi * elapsed / HEAD_SWAY_PERIOD_S) * envelope
+        await asyncio.to_thread(_set_head, (0.0, 0.0, yaw))
+        await asyncio.sleep(update_interval_s)
+    await asyncio.to_thread(_set_head, (0.0, 0.0, 0.0))
+
+
+async def _stop_head_sway(task: asyncio.Task[None]) -> None:
+    """Let scripted preflight sway finish, then return the head to neutral."""
+
+    timeout_s = HEAD_SWAY_CYCLES * HEAD_SWAY_PERIOD_S + 1.0
+    try:
+        await asyncio.wait_for(task, timeout=timeout_s)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+    await asyncio.to_thread(_set_head, (0.0, 0.0, 0.0))
+
+
 async def _play_cached_policy_speech(
     *,
     cache: PolicyAudioCache,
@@ -922,6 +1024,8 @@ def _build_handler(
     backend: str,
     event_sink: EventSink,
     instructions: str,
+    instructions_source: str | None,
+    instructions_sha256: str | None,
     hf_voice: str,
     hf_connection_mode: str,
     hf_realtime_ws_url: str,
@@ -954,6 +1058,8 @@ def _build_handler(
             event_sink=event_sink,
             realtime_ws_url=hf_realtime_ws_url,
             instructions=instructions,
+            instructions_source=instructions_source,
+            instructions_sha256=instructions_sha256,
             voice=hf_voice,
         )
     if backend == "livekit":
@@ -999,12 +1105,13 @@ async def _vision_loop(
     while not stop_event.is_set():
         frame = camera_provider.get_latest_frame()
         if frame is not None:
+            frame_ts = time.time()
             events: list[dict[str, Any]] = []
             people = 0
             tracks: list[dict[str, Any]] = []
             if pipeline is not None:
                 events, people, tracks = pipeline.process(frame, bgr=True)
-            recorder.vision_frame(frame, people=people, tracks=tracks, events=events, fps=fps)
+            recorder.vision_frame(frame, people=people, tracks=tracks, events=events, fps=fps, ts=frame_ts)
             for event in events:
                 await policy_engine.handle_event(
                     RuntimeEvent(kind=f"vision.{event['kind']}", source="official_runtime.vision", data=event)
@@ -1035,10 +1142,22 @@ class _AsyncPolicyEventSink:
         await asyncio.gather(*list(self.tasks), return_exceptions=True)
 
 
-def _install_signal_handlers(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event) -> None:
+def _install_signal_handlers(
+    loop: asyncio.AbstractEventLoop,
+    stop_event: asyncio.Event,
+    callbacks: list[Callable[[], None]] | None = None,
+) -> None:
+    def request_stop() -> None:
+        stop_event.set()
+        for callback in tuple(callbacks if callbacks is not None else ()):
+            try:
+                callback()
+            except Exception:
+                pass
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, stop_event.set)
+            loop.add_signal_handler(sig, request_stop)
         except NotImplementedError:
             pass
 

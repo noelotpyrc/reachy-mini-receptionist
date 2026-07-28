@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -47,8 +48,14 @@ from reachy_mini_brain.official_runtime import (
 )
 from reachy_mini_brain.official_runtime.replay_livekit import cli as livekit_replay_cli
 from reachy_mini_brain.official_runtime.replay_vision import cli as vision_replay_cli
+from reachy_mini_brain.official_runtime import live_app as live_app_module
 from reachy_mini_brain.official_runtime.live_app import cli as live_app_cli
-from reachy_mini_brain.official_runtime.live_app import _play_cached_policy_speech, _run_scripted_playback_wav
+from reachy_mini_brain.official_runtime.live_app import (
+    _load_backend_instructions,
+    _play_cached_policy_speech,
+    _register_handler_conversation_session,
+    _run_scripted_playback_wav,
+)
 from reachy_mini_brain.official_runtime.benchmark_backends import _summarize_run
 from reachy_mini_brain.official_runtime.policy_audio_cache import PolicyAudioCache
 from reachy_mini_brain import robot
@@ -330,7 +337,7 @@ def test_reception_policy_greets_without_opening_audio_gate():
         await engine.handle_event(RuntimeEvent(kind="vision.approach", source="test", data={"id": 1}))
 
         assert policy.should_forward_audio() is False
-        assert calls == [("approach", "Welcome!")]
+        assert calls == [("approach", "Welcome to the clinic, how can I help?")]
         assert "policy.greet" in events.kinds()
 
     asyncio.run(run())
@@ -372,6 +379,152 @@ def test_reception_policy_wave_opens_gate_and_goodbye_closes_it():
         assert "policy.conversation_closed" in events.kinds()
 
     asyncio.run(run())
+
+
+def test_reception_policy_prepares_backend_session_before_opening_gate():
+    async def run():
+        events = InMemoryEventSink()
+        context = RuntimeContext(event_sink=events)
+        registry = CapabilityRegistry()
+        calls = []
+        policy = ReceptionPolicy(ReceptionPolicySettings(cooldown_s=0.0))
+
+        async def begin_conversation_session(context):
+            calls.append(("begin", policy.should_forward_audio()))
+            return {"conversation_generation": 1}
+
+        async def speak_text(context, text, reason, event):
+            calls.append(("speak", policy.should_forward_audio()))
+            return True
+
+        registry.register("begin_conversation_session", begin_conversation_session)
+        registry.register("speak_text", speak_text)
+        engine = PolicyEngine([policy], capabilities=registry, context=context)
+
+        await engine.start()
+        await engine.handle_event(RuntimeEvent(kind="vision.wave", source="test"))
+
+        assert calls == [("begin", False), ("speak", True)]
+        kinds = events.kinds()
+        assert kinds.index("capability.completed") < kinds.index("policy.conversation_opened")
+        assert "policy.conversation_session_ready" in kinds
+
+    asyncio.run(run())
+
+
+def test_reception_policy_keeps_gate_closed_when_backend_session_reset_fails():
+    async def run():
+        events = InMemoryEventSink()
+        context = RuntimeContext(event_sink=events)
+        registry = CapabilityRegistry()
+        policy = ReceptionPolicy(ReceptionPolicySettings(cooldown_s=15.0))
+
+        async def begin_conversation_session(context):
+            raise RuntimeError("reconnect failed")
+
+        registry.register("begin_conversation_session", begin_conversation_session)
+        engine = PolicyEngine([policy], capabilities=registry, context=context)
+
+        await engine.start()
+        with pytest.raises(RuntimeError, match="reconnect failed"):
+            await engine.handle_event(RuntimeEvent(kind="vision.wave", source="test"))
+
+        assert policy.should_forward_audio() is False
+        assert "policy.conversation_opened" not in events.kinds()
+        assert "capability.failed" in events.kinds()
+
+    asyncio.run(run())
+
+
+def test_live_app_registers_handler_conversation_session_capability():
+    class Handler:
+        def __init__(self):
+            self.calls = 0
+
+        async def begin_conversation_session(self):
+            self.calls += 1
+            return {"conversation_generation": self.calls}
+
+    async def run():
+        events = InMemoryEventSink()
+        context = RuntimeContext(event_sink=events)
+        registry = CapabilityRegistry()
+        handler = Handler()
+
+        assert _register_handler_conversation_session(registry, handler) is True
+        result = await registry.invoke("begin_conversation_session", context)
+
+        assert result == {"conversation_generation": 1}
+        assert handler.calls == 1
+        assert events.kinds() == ["capability.started", "capability.completed"]
+        assert _register_handler_conversation_session(CapabilityRegistry(), object()) is False
+
+    asyncio.run(run())
+
+
+def test_policy_visitor_boundary_reconnects_s2s_handler_before_second_opener():
+    async def run():
+        events = InMemoryEventSink()
+        context = RuntimeContext(event_sink=events)
+        registry = CapabilityRegistry()
+        websockets = [_FakeWebSocket(), _FakeWebSocket()]
+
+        async def connect_factory(url):
+            websocket = websockets.pop(0)
+            await websocket.incoming.put({"type": "session.created"})
+            return websocket
+
+        handler = S2SRealtimeHandler(
+            realtime_ws_url="ws://127.0.0.1:8765/v1/realtime",
+            instructions="You are a clinic receptionist.",
+            event_sink=events,
+            startup_timeout_s=1.0,
+            connect_factory=connect_factory,
+        )
+        await handler.start_up()
+        first_websocket = handler._connection
+        _register_handler_conversation_session(registry, handler)
+
+        async def speak_text(context, text, reason, event):
+            return await handler.request_text_response(text)
+
+        registry.register("speak_text", speak_text)
+        policy = ReceptionPolicy(ReceptionPolicySettings(cooldown_s=0.0))
+        engine = PolicyEngine([policy], capabilities=registry, context=context)
+        await engine.start()
+
+        await engine.handle_event(RuntimeEvent(kind="vision.wave", source="test"))
+        assert policy.conversation_active is True
+        await engine.handle_event(
+            RuntimeEvent(
+                kind="realtime.conversation.item.input_audio_transcription.completed",
+                source="backend",
+                data={"transcript": "goodbye"},
+            )
+        )
+        assert policy.conversation_active is False
+
+        await engine.handle_event(RuntimeEvent(kind="vision.wave", source="test"))
+        second_websocket = handler._connection
+        assert policy.conversation_active is True
+        await handler.shutdown()
+        return first_websocket, second_websocket
+
+    first_websocket, second_websocket = asyncio.run(run())
+
+    assert first_websocket is not second_websocket
+    assert first_websocket.closed is True
+    assert second_websocket.closed is True
+    assert [payload["type"] for payload in first_websocket.sent] == [
+        "session.update",
+        "conversation.item.create",
+        "response.create",
+    ]
+    assert [payload["type"] for payload in second_websocket.sent] == [
+        "session.update",
+        "conversation.item.create",
+        "response.create",
+    ]
 
 
 def test_cached_policy_speech_plays_wav_and_emits_audio_lifecycle(tmp_path):
@@ -476,6 +629,25 @@ def test_scripted_playback_wav_uses_live_audio_sink_and_records_output(tmp_path)
     manifest = json.loads(recorder.manifest_path.read_text(encoding="utf-8"))
     streams = {entry["stream"]: entry for entry in manifest["artifacts"]["audio"]}
     assert streams["output"]["samples"] == 320
+
+
+def test_scripted_policy_head_sway_moves_both_directions_and_returns_to_neutral(monkeypatch):
+    monotonic_values = iter([0.0, 0.5, 1.5, 4.0])
+    poses = []
+
+    monkeypatch.setattr(live_app_module, "_set_head", lambda pose: poses.append(pose))
+
+    asyncio.run(
+        live_app_module._sway_head(
+            update_interval_s=0.0,
+            ramp_s=0.0,
+            clock=lambda: next(monotonic_values),
+        )
+    )
+
+    assert poses[0][2] == pytest.approx(live_app_module.HEAD_SWAY_YAW_DEG)
+    assert poses[1][2] == pytest.approx(-live_app_module.HEAD_SWAY_YAW_DEG)
+    assert poses[-1] == (0.0, 0.0, 0.0)
 
 
 def test_reception_policy_idle_tick_closes_conversation():
@@ -621,6 +793,27 @@ def test_official_runtime_live_cli_help_loads_without_robot_dependencies():
     assert "--hf-connection-mode" in result.output
     assert "--ready-cue" in result.output
     assert "--scripted-playback-wav" in result.output
+
+
+def test_live_app_loads_backend_instruction_provenance(tmp_path):
+    instructions_file = tmp_path / "instructions.txt"
+    instructions_file.write_text("You are a clinic receptionist.\n", encoding="utf-8")
+
+    text, provenance = _load_backend_instructions(instructions_file=instructions_file, instructions=None)
+
+    assert text == "You are a clinic receptionist.\n"
+    assert provenance["instructions_source"] == str(instructions_file)
+    assert provenance["instructions_sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+    assert provenance["instructions_chars"] == len(text)
+
+    inline_text, inline_provenance = _load_backend_instructions(
+        instructions_file=instructions_file,
+        instructions="Inline clinic context.",
+    )
+
+    assert inline_text == "Inline clinic context."
+    assert inline_provenance["instructions_source"] == "inline"
+    assert inline_provenance["instructions_sha256"] == hashlib.sha256(inline_text.encode("utf-8")).hexdigest()
 
 
 def test_reachy_audio_source_reads_fake_robot_audio_as_int16():
@@ -1148,6 +1341,36 @@ def test_stream_runtime_calls_on_ready_before_input_starts():
     assert kinds[:3] == ["runtime.started", "runtime.handler_started", "runtime.input_starting"]
 
 
+def test_stream_runtime_stop_skips_long_post_input_drain():
+    async def run():
+        events = InMemoryEventSink()
+        handler = _QueuedOutputHandler([])
+        sink = _CollectingAudioSink()
+        runtime = OfficialStyleStreamRuntime(
+            handler=handler,
+            audio_source=_FiniteAudioSource([]),
+            audio_sink=sink,
+            event_sink=events,
+            emit_timeout=0.01,
+            drain_idle_polls=10_000,
+        )
+
+        task = asyncio.create_task(runtime.run())
+        for _ in range(100):
+            if "audio.input_done" in events.kinds():
+                break
+            await asyncio.sleep(0.01)
+        assert "audio.input_done" in events.kinds()
+
+        runtime.stop()
+        await asyncio.wait_for(task, timeout=0.5)
+
+        assert handler.stopped is True
+        assert events.kinds()[-1] == "runtime.stopped"
+
+    asyncio.run(run())
+
+
 def test_wav_source_chunks_pcm_wav(tmp_path):
     path = tmp_path / "input.wav"
     audio = np.arange(320, dtype=np.int16)
@@ -1473,6 +1696,7 @@ def test_s2s_realtime_handler_sends_session_and_audio_without_official_app():
     async def run():
         events = InMemoryEventSink()
         websocket = _FakeWebSocket()
+        instructions = "You are a clinic receptionist."
 
         async def connect_factory(url):
             assert url == "ws://127.0.0.1:8765/v1/realtime"
@@ -1480,7 +1704,8 @@ def test_s2s_realtime_handler_sends_session_and_audio_without_official_app():
 
         handler = S2SRealtimeHandler(
             realtime_ws_url="ws://127.0.0.1:8765/v1/realtime",
-            instructions="You are a clinic receptionist.",
+            instructions=instructions,
+            instructions_source="profiles/clinic_receptionist/instructions.txt",
             event_sink=events,
             voice="Sohee",
             startup_timeout_s=1.0,
@@ -1496,10 +1721,14 @@ def test_s2s_realtime_handler_sends_session_and_audio_without_official_app():
 
     assert websocket.closed is True
     assert websocket.sent[0]["type"] == "session.update"
+    assert websocket.sent[0]["session"]["instructions"] == "You are a clinic receptionist."
     assert websocket.sent[0]["session"]["audio"]["output"]["voice"] == "Sohee"
     assert websocket.sent[1]["type"] == "input_audio_buffer.append"
     assert isinstance(websocket.sent[1]["audio"], str)
-    assert "hf.session.snapshot" in events.kinds()
+    snapshot = next(event for event in events.events if event.kind == "hf.session.snapshot").data
+    assert snapshot["instructions_source"] == "profiles/clinic_receptionist/instructions.txt"
+    assert snapshot["instructions_sha256"] == hashlib.sha256(b"You are a clinic receptionist.").hexdigest()
+    assert snapshot["instructions_chars"] == len("You are a clinic receptionist.")
     assert "hf.realtime.session.created" in events.kinds()
 
 
@@ -1557,6 +1786,142 @@ def test_s2s_realtime_handler_emits_transcript_audio_and_text_requests():
     assert "hf.response.metadata" in events.kinds()
 
 
+def test_s2s_realtime_handler_reconnects_between_visitor_conversations():
+    async def run():
+        events = InMemoryEventSink()
+        websockets = [_FakeWebSocket(), _FakeWebSocket(), _FakeWebSocket()]
+
+        async def connect_factory(url):
+            websocket = websockets.pop(0)
+            await websocket.incoming.put(
+                {"type": "session.created", "session": {"id": f"sess-{3 - len(websockets)}"}}
+            )
+            return websocket
+
+        first = None
+        second = None
+        handler = S2SRealtimeHandler(
+            realtime_ws_url="ws://127.0.0.1:8765/v1/realtime",
+            instructions="You are a clinic receptionist.",
+            event_sink=events,
+            startup_timeout_s=1.0,
+            connect_factory=connect_factory,
+        )
+        await handler.start_up()
+        startup_websocket = handler._connection
+        await handler.request_text_response("Pre-visitor policy greeting.")
+        first = await handler.begin_conversation_session()
+        first_websocket = handler._connection
+        await handler.request_text_response("First visitor opener.")
+
+        second = await handler.begin_conversation_session()
+        second_websocket = handler._connection
+        await handler.request_text_response("Second visitor opener.")
+        await handler.shutdown()
+        return first, second, startup_websocket, first_websocket, second_websocket, events
+
+    first, second, startup_websocket, first_websocket, second_websocket, events = asyncio.run(run())
+
+    assert first == {
+        "conversation_generation": 1,
+        "connection_generation": 2,
+        "reconnected": True,
+    }
+    assert second == {
+        "conversation_generation": 2,
+        "connection_generation": 3,
+        "reconnected": True,
+    }
+    assert startup_websocket is not first_websocket
+    assert first_websocket is not second_websocket
+    assert startup_websocket.closed is True
+    assert first_websocket.closed is True
+    assert second_websocket.closed is True
+    assert startup_websocket.sent[0]["type"] == "session.update"
+    assert startup_websocket.sent[-1]["type"] == "response.create"
+    assert first_websocket.sent[0]["type"] == "session.update"
+    assert first_websocket.sent[-1]["type"] == "response.create"
+    assert second_websocket.sent[0]["type"] == "session.update"
+    assert second_websocket.sent[-1]["type"] == "response.create"
+    starts = [event.data for event in events.events if event.kind == "hf.session.conversation_started"]
+    assert [event["reconnected"] for event in starts] == [True, True]
+    snapshots = [event.data for event in events.events if event.kind == "hf.session.snapshot"]
+    assert [snapshot["connection_generation"] for snapshot in snapshots] == [1, 2, 3]
+
+
+def test_s2s_realtime_handler_reuses_pristine_startup_session_for_first_visitor():
+    async def run():
+        events = InMemoryEventSink()
+        websocket = _FakeWebSocket()
+
+        async def connect_factory(url):
+            await websocket.incoming.put({"type": "session.created", "session": {"id": "sess-1"}})
+            return websocket
+
+        handler = S2SRealtimeHandler(
+            realtime_ws_url="ws://127.0.0.1:8765/v1/realtime",
+            instructions="You are a clinic receptionist.",
+            event_sink=events,
+            startup_timeout_s=1.0,
+            connect_factory=connect_factory,
+        )
+        await handler.start_up()
+        result = await handler.begin_conversation_session()
+        await handler.shutdown()
+        return result
+
+    result = asyncio.run(run())
+
+    assert result == {
+        "conversation_generation": 1,
+        "connection_generation": 1,
+        "reconnected": False,
+    }
+
+
+def test_s2s_realtime_handler_retries_failed_conversation_reconnect():
+    async def run():
+        events = InMemoryEventSink()
+        first_websocket = _FakeWebSocket()
+        recovered_websocket = _FakeWebSocket()
+        attempts = 0
+
+        async def connect_factory(url):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                raise OSError("temporary connect failure")
+            websocket = first_websocket if attempts == 1 else recovered_websocket
+            await websocket.incoming.put({"type": "session.created"})
+            return websocket
+
+        handler = S2SRealtimeHandler(
+            realtime_ws_url="ws://127.0.0.1:8765/v1/realtime",
+            instructions="You are a clinic receptionist.",
+            event_sink=events,
+            startup_timeout_s=1.0,
+            connect_factory=connect_factory,
+        )
+        await handler.start_up()
+        await handler.begin_conversation_session()
+        await handler.request_text_response("First visitor opener.")
+
+        with pytest.raises(OSError, match="temporary connect failure"):
+            await handler.begin_conversation_session()
+        recovered = await handler.begin_conversation_session()
+        await handler.shutdown()
+        return attempts, recovered
+
+    attempts, recovered = asyncio.run(run())
+
+    assert attempts == 3
+    assert recovered == {
+        "conversation_generation": 2,
+        "connection_generation": 2,
+        "reconnected": True,
+    }
+
+
 def test_jsonl_event_sink_writes_runtime_events(tmp_path):
     path = tmp_path / "events.jsonl"
     sink = JsonlEventSink(path)
@@ -1600,6 +1965,67 @@ def test_artifact_recorder_writes_manifest_and_runtime_jsonl(tmp_path):
     assert realtime_rows[0]["type"] == "livekit.output.event"
 
 
+def test_artifact_recorder_writes_video_timestamp_sidecar(monkeypatch, tmp_path):
+    class FakeVideoWriter:
+        def __init__(self, path, fourcc, fps, size):
+            self.path = Path(path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_bytes(b"fake-video")
+            self.frames = []
+
+        def write(self, frame):
+            self.frames.append(frame)
+
+        def release(self):
+            return None
+
+    fake_cv2 = types.SimpleNamespace(VideoWriter=FakeVideoWriter, VideoWriter_fourcc=lambda *args: 0)
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+    recorder = ArtifactRecorder(
+        tmp_path,
+        run_id="video-ts-test",
+        config={"mode": "test"},
+        record_video=True,
+        capture_vision=True,
+    )
+    frame = np.zeros((2, 3, 3), dtype=np.uint8)
+
+    recorder.vision_frame(
+        frame,
+        people=1,
+        tracks=[{"id": 1}],
+        events=[{"kind": "wave"}],
+        fps=5.0,
+        ts=123.4567,
+    )
+    recorder.close()
+
+    manifest = json.loads(recorder.manifest_path.read_text(encoding="utf-8"))
+    video_entry = manifest["artifacts"]["video"][0]
+    metadata_path = Path(video_entry["metadata"])
+    capture_path = tmp_path / "capture" / "capture-video-ts-test-01.jsonl"
+
+    assert video_entry["status"] == "closed"
+    assert video_entry["frames"] == 1
+    assert metadata_path.exists()
+    assert metadata_path.name == "video-video-ts-test-01.jsonl"
+
+    video_rows = [json.loads(line) for line in metadata_path.read_text(encoding="utf-8").splitlines()]
+    capture_rows = [json.loads(line) for line in capture_path.read_text(encoding="utf-8").splitlines()]
+    assert video_rows == [
+        {
+            "fps": 5.0,
+            "frame_index": 0,
+            "run_id": "video-ts-test",
+            "ts": 123.457,
+            "type": "frame",
+        }
+    ]
+    assert capture_rows[0]["ts"] == 123.457
+    assert capture_rows[0]["events"] == [{"kind": "wave"}]
+
+
 def test_artifact_recorder_sanitizes_reserved_runtime_payload_keys(tmp_path):
     recorder = ArtifactRecorder(tmp_path, run_id="artifact-reserved")
 
@@ -1622,6 +2048,33 @@ def test_artifact_recorder_sanitizes_reserved_runtime_payload_keys(tmp_path):
     assert ready_row["payload_type"] == "cue"
     assert ready_row["payload_source"] == "robot"
     assert ready_row["phase"] == "high"
+
+
+def test_artifact_recorder_promotes_hf_session_snapshot_events(tmp_path):
+    recorder = ArtifactRecorder(tmp_path, run_id="hf-session")
+
+    recorder.emit(
+        RuntimeEvent(
+            kind="hf.session.snapshot",
+            source="official_runtime.s2s_realtime",
+            data={
+                "backend_provider": "s2s-local",
+                "instructions_source": "profiles/clinic_receptionist/instructions.txt",
+                "instructions_sha256": "abc123",
+            },
+            ts=123.0,
+        )
+    )
+    recorder.close()
+
+    manifest = json.loads(recorder.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["session"]["backend_provider"] == "s2s-local"
+    assert manifest["session"]["instructions_source"] == "profiles/clinic_receptionist/instructions.txt"
+    assert manifest["session"]["instructions_sha256"] == "abc123"
+
+    realtime_path = tmp_path / "realtime" / "realtime-hf-session-01.jsonl"
+    realtime_rows = [json.loads(line) for line in realtime_path.read_text(encoding="utf-8").splitlines()]
+    assert any(row["type"] == "session.snapshot" for row in realtime_rows)
 
 
 def test_artifact_recorder_writes_session_snapshot_and_response_audio(tmp_path):

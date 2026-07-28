@@ -27,6 +27,7 @@ from .env import PROJECT_ROOT, load_project_env
 
 LIVE_PATTERN = "reachy_mini_brain.official_runtime.live_app"
 BACKEND_PATTERN = "speech-to-speech --mode realtime"
+RUNNER_STOP_GRACE_S = 30.0
 DEFAULT_PREFLIGHT_WAV = (
     "audio-response-resp_db3304df3e804556b0aaa7ed7990048f-"
     "official-live-20260623-122844-01-pcm16.wav"
@@ -552,7 +553,7 @@ def stop_runner(config: OpsConfig, *, authorized: bool, include_unmanaged: bool 
         for pid in _find_pids(LIVE_PATTERN):
             if pid not in pids:
                 pids.append(pid)
-    stopped = _terminate_pids(pids)
+    stopped = _terminate_pids(pids, grace_s=RUNNER_STOP_GRACE_S)
     if config.runner_state_path.exists() and (state is None or not _pid_alive(state.pid)):
         config.runner_state_path.unlink()
     return ActionResult(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import inspect
 import json
 from collections.abc import Awaitable, Callable
@@ -41,9 +42,13 @@ class S2SRealtimeHandler:
         transcription_model: str = "gpt-4o-transcribe",
         transcription_language: str = "en",
         connect_factory: ConnectFactory | None = None,
+        instructions_source: str | None = None,
+        instructions_sha256: str | None = None,
     ) -> None:
         self.realtime_ws_url = realtime_ws_url
         self.instructions = instructions
+        self.instructions_source = instructions_source
+        self.instructions_sha256 = instructions_sha256 or _sha256_text(instructions)
         self.event_sink = event_sink or InMemoryEventSink()
         self.voice = voice
         self.input_sample_rate = input_sample_rate
@@ -54,24 +59,76 @@ class S2SRealtimeHandler:
         self._outputs: asyncio.Queue[HandlerOutput] = asyncio.Queue()
         self._connected_event = asyncio.Event()
         self._send_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
         self._session_task: asyncio.Task[None] | None = None
         self._connection: Any | None = None
         self._first_audio_by_response: set[str] = set()
+        self._connection_generation = 0
+        self._conversation_generation = 0
+        self._session_has_activity = False
+        self._started = False
 
     async def start_up(self) -> None:
-        self._connection = await self._connect()
-        self._connected_event.clear()
-        self._session_task = asyncio.create_task(self._receive_loop(), name="s2s-realtime-session")
-        await self._send({"type": "session.update", "session": self._session_config()})
-        self._record_session_snapshot()
-        try:
-            await asyncio.wait_for(self._connected_event.wait(), timeout=self.startup_timeout_s)
-        except asyncio.TimeoutError as exc:
-            if self._session_task.done():
-                await self._session_task
-            raise RuntimeError("Timed out waiting for S2S realtime session to connect.") from exc
+        async with self._lifecycle_lock:
+            if self._connection is not None:
+                self._started = True
+                return
+            await self._open_connection()
+            self._started = True
 
     async def shutdown(self) -> None:
+        async with self._lifecycle_lock:
+            await self._close_connection(clear_outputs=True)
+            self._conversation_generation = 0
+            self._started = False
+
+    async def begin_conversation_session(self) -> dict[str, Any]:
+        """Start an isolated visitor conversation on this long-lived handler."""
+
+        async with self._lifecycle_lock:
+            if not self._started:
+                raise RuntimeError("S2S realtime websocket is not connected.")
+            reconnected = (
+                self._connection is None
+                or self._conversation_generation > 0
+                or self._session_has_activity
+            )
+            if self._connection is None:
+                await self._open_connection()
+            elif reconnected:
+                await self._close_connection(clear_outputs=True)
+                await self._open_connection()
+            self._conversation_generation += 1
+            result = {
+                "conversation_generation": self._conversation_generation,
+                "connection_generation": self._connection_generation,
+                "reconnected": reconnected,
+            }
+            self._emit("hf.session.conversation_started", **result)
+            return result
+
+    async def _open_connection(self) -> None:
+        connection = await self._connect()
+        self._connection = connection
+        self._connected_event.clear()
+        self._session_task = asyncio.create_task(self._receive_loop(), name="s2s-realtime-session")
+        try:
+            async with self._send_lock:
+                await connection.send(json.dumps({"type": "session.update", "session": self._session_config()}))
+            try:
+                await asyncio.wait_for(self._connected_event.wait(), timeout=self.startup_timeout_s)
+            except asyncio.TimeoutError as exc:
+                if self._session_task.done():
+                    await self._session_task
+                raise RuntimeError("Timed out waiting for S2S realtime session to connect.") from exc
+        except Exception:
+            await self._close_connection(clear_outputs=False)
+            raise
+        self._connection_generation += 1
+        self._session_has_activity = False
+        self._record_session_snapshot()
+
+    async def _close_connection(self, *, clear_outputs: bool) -> None:
         session_task = self._session_task
         self._session_task = None
         connection = self._connection
@@ -89,11 +146,17 @@ class S2SRealtimeHandler:
                 await session_task
             except asyncio.CancelledError:
                 pass
+        self._connected_event.clear()
+        self._first_audio_by_response.clear()
+        if clear_outputs:
+            self._clear_outputs()
+
+    def _clear_outputs(self) -> None:
         while not self._outputs.empty():
             try:
                 self._outputs.get_nowait()
             except asyncio.QueueEmpty:
-                break
+                return
 
     async def receive(self, frame: AudioFrame) -> None:
         sample_rate, audio = frame
@@ -111,17 +174,19 @@ class S2SRealtimeHandler:
     async def request_text_response(self, prompt: str) -> bool:
         if self._connection is None:
             return False
-        await self._send(
-            {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": prompt}],
+        await self._send_many(
+            [
+                {
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": prompt}],
+                    },
                 },
-            }
+                {"type": "response.create"},
+            ]
         )
-        await self._send({"type": "response.create"})
         return True
 
     def copy(self) -> "S2SRealtimeHandler":
@@ -135,6 +200,8 @@ class S2SRealtimeHandler:
             transcription_model=self.transcription_model,
             transcription_language=self.transcription_language,
             connect_factory=self.connect_factory,
+            instructions_source=self.instructions_source,
+            instructions_sha256=self.instructions_sha256,
         )
 
     async def _connect(self) -> Any:
@@ -145,11 +212,17 @@ class S2SRealtimeHandler:
         return await websockets.connect(self.realtime_ws_url, max_size=None)
 
     async def _send(self, payload: dict[str, Any]) -> None:
-        connection = self._connection
-        if connection is None:
-            raise RuntimeError("S2S realtime websocket is not connected.")
-        async with self._send_lock:
-            await connection.send(json.dumps(payload))
+        await self._send_many([payload])
+
+    async def _send_many(self, payloads: list[dict[str, Any]]) -> None:
+        async with self._lifecycle_lock:
+            connection = self._connection
+            if connection is None:
+                raise RuntimeError("S2S realtime websocket is not connected.")
+            async with self._send_lock:
+                for payload in payloads:
+                    await connection.send(json.dumps(payload))
+                    self._session_has_activity = True
 
     async def _receive_loop(self) -> None:
         connection = self._connection
@@ -256,9 +329,12 @@ class S2SRealtimeHandler:
                     "voice": self.voice,
                     "sample_rate": self.SAMPLE_RATE,
                     "input_sample_rate": self.input_sample_rate,
+                    "instructions_source": self.instructions_source,
+                    "instructions_sha256": self.instructions_sha256,
                     "instructions_chars": len(self.instructions),
                     "transcription_model": self.transcription_model,
                     "transcription_language": self.transcription_language,
+                    "connection_generation": self._connection_generation,
                 },
             )
         )
@@ -289,6 +365,10 @@ def _loads_event(raw: Any) -> dict[str, Any]:
         value = json.loads(raw)
         return value if isinstance(value, dict) else {"type": "unknown", "value": value}
     return raw if isinstance(raw, dict) else {"type": "unknown", "value": repr(raw)}
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _summarize_event(event: dict[str, Any]) -> dict[str, Any]:

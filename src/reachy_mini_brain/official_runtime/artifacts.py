@@ -48,6 +48,8 @@ class ArtifactRecorder:
         self._manifest_path = self.root / "runs" / f"run-{self.run_id}.json"
 
         self._video_path: Path | None = None
+        self._video_meta_path: Path | None = None
+        self._video_meta_file: Any | None = None
         self._video_writer: Any | None = None
         self._video_frames = 0
         self._video_fps = 5.0
@@ -96,6 +98,13 @@ class ArtifactRecorder:
 
         data = _event_payload(event.data)
         self.event(event.kind, source=event.source, event_ts=round(event.ts, 3), **data)
+        if event.kind == "hf.session.snapshot":
+            self.session_snapshot(**data)
+        elif event.kind == "hf.response.metadata":
+            response_id = data.get("response_id")
+            metadata = data.get("metadata")
+            if isinstance(response_id, str) and isinstance(metadata, Mapping):
+                self.record_response_metadata(response_id, metadata)
         if event.kind.startswith("policy."):
             self._write_jsonl(
                 self._policy_path,
@@ -121,6 +130,13 @@ class ArtifactRecorder:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("video writer close failed: %s", exc)
                 self._video_writer = None
+            if self._video_meta_file is not None:
+                try:
+                    self._video_meta_file.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("video metadata close failed: %s", exc)
+                self._video_meta_file = None
+            if self._video_path is not None:
                 for rec in self._manifest["artifacts"].get("video", []):
                     if rec.get("status") == "open":
                         rec.update(
@@ -203,7 +219,9 @@ class ArtifactRecorder:
         tracks: list[dict[str, Any]],
         events: list[dict[str, Any]],
         fps: float,
+        ts: float | None = None,
     ) -> None:
+        frame_ts = round(float(ts if ts is not None else time.time()), 3)
         if self.capture_vision_enabled:
             self._write_jsonl(
                 self._capture_path,
@@ -213,9 +231,10 @@ class ArtifactRecorder:
                     "tracks": tracks,
                     "events": events,
                 },
+                ts=frame_ts,
             )
         if self.record_video_enabled:
-            self._write_video_frame(frame, fps=fps)
+            self._write_video_frame(frame, fps=fps, ts=frame_ts)
 
     def input_audio_frame(self, sample_rate: int, audio: NDArray[Any], *, forwarded: bool) -> None:
         if self.record_audio_enabled:
@@ -284,12 +303,12 @@ class ArtifactRecorder:
             tmp.write_text(json.dumps(self._manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             tmp.replace(self._manifest_path)
 
-    def _write_jsonl(self, path: Path, rec: Mapping[str, Any]) -> None:
+    def _write_jsonl(self, path: Path, rec: Mapping[str, Any], *, ts: float | None = None) -> None:
         if self._closed:
             return
         payload = {
             "run_id": self.run_id,
-            "ts": round(time.time(), 3),
+            "ts": round(float(ts if ts is not None else time.time()), 3),
             **{key: _jsonable(value) for key, value in rec.items()},
         }
         with self._lock:
@@ -297,7 +316,7 @@ class ArtifactRecorder:
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(payload, sort_keys=True) + "\n")
 
-    def _write_video_frame(self, frame: NDArray[np.uint8], *, fps: float) -> None:
+    def _write_video_frame(self, frame: NDArray[np.uint8], *, fps: float, ts: float) -> None:
         try:
             import cv2
         except ImportError:
@@ -309,6 +328,8 @@ class ArtifactRecorder:
             if self._video_writer is None:
                 self._video_fps = max(1.0, float(fps))
                 self._video_path = self._artifact_path("video", ".mkv", subdir="video")
+                self._video_meta_path = self._video_path.with_suffix(".jsonl")
+                self._video_meta_file = self._video_meta_path.open("w", encoding="utf-8")
                 h, w = frame.shape[:2]
                 self._video_writer = cv2.VideoWriter(
                     str(self._video_path),
@@ -319,13 +340,29 @@ class ArtifactRecorder:
                 self._manifest["artifacts"]["video"].append(
                     {
                         "path": str(self._video_path),
+                        "metadata": str(self._video_meta_path),
                         "status": "open",
                         "fps": round(self._video_fps, 2),
-                        "started_ts": round(time.time(), 3),
+                        "started_ts": round(float(ts), 3),
                     }
                 )
                 self._write_manifest()
             self._video_writer.write(frame)
+            if self._video_meta_file is not None:
+                self._video_meta_file.write(
+                    json.dumps(
+                        {
+                            "run_id": self.run_id,
+                            "ts": round(float(ts), 3),
+                            "type": "frame",
+                            "frame_index": self._video_frames,
+                            "fps": round(self._video_fps, 2),
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+                self._video_meta_file.flush()
             self._video_frames += 1
 
     def _write_audio_frame(

@@ -129,49 +129,125 @@ OPS writes/reads a latest-run pointer for #6.
 **Accepted:** first pass is built and accepted. See `docs/archive/reviews/ops-test-todos.md` for
 the completed offline, m1max, robot, and human-gated checks.
 
-### 6. Run-summary / diagnosis visibility (the keystone)  `[ ]`
-**Goal:** Turn "I have to re-experience the robot" into "I scrub the run timeline." Build a
-Rerun per-run renderer on the **official-runtime artifact schema** (do **not** port the legacy
-`review_audio.py` — it's welded to the dead daemon format; build fresh on the cleaner
-`run_id`+`ts`+`response_id` rows under `artifacts/official-runtime-live/`).
-**Steps:**
-- Render, per response, the lifecycle:
-  `user transcript -> thinking cue started -> response.created -> first audio -> audio done`,
-  with per-stage latencies.
-- **Markers alignment:** join `artifacts/markers-<run_id>.jsonl` (from `mark.py`, currently
-  write-only with no consumer) onto the same timeline by wall-clock `ts`, so each piece of
-  human feedback sits next to the events around it.
-- Surface **missing-cue / suppression reasons** (e.g. `start_suppressed`) inline.
-- Target the official-runtime schema for v1; the primary output is the Rerun timeline. Emit
-  lightweight text/JSON only for practical handoff data such as WAV path + sample offset hints.
-**Done when:** running it on a recorded run opens or writes a readable Rerun timeline that a human
-can use to diagnose UX without replaying the session; markers show up aligned, and audio spans
-include listenable WAV path hints.
-**Note:** This is the consumer the marker tool was built for, and the long-deferred
-"merged timeline" from `docs/data-harness.md` gap #8.
+### 6. Run-summary / diagnosis visibility (the keystone)  `[x]`
+**Goal:** Turn "I have to re-experience the robot" into "I scrub the run timeline." Read-only over
+existing official-runtime artifacts — **no robot, no re-recording, no re-execution**; works on
+historical runs. (Do **not** port the legacy `review_audio.py`.)
 
-**Recommended substrate — Rerun (see `docs/rerun-integration.md`).** Rather than hand-roll a
-renderer, build this on [Rerun](https://rerun.io), the time-aligned multimodal viewer the
-official SDK already ships an integration for (`reachy_mini/utils/rerun.py`, robot state +
-camera). #6 v1 is a **read-only renderer over existing artifacts**: no robot, no runtime
-instrumentation gate, and no schema rewrite. It reads the current multi-lane artifact layout
-(`events`, `realtime`, `policies`, `markers`), classifies rows by `type` prefix, and uses the
-runner machine's wall-clock `ts` as the canonical timeline clock. Backend conversation rows
-(`hf.*`) stay in the events lane; direct runtime milestones stay in the realtime lane.
+**The design is settled — implement to these specs, don't re-derive them:**
+- **`docs/general-timeline-model.md`** — the **model + event allowlist**: 6 actors × spans/markers,
+  behavior-grouped policy, `span→0/1 state-scalar` / `marker→TextLog` encoding, the
+  `event→behavior` adapter. This is the contract both renderers consume.
+- **`docs/rerun-integration.md`** — the **Rerun renderer**: physical/vision layer + the L1 spans as
+  state-scalars under `<actor>/<sub-entity>` folders.
+- **`docs/conversation-audio-player.md`** — the **in-house conversation/audio player**: aligned input +
+  output audio playback, semantic backend lanes, per-response WAV playback, transcript availability,
+  and optional STT-recovered transcript sidecars.
 
-Minimum accepted v1: timeline+markers with transcript/response narrative, suppression /
-missed-cue annotations, derived per-turn latency scalars, audio RMS, and WAV path + sample
-offset hints for human listening. Derive first-mic / first-forwarded / first-audio and
-transcript→response→first-audio→done latencies offline from existing rows so historical runs work
-too. Defer portable `.rrd`/ops `open latest run` wiring, audio waveform, detections, video, live
-observer mode, and runtime cleanup items until after v1. Add pinned `rerun-sdk==0.33.1` as an
-optional diagnosis dependency, not a core runtime/ops dependency.
+**Build order completed for v1:**
+1. **Shared parser / allowlist** — read a run's lanes + markers + audio sidecars; keep only the
+   model's allowlisted events; reconstruct spans (pair each actor's start/end per turn through the
+   `event→behavior` adapter) and collect markers. One reusable layer feeding both renderers.
+2. **Rerun renderer** — `<actor>/<sub-entity>` entities; spans → state-scalars, markers → TextLog;
+   physical/vision (audio RMS, camera, detections) under their own folders.
+3. **Conversation/audio player** — the in-house listening tool (the merged "L2/L3").
+
+**Exposure.** First pass is accepted with the dedicated diagnosis CLIs/tools rather than a unified
+operator command. A future `reception-ops review <run_id>` can route to the right renderer, but that
+is convenience polish rather than a blocker for #6 v1. Keep the renderers as libraries with lazy
+diagnosis-only imports.
+
+**Prototype disposition.** The original `rerun_review.py` flat-firehose prototype was reworked for
+v1: the accepted renderer follows the model's actor/sub-entity layout, encodes spans as state-scalars,
+and keeps behavior derivation in one vintage-compatible adapter (native `source` ∪ legacy
+type→behavior map — see the model doc's policy-refactor note). Its parser/derivation remains the
+reusable asset for future renderer work.
+
+**Done when:** on a recorded run you get (a) a Rerun timeline matching the model's actor-folder
+layout, and (b) the in-house player where a human can *listen* to input + output audio aligned with
+the backend timeline + markers — diagnosing UX without re-running the session.
+
+**Accepted:** first pass is built and accepted. Rerun covers the physical/vision layer and L1 spans;
+the audio-review app covers aligned listening, semantic backend lanes, per-response playback,
+transcript availability, and STT-recovered sidecars. See
+`docs/archive/reviews/audio-review-issues-20260701.md` for the completed audio-review fix tracker.
+
+**Video alignment follow-up:** new `--record-video` runs should use the recorder's per-frame
+timestamp sidecar; historical runs may be aligned from `capture/*.jsonl` for the overlapping prefix.
+Longer term, if the Reachy SDK exposes true camera/sensor timestamps, carry those through the camera
+provider and recorder instead of the current runner-observed timestamp taken after
+`get_latest_frame()` returns. **Checked 2026-06-26 — not available:** neither SDK 1.8.1 nor latest
+upstream `main` exposes a per-frame timestamp; `media_manager.get_frame()` / `camera_*.read()` return
+pixels-only and drop the GStreamer `buf.pts`. It stays the SDK's own unimplemented TODO
+(`reachy_mini/utils/rerun.py:166-169`). The only way to get true per-frame `pts` before the SDK adds
+it is a **custom media manager** subclass (the SDK supports one — `examples/custom_media_manager.py`)
+that pulls `buf.pts` off the appsink — more work than the capture-`ts`/sidecar fix and it lives in our
+code, so prefer the sidecar path unless frame-exact alignment becomes essential.
+
+**Video alignment follow-up validation:** record one short new run with `--record-video` after the
+sidecar fix, then compare video sidecar timestamps, capture timestamps, and policy/perception event
+timestamps. If an overall video lag remains, classify it with evidence before changing code: likely
+camera/media buffering, policy/event processing delay, or Rerun playback/render behavior.
+
+**Note:** this is the consumer the marker tool was built for; the long-deferred "merged timeline"
+(`data-harness.md` gap #8). Prereq: pinned `rerun-sdk==0.33.1` as the optional `diagnosis` extra,
+not a core runtime/ops dep.
+
+**Follow-up — policy refactor to match the timeline model.** The general-timeline model
+(`docs/general-timeline-model.md`) groups policy events by *behavior* (`greet` / `farewell` /
+`wave_conversation` / `conversation_cue`), but the code emits all reception reactions from one
+`ReceptionPolicy` (only `ConversationCuePolicy` is split out). v1 renders this via a renderer-side
+type→behavior map. Refactoring `ReceptionPolicy` into per-behavior policies — each emitting its own
+`source` — makes the grouping native and deletes the map. Low priority; do after #6 v1.
+
+**Follow-up — audio-review UX polish.** Deferred and not blocking #6 v1:
+- Conversation-script panel with per-turn user/assistant rows and row-level playback.
+- Optional run-on cluster annotation for speculative-turn transcript drops.
+- Additional listening controls such as A/B overlap, loop selected range, and keyboard shortcuts.
 
 ---
 
 ## Phase 3 — Iterate UX & backend with the fast loop
 
-### 7. Antenna UX polish  `[ ]`
+### 7a. Stabilize vision-triggered greet/goodbye policy  `[ ]`
+**Goal:** Prevent unstable person-box area estimates from emitting contradictory
+approach/greet and depart/goodbye speech while a visitor remains present, especially
+during the walk-in-and-wave interaction.
+
+**Evidence (2026-07-25 live run `official-live-20260725-111932`):**
+- Marker 2 (`11:21:01`, "unwanted goodbye/greet"): track 5 emitted `approach` at
+  `ts=1785003657.610` after its detected area jumped to `0.579`, then emitted `depart`
+  at `ts=1785003658.964` after the box settled near `0.30`. The person remained
+  continuously detected; this was not a departure.
+- Marker 3 (`11:24:50`, "unwanted goodbye/greet after waving"): track 7 emitted
+  `approach` at `ts=1785003882.447` with area `0.447`, then `depart` at
+  `ts=1785003884.035` with area `0.251`. The person remained present near area
+  `0.28-0.30` and produced the accepted `Open_Palm` wave at `ts=1785003888.872`.
+- The direct policy lane then correctly spoke each event it was given. Hermes and the
+  wave-chat conversation were not the source of these two unwanted sequences.
+
+**Diagnosis:** `ApproachTracker` currently uses unsmoothed detections (`smooth=0`), stores
+the maximum raw area as the visit peak, and declares departure after two recent areas
+are at or below `0.6 * peak`. A single inflated person box can therefore poison the
+peak and make the visitor's stable box look like a departure. The reception policy
+suppresses greet/farewell only after a wave conversation is active; it cannot prevent
+the contradictory events that fire just before the wave.
+
+**Steps:**
+- Reproduce both captured area sequences offline as `ApproachTracker` regression cases.
+- Choose and test a robust geometry rule (for example peak filtering/smoothing plus
+  sustained receding evidence); do not tune directly on the robot.
+- Add an interaction-level regression that a continuously present visitor cannot
+  produce an approach -> depart speech pair around a wave.
+- Preserve the genuine first walk-away in the same run: the area fell from `0.244` to
+  `0.144` and continued toward `0.087` before the visitor left the tracked scene.
+- Validate on recorded video/capture first, then run one short user-present live test.
+
+**Done when:** the two false sequences above produce no farewell, genuine walk-away
+still produces one farewell, and a live walk-in-and-wave produces one coherent opener
+without stacked greet/goodbye policy speech.
+
+### 7b. Antenna UX polish  `[ ]`
 **Goal:** After #1 validates the cue logic, tune movement style/timing.
 **Steps:** tune wave-chat thinking cue, greet/goodbye pulse, startup ready cue; keep
 movement **non-overlapping with robot speech** (overlap reproduced choppiness in earlier
@@ -191,8 +267,48 @@ research plan for this item.
   - Hermes / agentic wrapper with conversation memory/context management
 - Test clinic context + model swaps **before** deciding whether Hermes is worth the added
   latency.
+**2026-07-01 context/config pass:** the live app now sends the default clinic profile as realtime
+`session.update` instructions, artifacts record the instruction source/hash/chars, and
+`scripts/m1max/run_s2s_backend.sh` can point the Responses slot at either OpenRouter or an
+OpenAI-compatible wrapper via `S2S_RESPONSES_BASE_URL`. No live robot test is required for this pass.
 **Done when:** clinic context is live; a documented comparison (quality vs latency) supports
 a model/wrapper decision.
+
+### 9. S2S backend runtime reproducibility  `[x]`
+**Goal:** Keep `/Users/leon/projects/speech_to_speech_backend` as the generic external backend
+runtime folder, but make it reproducible from the product/controller repo instead of relying on
+manual venv state.
+**Decision:** The backend folder is not a product repo. It owns only `.venv`, logs, and runtime
+state. The product/controller repo owns lifecycle, launch flags, and setup docs/scripts.
+**Steps:**
+- Add a setup/update script in this repo: `scripts/m1max/setup_s2s_backend.sh`.
+- Pin and install Hugging Face `speech-to-speech==0.2.10` into
+  `/Users/leon/projects/speech_to_speech_backend/.venv`.
+- Ensure the script is idempotent and refuses to delete logs/runtime artifacts unless explicitly
+  confirmed.
+- Keep runtime launch through `scripts/m1max/run_s2s_backend.sh` and OPS `backend start/status`.
+**Done when:** a fresh m1max can recreate or update the backend runtime folder from this repo's
+documented commands, and live OPS still uses the same `ws://127.0.0.1:8765/v1/realtime` contract.
+**Accepted:** setup/update script is implemented with dry-run, running-backend guard, package/CLI/import
+verification, and `runtime-info.json` output. It does not delete logs/model caches/runtime artifacts.
+
+### 10. Recorder sidecar process  `[ ]`
+**Goal:** Decouple artifact persistence from the live runner so audio/video/capture artifacts can
+finalize even if the robot runner crashes or must be killed.
+**Why now:** The current recorder writes frames incrementally, but the live runner still owns the
+WAV/video file handles and manifest close. If OPS kills the runner before its finalizer completes,
+artifacts can be readable but left `open` with an unfinalized video container.
+**Steps:**
+- Define a local recorder IPC contract for runtime events, audio frames, video frames, and close /
+  heartbeat messages.
+- Move long-lived WAV/video writers and manifest finalization into a recorder process owned by OPS.
+- Add bounded queues/backpressure rules so recording cannot stall audio capture/playback.
+- Make OPS stop order explicit: request runner stop, request recorder flush/close, then hard-kill
+  only after both grace windows expire.
+- Preserve the existing artifact layout so current replay/review tools still work.
+**Done when:** killing or crashing the live runner during a raw-video run still leaves the manifest
+closed and the video/audio files finalized, or marks exactly which stream was interrupted with a
+machine-checkable reason.
 
 ---
 
@@ -207,3 +323,21 @@ a model/wrapper decision.
 - 2026-06-23 — #4 non-destructive pass complete: legacy modules have module-level status notes, package
   metadata labels legacy entry points, and `docs/legacy-cleanup-plan.md` lists the exact future
   delete/quarantine candidates. No files were deleted or moved.
+- 2026-06-25 — runbook updated for the accepted Python OPS CLI + native `s2s-local` live path, and
+  S2S backend runtime ownership documented as a managed external folder.
+- 2026-06-26 — Rerun renderer first pass accepted for timeline/spans/markers/suppression/audio-RMS
+  and video-frame review. Remaining #6 work moves to the separate audio/listening UI.
+- 2026-07-01 — #6 accepted as first-pass complete: audio-review app now has aligned playback,
+  semantic lanes, transcript availability, per-response playback, STT-recovered sidecars, and m1max
+  recovery wrapper. Deferred audio-review polish tracked under #6 follow-up; next active item is #7.
+- 2026-07-01 — #7 requires live/user-present validation, so offline work advanced to #9. #9 complete:
+  `scripts/m1max/setup_s2s_backend.sh` now recreates/updates the managed backend runtime venv and
+  preserves the existing `run_s2s_backend.sh` / OPS backend contract.
+- 2026-07-01 — #8 context/config pass complete without live testing: default clinic instructions are
+  auditable in artifacts, and the S2S launcher now has explicit direct-model and wrapper endpoint
+  switches. The text/preflight comparison is still the acceptance gate for choosing Hermes or staying
+  direct OpenRouter.
+- 2026-07-25 — live run `official-live-20260725-111932` accepted for wave-chat behavior and
+  diagnosed two unwanted greet/goodbye sequences as vision-policy false positives caused by raw
+  person-box peak/drop handling. Added #7a as the next improvement item; reproduce from the recorded
+  capture before changing the tracker or spending another live run.

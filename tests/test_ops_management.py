@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import wave
 from pathlib import Path
 
 import numpy as np
+import yaml
 from click.testing import CliRunner
 
 from reachy_mini_brain.official_runtime import ops_core
@@ -401,6 +405,35 @@ def test_start_runner_can_enable_raw_video_recording(tmp_path, monkeypatch):
     assert state.requested_config["record_audio"] is True
 
 
+def test_stop_runner_uses_extended_grace_for_artifact_finalization(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    state = ops_core.RunnerState(
+        pid=4321,
+        run_id="official-live-artifacts",
+        log_path=config.log_dir / "official-live-artifacts.log",
+        artifact_root=config.artifact_root,
+        started_at="2026-06-25T14:00:00",
+        requested_config={"record_video": True},
+        command=("python", "-m", "reachy_mini_brain.official_runtime.live_app"),
+    )
+    ops_core.save_runner_state(config, state)
+    calls: list[tuple[list[int], float]] = []
+
+    monkeypatch.setattr(ops_core, "_pid_alive", lambda pid: pid == 4321)
+
+    def fake_terminate(pids, *, grace_s=2.0):
+        calls.append((list(pids), grace_s))
+        return list(pids)
+
+    monkeypatch.setattr(ops_core, "_terminate_pids", fake_terminate)
+
+    result = ops_core.stop_runner(config, authorized=True)
+
+    assert result.status == "ok"
+    assert result.changed is True
+    assert calls == [([4321], ops_core.RUNNER_STOP_GRACE_S)]
+
+
 def test_runner_cli_start_requires_confirmation(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     monkeypatch.setattr(ops_core.OpsConfig, "from_env", classmethod(lambda cls: config))
@@ -639,6 +672,321 @@ def test_backend_stop_terminates_matching_backend_pids(tmp_path, monkeypatch):
     assert result.status == "ok"
     assert result.changed is True
     assert result.data["stopped_pids"] == [101, 202]
+
+
+def test_s2s_backend_setup_script_contract() -> None:
+    script = Path("scripts/m1max/setup_s2s_backend.sh")
+    text = script.read_text(encoding="utf-8")
+
+    assert script.exists()
+    assert "S2S_BACKEND_VERSION:-0.2.10" in text
+    assert "https://github.com/noelotpyrc/speech-to-speech.git" in text
+    assert "8b6f3f4c8dcda84c8777dbec801d125ee77d575c" in text
+    assert "speech_to_speech_fork_url" in text
+    assert "speech_to_speech_fork_sha" in text
+    assert "/Users/leon/projects/speech_to_speech_backend" in text
+    assert "speech-to-speech==$BACKEND_VERSION" in text
+    assert "speech_to_speech.STT.parakeet_tdt_handler" in text
+    assert "runtime-info.json" in text
+    assert "--skip-running-check" in text
+    assert "rm -rf" not in text
+
+
+def test_hermes_profile_sync_script_contract() -> None:
+    script = Path("scripts/m1max/sync_hermes_profile.sh")
+    text = script.read_text(encoding="utf-8")
+
+    assert script.exists()
+    assert "--profile is required" in text
+    assert "--allow-production" in text
+    assert '"$PROFILE" == "reachyclinic"' in text
+    assert "personality.md" in text
+    assert "clinic_facts.md" in text
+    assert "capabilities.md" in text
+    assert "reference_catalog.yaml" in text
+    assert "reference-library" in text
+    assert "latency-trace" in text
+    assert "reference_readonly" in text
+    assert '"api_server"' in text
+    assert '"no_mcp"' in text
+    assert '("file", "skills", "memory", "web", "terminal")' in text
+    assert "--delete" not in text
+    assert "rm " not in text
+
+
+def test_hermes_profile_sync_dry_run_does_not_write(tmp_path: Path) -> None:
+    profiles_dir = tmp_path / "profiles"
+    profile_dir = profiles_dir / "reachyclinic-test"
+    source_dir = tmp_path / "source"
+    profile_dir.mkdir(parents=True)
+    source_dir.mkdir()
+    (profile_dir / "SOUL.md").write_text("original\n", encoding="utf-8")
+    for name in (
+        "personality.md",
+        "HERMES.md",
+        "reference_catalog.yaml",
+        "clinic_facts.md",
+        "capabilities.md",
+    ):
+        (source_dir / name).write_text(f"new {name}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/m1max/sync_hermes_profile.sh",
+            "--profile",
+            "reachyclinic-test",
+            "--profiles-dir",
+            str(profiles_dir),
+            "--source-dir",
+            str(source_dir),
+            "--dry-run",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HERMES_PYTHON": sys.executable,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (profile_dir / "SOUL.md").read_text(encoding="utf-8") == "original\n"
+    assert not (profile_dir / "context").exists()
+    assert not (profile_dir / "config.yaml").exists()
+
+
+def test_hermes_profile_sync_installs_read_only_reference_policy(tmp_path: Path) -> None:
+    profiles_dir = tmp_path / "profiles"
+    profile_dir = profiles_dir / "reachyclinic-test"
+    source_dir = tmp_path / "source"
+    profile_dir.mkdir(parents=True)
+    source_dir.mkdir()
+    (source_dir / "personality.md").write_text("New personality.\n", encoding="utf-8")
+    (source_dir / "HERMES.md").write_text("# Stable instructions\n", encoding="utf-8")
+    (source_dir / "clinic_facts.md").write_text(
+        "# Clinic facts\n\nOpen weekdays.\n", encoding="utf-8"
+    )
+    (source_dir / "capabilities.md").write_text(
+        "# Receptionist capabilities\n\n## Supported\n\nEscalate unsupported requests.\n",
+        encoding="utf-8",
+    )
+    (source_dir / "reference_catalog.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "references": {
+                    "clinic.facts": {
+                        "path": "clinic_facts.md",
+                        "title": "Clinic facts",
+                        "summary": "Hours.",
+                        "delivery": "prompt",
+                        "tags": ["hours"],
+                        "audience": "visitor",
+                        "max_bytes": 1024,
+                    },
+                    "clinic.capabilities": {
+                        "path": "capabilities.md",
+                        "title": "Receptionist capabilities",
+                        "summary": "Action boundaries.",
+                        "delivery": "prompt",
+                        "tags": ["capabilities"],
+                        "audience": "visitor",
+                        "max_bytes": 1024,
+                    },
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/m1max/sync_hermes_profile.sh",
+            "--profile",
+            "reachyclinic-test",
+            "--profiles-dir",
+            str(profiles_dir),
+            "--source-dir",
+            str(source_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HERMES_PYTHON": sys.executable,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    config = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert config["platform_toolsets"]["api_server"] == [
+        "reference_readonly",
+        "no_mcp",
+    ]
+    assert set(config["agent"]["disabled_toolsets"]) >= {
+        "file",
+        "skills",
+        "memory",
+        "web",
+        "terminal",
+    }
+    assert "reference-library" in config["plugins"]["enabled"]
+    assert "latency-trace" in config["plugins"]["enabled"]
+    assert config["reference_library"]["catalog"] == str(
+        profile_dir / "context/receptionist/reference_catalog.yaml"
+    )
+    assert (profile_dir / "plugins/reference-library/plugin.yaml").exists()
+    assert (profile_dir / "plugins/reference-library/__init__.py").exists()
+    assert (profile_dir / "plugins/latency-trace/plugin.yaml").exists()
+    assert (profile_dir / "plugins/latency-trace/__init__.py").exists()
+    assert (profile_dir / "context/receptionist/HERMES.md").read_text(
+        encoding="utf-8"
+    ) == (
+        "# Stable instructions\n\n"
+        "## Clinic facts\n\nOpen weekdays.\n\n"
+        "## Receptionist capabilities\n\n"
+        "### Supported\n\nEscalate unsupported requests.\n"
+    )
+
+
+def test_hermes_profile_sync_rejects_unguarded_production(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "profiles" / "reachyclinic"
+    source_dir = tmp_path / "source"
+    profile_dir.mkdir(parents=True)
+    source_dir.mkdir()
+    for name in (
+        "personality.md",
+        "HERMES.md",
+        "reference_catalog.yaml",
+        "clinic_facts.md",
+        "capabilities.md",
+    ):
+        (source_dir / name).write_text(f"new {name}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/m1max/sync_hermes_profile.sh",
+            "--profile",
+            "reachyclinic",
+            "--profiles-dir",
+            str(tmp_path / "profiles"),
+            "--source-dir",
+            str(source_dir),
+            "--dry-run",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HERMES_PYTHON": sys.executable,
+        },
+    )
+
+    assert result.returncode == 2
+    assert "Refusing to update production profile" in result.stderr
+
+
+def test_s2s_backend_launcher_supports_responses_wrapper_endpoint() -> None:
+    script = Path("scripts/m1max/run_s2s_backend.sh")
+    text = script.read_text(encoding="utf-8")
+
+    assert "S2S_RESPONSES_BASE_URL" in text
+    assert "S2S_RESPONSES_API_KEY" in text
+    assert '--responses_api_base_url "$S2S_RESPONSES_BASE_URL"' in text
+    assert 'S2S_MODEL_NAME="${S2S_MODEL_NAME:-wrapper-routed}"' in text
+    assert 'export OPENAI_API_KEY="local-wrapper"' in text
+    assert 'S2S_MODEL_NAME="${S2S_MODEL_NAME:-openai/gpt-5.4-mini}"' in text
+    assert "S2S_RESPONSES_CONVERSATION" in text
+    assert "S2S_RESPONSES_DIRECT_BASE_URL" in text
+    assert "S2S_RESPONSES_DIRECT_MODEL" in text
+    assert "S2S_RESPONSES_DIRECT_API_KEY" in text
+
+
+def test_s2s_backend_launcher_rejects_conversation_without_wrapper(tmp_path: Path) -> None:
+    result = subprocess.run(
+        ["bash", "scripts/m1max/run_s2s_backend.sh"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "BACKEND_DIR": str(tmp_path / "backend"),
+            "ENV_FILE": str(tmp_path / "missing.env"),
+            "S2S_PORT": "65431",
+            "S2S_RESPONSES_CONVERSATION": "1",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "requires S2S_RESPONSES_BASE_URL" in result.stderr
+
+
+def test_s2s_backend_launcher_passes_conversation_and_direct_lane_args(tmp_path: Path) -> None:
+    backend_dir = tmp_path / "backend"
+    cli = backend_dir / ".venv" / "bin" / "speech-to-speech"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
+    cli.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", "scripts/m1max/run_s2s_backend.sh"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "BACKEND_DIR": str(backend_dir),
+            "ENV_FILE": str(tmp_path / "missing.env"),
+            "S2S_PORT": "65432",
+            "S2S_RESPONSES_BASE_URL": "http://127.0.0.1:8642/v1",
+            "S2S_RESPONSES_API_KEY": "hermes-key",
+            "S2S_RESPONSES_CONVERSATION": "1",
+            "S2S_RESPONSES_CONVERSATION_PREFIX": "reachy-test",
+            "S2S_RESPONSES_DIRECT_BASE_URL": "https://openrouter.ai/api/v1",
+            "S2S_RESPONSES_DIRECT_MODEL": "openai/gpt-5.4-mini",
+            "S2S_RESPONSES_DIRECT_API_KEY": "direct-key",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = result.stdout.splitlines()
+    assert "--responses_api_conversation" in args
+    assert args[args.index("--responses_api_conversation_prefix") + 1] == "reachy-test"
+    assert "--no_responses_api_disable_thinking" in args
+    assert args[args.index("--responses_api_direct_base_url") + 1] == "https://openrouter.ai/api/v1"
+    assert args[args.index("--responses_api_direct_model_name") + 1] == "openai/gpt-5.4-mini"
+    assert args[args.index("--responses_api_direct_api_key") + 1] == "direct-key"
+
+
+def test_s2s_backend_setup_script_dry_run_does_not_create_backend_dir(tmp_path: Path) -> None:
+    backend_dir = tmp_path / "backend"
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/m1max/setup_s2s_backend.sh",
+            "--dry-run",
+            "--backend-dir",
+            str(backend_dir),
+            "--python",
+            sys.executable,
+            "--skip-running-check",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "speech-to-speech==0.2.10" in result.stderr
+    assert "would verify package version, CLI, and Parakeet STT handler import" in result.stderr
+    assert not backend_dir.exists()
 
 
 def _write_pcm_wav(path: Path, *, sample_rate: int, audio: np.ndarray) -> None:
