@@ -50,6 +50,7 @@ class TargetConfig:
     extra_headers: dict[str, str]
     memory_mode: str = "cold"
     store_response: bool = True
+    reasoning: dict[str, Any] | None = None
 
 
 def main() -> int:
@@ -165,6 +166,7 @@ def _resolve_targets(target: str) -> list[TargetConfig]:
 def _resolve_target_name(name: str) -> TargetConfig:
     if name in {"raw_cold", "raw_history"}:
         raw_key = _env_first("RAW_RESPONSES_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")
+        reasoning_env = os.environ.get("RAW_RESPONSES_REASONING")
         return TargetConfig(
             name=name,
             api="responses",
@@ -174,6 +176,7 @@ def _resolve_target_name(name: str) -> TargetConfig:
             extra_headers={},
             memory_mode="history" if name.endswith("_history") else "cold",
             store_response=False,
+            reasoning=json.loads(reasoning_env) if reasoning_env else None,
         )
     if name == "hermes_conversation":
         return _hermes_target(name=name, api="responses", memory_mode="conversation")
@@ -358,6 +361,8 @@ def _payload(
             payload["instructions"] = instructions
         if conversation is not None:
             payload["conversation"] = conversation
+        if target.reasoning is not None:
+            payload["reasoning"] = target.reasoning
         return payload
     raise ValueError(f"unsupported target api: {target.api}")
 

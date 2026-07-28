@@ -1,0 +1,7 @@
+name: reference-library
+version: "0.1.0"
+description: "Read approved, profile-local reference documents by catalog ID without exposing arbitrary filesystem access."
+author: reachy-mini-receptionist
+provides_tools:
+  - reference_catalog
+  - reference_read

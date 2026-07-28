@@ -1,0 +1,25 @@
+version: 1
+references:
+  clinic.facts:
+    path: clinic_facts.md
+    title: Clinic facts
+    summary: Hours, directions, departments, providers, and visitor amenities.
+    delivery: prompt
+    tags:
+      - clinic
+      - hours
+      - directions
+      - services
+    audience: visitor
+    max_bytes: 32768
+  clinic.capabilities:
+    path: capabilities.md
+    title: Receptionist capabilities
+    summary: Supported actions, unsupported actions, escalation, and emergency guidance.
+    delivery: prompt
+    tags:
+      - clinic
+      - capabilities
+      - escalation
+    audience: visitor
+    max_bytes: 32768

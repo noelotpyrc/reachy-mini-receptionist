@@ -1,0 +1,10 @@
+name: latency-trace
+version: "0.1.0"
+description: "Write privacy-safe Hermes and provider timing metadata to a profile-local JSONL file."
+author: reachy-mini-receptionist
+hooks:
+  - pre_llm_call
+  - post_llm_call
+  - pre_api_request
+  - post_api_request
+  - api_request_error

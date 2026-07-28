@@ -1,5 +1,6 @@
 .venv/
 .env
+private/
 __pycache__/
 *.egg-info/
 artifacts/
