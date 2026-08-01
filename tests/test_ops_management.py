@@ -117,6 +117,36 @@ def test_build_live_command_includes_official_runtime_defaults(tmp_path):
     assert env["HF_REALTIME_WS_URL"] == "ws://127.0.0.1:8765/v1/realtime"
     assert env["REACHY_HOST"] == "192.0.2.10"
     assert "REACHY_MINI_CONVERSATION_APP_SRC" not in env
+    assert "--profile-owned-context" not in command
+
+
+def test_build_live_command_uses_profile_owned_context_for_hermes(tmp_path):
+    config = ops_core.OpsConfig(**{**make_config(tmp_path).__dict__, "profile_owned_context": True})
+
+    command, _ = ops_core.build_live_command(
+        config,
+        run_id="official-live-hermes",
+        duration_s=12,
+        perception=True,
+        gestures=True,
+        audio_gate=True,
+        ready_cue=True,
+        warmup_video=True,
+        conversation_cues=True,
+        capture_vision=True,
+        record_audio=True,
+        record_video=False,
+    )
+
+    assert "--profile-owned-context" in command
+
+
+def test_ops_config_uses_profile_owned_context_for_conversation_mode(monkeypatch):
+    monkeypatch.setenv("S2S_RESPONSES_CONVERSATION", "1")
+
+    config = ops_core.OpsConfig.from_env()
+
+    assert config.profile_owned_context is True
 
 
 def test_build_policy_command_can_target_single_greet(tmp_path):
@@ -382,6 +412,7 @@ def test_start_runner_saves_actual_runner_pid_and_caffeinate_pid(tmp_path, monke
     assert state.requested_config["caffeinate_pid"] == 9876
     assert state.requested_config["record_audio"] is True
     assert state.requested_config["record_video"] is False
+    assert state.requested_config["profile_owned_context"] is False
 
 
 def test_start_runner_can_enable_raw_video_recording(tmp_path, monkeypatch):
@@ -902,10 +933,14 @@ def test_s2s_backend_launcher_supports_responses_wrapper_endpoint() -> None:
     assert '--responses_api_base_url "$S2S_RESPONSES_BASE_URL"' in text
     assert 'S2S_MODEL_NAME="${S2S_MODEL_NAME:-wrapper-routed}"' in text
     assert 'export OPENAI_API_KEY="local-wrapper"' in text
-    assert 'S2S_MODEL_NAME="${S2S_MODEL_NAME:-openai/gpt-5.4-mini}"' in text
+    assert 'S2S_MODEL_NAME="${S2S_MODEL_NAME:-openai/gpt-5.6-luna}"' in text
     assert "S2S_RESPONSES_CONVERSATION" in text
     assert "S2S_RESPONSES_DIRECT_BASE_URL" in text
     assert "S2S_RESPONSES_DIRECT_MODEL" in text
+    assert (
+        'S2S_RESPONSES_DIRECT_MODEL="${S2S_RESPONSES_DIRECT_MODEL:-openai/gpt-5.6-luna}"'
+        in text
+    )
     assert "S2S_RESPONSES_DIRECT_API_KEY" in text
 
 

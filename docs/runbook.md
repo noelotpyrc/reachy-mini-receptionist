@@ -35,14 +35,19 @@ backend folder owns only the installed service runtime.
 
 ## Backend LLM Context And Model Knobs
 
-The default clinic receptionist context is `profiles/clinic_receptionist/instructions.txt`. The live
-app sends that text in the realtime `session.update` instructions field and records
-`instructions_source`, `instructions_sha256`, and `instructions_chars` in run artifacts.
+Context ownership follows the backend mode. With `S2S_RESPONSES_CONVERSATION=1`, OPS launches the
+live app with `--profile-owned-context`: Hermes owns persona, clinic facts, capabilities, and tool
+policy, while the application sends an empty session prompt and the S2S voice adapter supplies only
+generic spoken-output rules. Run artifacts record `instructions_source=hermes-profile`, the empty
+prompt hash, and `instructions_chars=0`.
+
+The legacy direct-only backend fallback still defaults to
+`profiles/clinic_receptionist/instructions.txt`, because no Hermes profile supplies its context.
 
 For direct OpenRouter model swaps, keep the backend launcher on OpenRouter and set the model:
 
 ```bash
-S2S_PROVIDER=openrouter S2S_MODEL_NAME=openai/gpt-5.4-mini scripts/m1max/run_s2s_backend.sh
+S2S_PROVIDER=openrouter S2S_MODEL_NAME=openai/gpt-5.6-luna scripts/m1max/run_s2s_backend.sh
 ```
 
 For a Hermes / agentic wrapper experiment, point the S2S Responses slot at the wrapper's
@@ -52,8 +57,14 @@ OpenAI-compatible `/v1` endpoint:
 S2S_RESPONSES_BASE_URL=http://127.0.0.1:8787/v1 \
 S2S_MODEL_NAME=wrapper-routed \
 S2S_RESPONSES_API_KEY=local-wrapper \
+S2S_RESPONSES_CONVERSATION=1 \
 scripts/m1max/run_s2s_backend.sh
 ```
+
+OPS reads the same `S2S_RESPONSES_CONVERSATION` setting and automatically selects profile-owned
+context for normal sessions and policy preflights. Put the selected deployment settings in the
+deploy repo's `.env`; a one-command shell override used only to start the backend is not visible to a
+later OPS process.
 
 ## Start A Live Test
 

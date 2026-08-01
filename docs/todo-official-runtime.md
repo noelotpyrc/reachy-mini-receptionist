@@ -271,6 +271,10 @@ research plan for this item.
 `session.update` instructions, artifacts record the instruction source/hash/chars, and
 `scripts/m1max/run_s2s_backend.sh` can point the Responses slot at either OpenRouter or an
 OpenAI-compatible wrapper via `S2S_RESPONSES_BASE_URL`. No live robot test is required for this pass.
+**2026-07-31 ownership correction:** when conversation mode is enabled, OPS now selects
+`--profile-owned-context`; the application prompt is empty and auditable, S2S supplies generic voice
+rules, and Hermes is the sole owner of persona, clinic facts, capabilities, and tool policy. The full
+tracked profile prompt remains available only for direct-only fallback testing.
 **Done when:** clinic context is live; a documented comparison (quality vs latency) supports
 a model/wrapper decision.
 

@@ -243,10 +243,16 @@ LLM output, and Responses API tests pass.
   `S2S_RESPONSES_BASE_URL=http://127.0.0.1:8643/v1`
   (`reachyclinic-test`, wave-chat lane) +
   `S2S_RESPONSES_DIRECT_BASE_URL=https://openrouter.ai/api/v1` +
-  `S2S_RESPONSES_DIRECT_MODEL=openai/gpt-5.4-mini` (policy lane).
+  `S2S_RESPONSES_DIRECT_MODEL=openai/gpt-5.6-luna` (policy lane).
   Note the direct lane needs the OpenRouter key even when the primary key is
   the Hermes `API_SERVER_KEY`. Port 8642 is reserved for the production
   candidate `reachyclinic` profile after the promotion gate in §6.
+
+  Current model selection, updated 2026-07-30: both Hermes profiles use
+  `openai/gpt-5.6-luna` with `agent.reasoning_effort: low` and latency-first
+  provider routing. The direct policy lane uses the same model without an
+  explicit reasoning or provider-routing override, matching its benchmarked
+  request shape.
 
 ## 6. Hermes profile setup (context for the same pass; docs-backed)
 
@@ -292,8 +298,13 @@ Hermes profile:
 
 - Voice-output rules keep flowing per-request: the fork sends
   `build_voice_system_prompt(session instructions)` via the `instructions`
-  param. Keep the live app's `--instructions-file` payload minimal (a short
-  session line) — persona/facts/capabilities now live Hermes-side.
+  parameter. When `S2S_RESPONSES_CONVERSATION=1`, OPS starts the live app with
+  `--profile-owned-context`, making `session instructions` empty and recording
+  `instructions_source=hermes-profile`. The fork still supplies its generic
+  spoken-channel lead and voice rules; persona, facts, capabilities, and tool
+  policy come only from the selected Hermes profile. The full tracked
+  `instructions.txt` remains a direct-only fallback and is not injected into
+  Hermes conversations.
 - **Read-only reference library:** Hermes v0.17.0's built-in `file` toolset is
   not read-only: it always bundles `write_file` and `patch`, while `skills`
   bundles the mutating `skill_manage`. The API therefore enables only the

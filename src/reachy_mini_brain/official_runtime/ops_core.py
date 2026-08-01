@@ -70,6 +70,7 @@ class OpsConfig:
     python_bin: Path
     backend_start_timeout_s: float
     keep_awake: bool
+    profile_owned_context: bool = False
 
     @classmethod
     def from_env(cls) -> "OpsConfig":
@@ -118,6 +119,7 @@ class OpsConfig:
             python_bin=python_bin,
             backend_start_timeout_s=float(os.environ.get("BACKEND_START_TIMEOUT", "45")),
             keep_awake=_env_bool("OPS_KEEP_AWAKE", default=True),
+            profile_owned_context=_env_bool("S2S_RESPONSES_CONVERSATION", default=False),
         )
 
     @property
@@ -524,6 +526,7 @@ def start_runner(
             "capture_vision": config.capture_vision if capture_vision is None else capture_vision,
             "record_audio": config.record_audio if record_audio is None else record_audio,
             "record_video": config.record_video if record_video is None else record_video,
+            "profile_owned_context": config.profile_owned_context,
             "keep_awake": config.keep_awake,
             "caffeinate_pid": caffeinate_pid,
         },
@@ -693,7 +696,10 @@ def preflight_policy(
             log_path=logfile,
             artifact_root=config.artifact_root,
             started_at=datetime.now().isoformat(timespec="seconds"),
-            requested_config={"scripted_policy_flow": flow},
+            requested_config={
+                "scripted_policy_flow": flow,
+                "profile_owned_context": config.profile_owned_context,
+            },
             command=tuple(command),
         ),
     )
@@ -886,6 +892,8 @@ def build_live_command(
         "--record-video" if record_video else "--no-record-video",
         "--capture-vision" if capture_vision else "--no-capture-vision",
     ]
+    if config.profile_owned_context:
+        command.append("--profile-owned-context")
     if scripted_policy_flow != "none":
         command.extend(["--scripted-policy-flow", scripted_policy_flow])
         if scripted_policy_gap_s is not None:

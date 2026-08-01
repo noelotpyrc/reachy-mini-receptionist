@@ -71,7 +71,7 @@ Direct OpenRouter model swap:
 
 ```bash
 S2S_PROVIDER=openrouter \
-S2S_MODEL_NAME=openai/gpt-5.4-mini \
+S2S_MODEL_NAME=openai/gpt-5.6-luna \
 scripts/m1max/run_s2s_backend.sh
 ```
 
@@ -81,12 +81,16 @@ Hermes / agentic wrapper experiment, assuming the wrapper exposes an OpenAI-comp
 S2S_RESPONSES_BASE_URL=http://127.0.0.1:8787/v1 \
 S2S_MODEL_NAME=wrapper-routed \
 S2S_RESPONSES_API_KEY=local-wrapper \
+S2S_RESPONSES_CONVERSATION=1 \
 scripts/m1max/run_s2s_backend.sh
 ```
 
-The clinic receptionist context is not owned by this launcher. The live app loads
-`profiles/clinic_receptionist/instructions.txt`, sends it in realtime `session.update`, and records
-the instruction source/hash in run artifacts.
+Context ownership is selected by OPS from the launcher configuration. With
+`S2S_RESPONSES_CONVERSATION=1`, OPS passes `--profile-owned-context`; the live app sends an empty
+application prompt, records `instructions_source=hermes-profile`, and leaves receptionist identity,
+facts, capabilities, and tool policy to Hermes. The S2S adapter still applies generic voice-channel
+rules. The full tracked `profiles/clinic_receptionist/instructions.txt` is retained only for the
+direct-only fallback.
 
 Current running process:
 
@@ -105,7 +109,7 @@ STT: parakeet-tdt
   resolved on Apple Silicon to mlx-community/parakeet-tdt-0.6b-v3 on mps
 
 LLM: responses-api
-  model: openai/gpt-5.4-mini through OpenRouter
+  model: openai/gpt-5.6-luna through OpenRouter
   note: m1max had OPENROUTER_API_KEY, not OPENAI_API_KEY
 
 TTS: qwen3

@@ -815,6 +815,17 @@ def test_live_app_loads_backend_instruction_provenance(tmp_path):
     assert inline_provenance["instructions_source"] == "inline"
     assert inline_provenance["instructions_sha256"] == hashlib.sha256(inline_text.encode("utf-8")).hexdigest()
 
+    profile_text, profile_provenance = _load_backend_instructions(
+        instructions_file=instructions_file,
+        instructions=None,
+        profile_owned_context=True,
+    )
+
+    assert profile_text == ""
+    assert profile_provenance["instructions_source"] == "hermes-profile"
+    assert profile_provenance["instructions_sha256"] == hashlib.sha256(b"").hexdigest()
+    assert profile_provenance["instructions_chars"] == 0
+
 
 def test_reachy_audio_source_reads_fake_robot_audio_as_int16():
     async def run():
@@ -1730,6 +1741,46 @@ def test_s2s_realtime_handler_sends_session_and_audio_without_official_app():
     assert snapshot["instructions_sha256"] == hashlib.sha256(b"You are a clinic receptionist.").hexdigest()
     assert snapshot["instructions_chars"] == len("You are a clinic receptionist.")
     assert "hf.realtime.session.created" in events.kinds()
+
+
+def test_profile_owned_context_sends_empty_realtime_instructions_without_audio(tmp_path):
+    async def run():
+        events = InMemoryEventSink()
+        websocket = _FakeWebSocket()
+        legacy_instructions = tmp_path / "instructions.txt"
+        legacy_instructions.write_text("Fictional Lakeside clinic facts.", encoding="utf-8")
+        instructions, provenance = _load_backend_instructions(
+            instructions_file=legacy_instructions,
+            instructions=None,
+            profile_owned_context=True,
+        )
+
+        async def connect_factory(url):
+            return websocket
+
+        handler = S2SRealtimeHandler(
+            realtime_ws_url="ws://127.0.0.1:8765/v1/realtime",
+            instructions=instructions,
+            instructions_source=provenance["instructions_source"],
+            instructions_sha256=provenance["instructions_sha256"],
+            event_sink=events,
+            startup_timeout_s=1.0,
+            connect_factory=connect_factory,
+        )
+        await websocket.incoming.put({"type": "session.created", "session": {"id": "sess-profile"}})
+        await handler.start_up()
+        await handler.shutdown()
+        return events, websocket
+
+    events, websocket = asyncio.run(run())
+
+    assert websocket.sent[0]["type"] == "session.update"
+    assert websocket.sent[0]["session"]["instructions"] == ""
+    assert "Lakeside" not in json.dumps(websocket.sent[0])
+    snapshot = next(event for event in events.events if event.kind == "hf.session.snapshot").data
+    assert snapshot["instructions_source"] == "hermes-profile"
+    assert snapshot["instructions_sha256"] == hashlib.sha256(b"").hexdigest()
+    assert snapshot["instructions_chars"] == 0
 
 
 def test_s2s_realtime_handler_emits_transcript_audio_and_text_requests():

@@ -44,8 +44,12 @@ def _load_backend_instructions(
     *,
     instructions_file: Path,
     instructions: str | None,
+    profile_owned_context: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-    if instructions is not None:
+    if profile_owned_context:
+        text = ""
+        source = "hermes-profile"
+    elif instructions is not None:
         text = instructions
         source = "inline"
     else:
@@ -86,6 +90,12 @@ def _instruction_provenance(instructions: str, *, source: str) -> dict[str, Any]
 @click.option("--vision-interval", type=float, default=0.2, show_default=True)
 @click.option("--instructions-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=DEFAULT_PROFILE_INSTRUCTIONS)
 @click.option("--instructions", default=None, help="Inline backend instructions. Overrides --instructions-file.")
+@click.option(
+    "--profile-owned-context",
+    is_flag=True,
+    default=False,
+    help="Send no application profile prompt because the upstream Hermes profile owns receptionist context.",
+)
 @click.option("--hf-voice", default="Sohee", show_default=True)
 @click.option("--hf-connection-mode", type=click.Choice(["local", "deployed"]), default="local", show_default=True)
 @click.option("--hf-realtime-ws-url", envvar="HF_REALTIME_WS_URL", default="ws://100.127.86.67:8765/v1/realtime")
@@ -180,6 +190,7 @@ async def _run_live(
     vision_interval: float,
     instructions_file: Path,
     instructions: str | None,
+    profile_owned_context: bool,
     hf_voice: str,
     hf_connection_mode: str,
     hf_realtime_ws_url: str,
@@ -203,6 +214,7 @@ async def _run_live(
     backend_instructions, instructions_provenance = _load_backend_instructions(
         instructions_file=instructions_file,
         instructions=instructions,
+        profile_owned_context=profile_owned_context,
     )
     recorder = ArtifactRecorder(
         artifact_root,
@@ -219,6 +231,7 @@ async def _run_live(
             "perception": perception,
             "gestures": gestures,
             "audio_gate": audio_gate,
+            "profile_owned_context": profile_owned_context,
             "ready_cue": ready_cue,
             "ready_cue_hold": ready_cue_hold,
             "conversation_cues": conversation_cues,
