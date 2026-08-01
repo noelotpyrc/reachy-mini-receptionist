@@ -63,13 +63,16 @@ if [[ "$S2S_RESPONSES_CONVERSATION" == "1" ]]; then
   if [[ -n "$S2S_RESPONSES_DIRECT_MODEL" ]]; then
     RESPONSES_DIRECT_ARGS+=(--responses_api_direct_model_name "$S2S_RESPONSES_DIRECT_MODEL")
   fi
+  if [[ -z "$S2S_RESPONSES_DIRECT_API_KEY" ]]; then
+    S2S_RESPONSES_DIRECT_API_KEY="${RESPONSES_API_DIRECT_API_KEY:-}"
+  fi
   if [[ -z "$S2S_RESPONSES_DIRECT_API_KEY" && "$S2S_RESPONSES_DIRECT_BASE_URL" == "https://openrouter.ai/api/v1" ]]; then
     S2S_RESPONSES_DIRECT_API_KEY="${OPENROUTER_API_KEY:-}"
   fi
   if [[ -n "$S2S_RESPONSES_DIRECT_API_KEY" ]]; then
-    RESPONSES_DIRECT_ARGS+=(--responses_api_direct_api_key "$S2S_RESPONSES_DIRECT_API_KEY")
+    export RESPONSES_API_DIRECT_API_KEY="$S2S_RESPONSES_DIRECT_API_KEY"
   elif [[ "$S2S_RESPONSES_DIRECT_BASE_URL" == "https://openrouter.ai/api/v1" ]]; then
-    echo "The direct OpenRouter lane requires S2S_RESPONSES_DIRECT_API_KEY or OPENROUTER_API_KEY." >&2
+    echo "The direct OpenRouter lane requires S2S_RESPONSES_DIRECT_API_KEY, RESPONSES_API_DIRECT_API_KEY, or OPENROUTER_API_KEY." >&2
     exit 2
   fi
 fi

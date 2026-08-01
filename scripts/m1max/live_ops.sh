@@ -70,6 +70,10 @@ log() {
   printf '[live-ops] %s\n' "$*" >&2
 }
 
+redact_process_args() {
+  sed -E 's/(--[[:alnum:]_-]*(api[-_]?key|token|secret|password)[[:alnum:]_-]*) [^ ]+/\1 <redacted>/g'
+}
+
 robot_get() {
   curl -fsS "${ROBOT_API}$1"
 }
@@ -221,7 +225,7 @@ start_backend_if_needed() {
 
 status() {
   printf '[live-ops] m1max processes\n'
-  ps -ef | grep -E "$LIVE_PATTERN|$BACKEND_PATTERN" | grep -v grep || true
+  ps -ef | grep -E "$LIVE_PATTERN|$BACKEND_PATTERN" | grep -v grep | redact_process_args || true
   printf '[live-ops] robot daemon\n'
   robot_get "/api/daemon/status" || true
   printf '\n'

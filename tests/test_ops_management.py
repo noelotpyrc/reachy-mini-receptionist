@@ -712,7 +712,7 @@ def test_s2s_backend_setup_script_contract() -> None:
     assert script.exists()
     assert "S2S_BACKEND_VERSION:-0.2.10" in text
     assert "https://github.com/noelotpyrc/speech-to-speech.git" in text
-    assert "8b6f3f4c8dcda84c8777dbec801d125ee77d575c" in text
+    assert "be84d4f7ba4aa11cc21ddcd7c47698af318eabd1" in text
     assert "speech_to_speech_fork_url" in text
     assert "speech_to_speech_fork_sha" in text
     assert "/Users/leon/projects/speech_to_speech_backend" in text
@@ -942,6 +942,16 @@ def test_s2s_backend_launcher_supports_responses_wrapper_endpoint() -> None:
         in text
     )
     assert "S2S_RESPONSES_DIRECT_API_KEY" in text
+    assert 'export RESPONSES_API_DIRECT_API_KEY="$S2S_RESPONSES_DIRECT_API_KEY"' in text
+    assert "--responses_api_direct_api_key" not in text
+
+
+def test_live_ops_status_redacts_credential_arguments() -> None:
+    text = Path("scripts/m1max/live_ops.sh").read_text(encoding="utf-8")
+
+    assert "redact_process_args" in text
+    assert "api[-_]?key|token|secret|password" in text
+    assert "grep -v grep | redact_process_args" in text
 
 
 def test_s2s_backend_launcher_rejects_conversation_without_wrapper(tmp_path: Path) -> None:
@@ -967,7 +977,14 @@ def test_s2s_backend_launcher_passes_conversation_and_direct_lane_args(tmp_path:
     backend_dir = tmp_path / "backend"
     cli = backend_dir / ".venv" / "bin" / "speech-to-speech"
     cli.parent.mkdir(parents=True)
-    cli.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
+    cli.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"${RESPONSES_API_DIRECT_API_KEY:-}\" == \"direct-key\" ]]; then\n"
+        "  printf 'direct-key-env=set\\n' >&2\n"
+        "fi\n"
+        "printf '%s\\n' \"$@\"\n",
+        encoding="utf-8",
+    )
     cli.chmod(0o755)
 
     result = subprocess.run(
@@ -986,7 +1003,7 @@ def test_s2s_backend_launcher_passes_conversation_and_direct_lane_args(tmp_path:
             "S2S_RESPONSES_CONVERSATION_PREFIX": "reachy-test",
             "S2S_RESPONSES_DIRECT_BASE_URL": "https://openrouter.ai/api/v1",
             "S2S_RESPONSES_DIRECT_MODEL": "openai/gpt-5.4-mini",
-            "S2S_RESPONSES_DIRECT_API_KEY": "direct-key",
+            "OPENROUTER_API_KEY": "direct-key",
         },
     )
 
@@ -997,7 +1014,9 @@ def test_s2s_backend_launcher_passes_conversation_and_direct_lane_args(tmp_path:
     assert "--no_responses_api_disable_thinking" in args
     assert args[args.index("--responses_api_direct_base_url") + 1] == "https://openrouter.ai/api/v1"
     assert args[args.index("--responses_api_direct_model_name") + 1] == "openai/gpt-5.4-mini"
-    assert args[args.index("--responses_api_direct_api_key") + 1] == "direct-key"
+    assert "--responses_api_direct_api_key" not in args
+    assert "direct-key" not in result.stdout
+    assert "direct-key-env=set" in result.stderr
 
 
 def test_s2s_backend_setup_script_dry_run_does_not_create_backend_dir(tmp_path: Path) -> None:

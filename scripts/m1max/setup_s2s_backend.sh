@@ -4,7 +4,7 @@ set -euo pipefail
 BACKEND_DIR="${BACKEND_DIR:-/Users/leon/projects/speech_to_speech_backend}"
 BACKEND_VERSION="${S2S_BACKEND_VERSION:-0.2.10}"
 BACKEND_FORK_URL="${S2S_BACKEND_FORK_URL:-https://github.com/noelotpyrc/speech-to-speech.git}"
-BACKEND_FORK_SHA="${S2S_BACKEND_FORK_SHA:-8b6f3f4c8dcda84c8777dbec801d125ee77d575c}"
+BACKEND_FORK_SHA="${S2S_BACKEND_FORK_SHA:-be84d4f7ba4aa11cc21ddcd7c47698af318eabd1}"
 S2S_HOST="${S2S_HOST:-127.0.0.1}"
 S2S_PORT="${S2S_PORT:-8765}"
 PYTHON_BIN="${PYTHON_BIN:-}"
@@ -36,7 +36,7 @@ Environment:
   BACKEND_DIR=/Users/leon/projects/speech_to_speech_backend
   S2S_BACKEND_VERSION=0.2.10
   S2S_BACKEND_FORK_URL=https://github.com/noelotpyrc/speech-to-speech.git
-  S2S_BACKEND_FORK_SHA=8b6f3f4c8dcda84c8777dbec801d125ee77d575c
+  S2S_BACKEND_FORK_SHA=be84d4f7ba4aa11cc21ddcd7c47698af318eabd1
   S2S_HOST=127.0.0.1
   S2S_PORT=8765
   PYTHON_BIN=python3.12

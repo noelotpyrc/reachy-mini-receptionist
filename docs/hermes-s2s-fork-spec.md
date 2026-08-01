@@ -104,7 +104,7 @@ Fork: https://github.com/noelotpyrc/speech-to-speech (created 2026-07-13). Branc
 release`). The upstream/fork repository did not contain the assumed `v0.2.10`
 tag, so the release commit is the verified base. Keep `main` tracking upstream
 so future rebases stay cheap. The implementation is pushed at
-`8b6f3f4c8dcda84c8777dbec801d125ee77d575c`; m1max installs that exact sha (see
+`be84d4f7ba4aa11cc21ddcd7c47698af318eabd1`; m1max installs that exact sha (see
 §5). The fork is public — keep it generic (feature flags only, nothing
 clinic-specific or secret).
 
@@ -121,7 +121,7 @@ responses_api_direct_base_url: Optional[str] = None
     # Plain Responses endpoint for explicit response.create (policy) turns.
     # Falls back to responses_api_base_url when unset.
 responses_api_direct_model_name: Optional[str] = None   # falls back to model_name
-responses_api_direct_api_key: Optional[str] = None      # falls back to responses_api_api_key / env
+responses_api_direct_api_key: Optional[str] = None      # falls back to RESPONSES_API_DIRECT_API_KEY, responses_api_api_key, or env
 ```
 
 ### 4b. `LLM/responses_api_language_model.py`
@@ -227,15 +227,20 @@ LLM output, and Responses API tests pass.
   temporarily point at a local clone via `pip install -e`; re-run the setup
   script afterwards to restore the pinned state.
   Current pin:
-  `8b6f3f4c8dcda84c8777dbec801d125ee77d575c`.
+  `be84d4f7ba4aa11cc21ddcd7c47698af318eabd1`.
 - `scripts/m1max/run_s2s_backend.sh`: add env switches:
 
   ```bash
   S2S_RESPONSES_CONVERSATION=1        # → --responses_api_conversation
   S2S_RESPONSES_DIRECT_BASE_URL=...   # → --responses_api_direct_base_url
   S2S_RESPONSES_DIRECT_MODEL=...      # → --responses_api_direct_model_name
-  S2S_RESPONSES_DIRECT_API_KEY=...    # → --responses_api_direct_api_key
+  S2S_RESPONSES_DIRECT_API_KEY=...    # optional override; exported as RESPONSES_API_DIRECT_API_KEY
   ```
+
+  The launcher normally resolves the direct credential from
+  `OPENROUTER_API_KEY`, exports it only in the child environment, and never puts
+  it in process arguments. `live_ops.sh status` also redacts credential-like
+  arguments as defense in depth.
 
   Guard: refuse `S2S_RESPONSES_CONVERSATION=1` unless
   `S2S_RESPONSES_BASE_URL` is also set (conversation names are
