@@ -1,5 +1,9 @@
 # Runbook - bring up the reception robot
 
+Offline profile, model, policy, and S2S checks are indexed in the
+[Runtime Test Catalog](runtime-test-catalog.md). This runbook remains the source
+of truth for physical preflight and live operation.
+
 ## Current Live Path
 
 Use the accepted official-runtime path for normal live tests:

@@ -117,11 +117,11 @@ m1max live_ops.sh
 
 ```bash
 # Automated integration tests
-.venv/bin/python -m pytest tests/test_integration.py -v
+.venv/bin/python -m pytest tests/test_integration.py -m hardware -v
 
 # Human-observable e2e tests (requires -s for confirm prompts)
-.venv/bin/python -m pytest tests/test_e2e.py -v -s
-.venv/bin/python -m pytest tests/test_e2e_vision.py -v -s
+.venv/bin/python -m pytest tests/test_e2e.py -m hardware -v -s
+.venv/bin/python -m pytest tests/test_e2e_vision.py -m hardware -v -s
 ```
 
 ## Docs

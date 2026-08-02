@@ -1,6 +1,6 @@
 """End-to-end tests for Reachy Mini — requires human observation.
 
-Run with: .venv/bin/python -m pytest tests/test_e2e.py -v -s
+Run with: .venv/bin/python -m pytest tests/test_e2e.py -m hardware -v -s
   -s is REQUIRED so you can see prompts and confirm behavior.
 
 Each test tells you what to expect, does the action, then asks you
@@ -14,6 +14,8 @@ import time
 import pytest
 
 from reachy_mini_brain import robot
+
+pytestmark = pytest.mark.hardware
 
 PYTHON = ".venv/bin/python"
 CWD = "/Users/lliao/work/reachy_mini"

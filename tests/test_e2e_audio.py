@@ -1,6 +1,6 @@
 """End-to-end audio/video tests for Reachy Mini.
 
-Run with: .venv/bin/python -m pytest tests/test_e2e_audio.py -v -s
+Run with: .venv/bin/python -m pytest tests/test_e2e_audio.py -m hardware -v -s
 
 These tests require:
   - Robot powered on and connected over WiFi
@@ -24,6 +24,8 @@ import subprocess
 import time
 
 import pytest
+
+pytestmark = pytest.mark.hardware
 
 PYTHON = ".venv/bin/python"
 CWD = "/Users/lliao/work/reachy_mini"

@@ -1,6 +1,6 @@
 """End-to-end vision tests for Reachy Mini.
 
-Run with: .venv/bin/python -m pytest tests/test_e2e_vision.py -v -s
+Run with: .venv/bin/python -m pytest tests/test_e2e_vision.py -m hardware -v -s
 
 Tests:
   1. take-photo — camera captures a frame and saves JPEG
@@ -15,6 +15,8 @@ import subprocess
 import time
 
 import pytest
+
+pytestmark = pytest.mark.hardware
 
 PYTHON = ".venv/bin/python"
 CWD = "/Users/lliao/work/reachy_mini"

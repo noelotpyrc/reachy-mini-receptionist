@@ -1,6 +1,6 @@
 """Integration tests against a live Reachy Mini robot.
 
-Run with: .venv/bin/python -m pytest tests/test_integration.py -v
+Run with: .venv/bin/python -m pytest tests/test_integration.py -m hardware -v
 
 Requires the robot to be on the network at reachy-mini.local:8000.
 """
@@ -11,6 +11,8 @@ import subprocess
 import sys
 
 import pytest
+
+pytestmark = pytest.mark.hardware
 
 PYTHON = ".venv/bin/python"
 

@@ -101,3 +101,11 @@ environments = ["sys_platform == 'darwin'"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/reachy_mini_brain"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not hardware and not optional_livekit'"
+markers = [
+    "hardware: requires a connected Reachy Mini and may require human observation",
+    "optional_livekit: requires the optional LiveKit dependency group",
+]

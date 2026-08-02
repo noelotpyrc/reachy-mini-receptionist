@@ -466,6 +466,11 @@ OpenRouter probes confirmed 516 reasoning tokens for
 
 ## 8. Acceptance checks (staging profile first, live last)
 
+The independent commands, intended test layers, and practical promotion gates
+are indexed in [Runtime Test Catalog](runtime-test-catalog.md). The catalog does
+not replace the acceptance details below or aggregate the harnesses into one
+runner.
+
 All Hermes checks below target `reachyclinic-test` on port 8643. They must not
 write to or restart the production-candidate `reachyclinic` profile.
 

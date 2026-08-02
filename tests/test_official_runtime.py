@@ -2204,6 +2204,7 @@ def test_load_project_env_reads_dotenv_without_overriding_shell_env(tmp_path, mo
     assert os.environ["LIVEKIT_AGENT_NAME"] == "reachy-mini-test"
 
 
+@pytest.mark.optional_livekit
 def test_livekit_room_bridge_reports_missing_credentials_before_network():
     async def run():
         bridge = LiveKitRoomBridge(
@@ -2223,6 +2224,7 @@ def test_livekit_room_bridge_reports_missing_credentials_before_network():
     assert "LiveKit token is required" in message
 
 
+@pytest.mark.optional_livekit
 def test_livekit_replay_cli_writes_failed_manifest_when_credentials_missing(tmp_path, monkeypatch):
     for key in ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "LIVEKIT_TOKEN", "LIVEKIT_ROOM"]:
         monkeypatch.delenv(key, raising=False)
