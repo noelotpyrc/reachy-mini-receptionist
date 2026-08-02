@@ -99,6 +99,31 @@ PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli \
   --confirm-physical start-session --record-audio --capture-vision
 ```
 
+The vision greet/goodbye implementation is selected in the deploy repo's `.env`:
+
+```bash
+# Safe default and immediate rollback target.
+RECEPTION_VISITOR_TRIGGER_PROFILE=legacy
+
+# Captured-evaluation candidate for controlled live acceptance.
+RECEPTION_VISITOR_TRIGGER_PROFILE=visitor-v1-20260802
+```
+
+Only one value should be active. A changed value applies to the next OPS invocation and live
+process, so stop the current session normally and start a new one. Unknown profile names fail at
+startup. The run manifest's `config.visitor_trigger_profile` object records the selected name and
+complete resolved configuration.
+
+To reproduce a live profile offline against a retained video:
+
+```bash
+reception-vision-replay path/to/video.mkv \
+  --visitor-trigger-profile visitor-v1-20260802
+```
+
+Rollback is operational: set `RECEPTION_VISITOR_TRIGGER_PROFILE=legacy`, then start a new session.
+It does not require reverting a commit or redeploying code.
+
 Add `--record-video` only when raw MKV video is needed. It increases artifact size.
 
 Stop and clean up:

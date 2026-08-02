@@ -687,17 +687,19 @@ def test_reception_policy_idle_tick_closes_conversation():
 def test_perception_pipeline_accepts_injected_detector_and_writes_events(tmp_path):
     events_path = tmp_path / "vision-events.jsonl"
     frame = np.zeros((10, 20, 3), dtype=np.uint8)
+    tracker = _FakeTracker([{"kind": "approach", "id": 1, "area": 0.2}])
     pipeline = PerceptionPipeline(
         detector=_FakeDetector([{"id": 1}]),
-        tracker_factory=lambda frame_wh: _FakeTracker([{"kind": "approach", "id": 1, "area": 0.2}]),
+        tracker_factory=lambda frame_wh: tracker,
         events_path=events_path,
     )
 
-    events, people, tracks = pipeline.process(frame)
+    events, people, tracks = pipeline.process(frame, ts=123.456)
 
     assert events == [{"kind": "approach", "id": 1, "area": 0.2}]
     assert people == 1
     assert tracks == [{"id": 1, "area": 0.2}]
+    assert tracker.timestamps == [123.456]
     rows = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     assert rows[0]["type"] == "approach"
     assert rows[0]["id"] == 1
@@ -782,6 +784,7 @@ def test_vision_replay_cli_help_loads_without_detector_dependencies():
 
     assert result.exit_code == 0
     assert "Replay recorded video" in result.output
+    assert "--visitor-trigger-profile" in result.output
 
 
 def test_official_runtime_live_cli_help_loads_without_robot_dependencies():
@@ -793,6 +796,14 @@ def test_official_runtime_live_cli_help_loads_without_robot_dependencies():
     assert "--hf-connection-mode" in result.output
     assert "--ready-cue" in result.output
     assert "--scripted-playback-wav" in result.output
+    assert "--visitor-trigger-profile" in result.output
+
+
+def test_live_cli_rejects_unknown_visitor_trigger_profile():
+    result = CliRunner().invoke(live_app_cli, ["--visitor-trigger-profile", "latest"])
+
+    assert result.exit_code == 2
+    assert "Invalid value for '--visitor-trigger-profile'" in result.output
 
 
 def test_live_app_loads_backend_instruction_provenance(tmp_path):
@@ -1162,12 +1173,14 @@ class _FakeTracker:
     def __init__(self, events=None):
         self.events = list(events or [])
         self.frame_debug = [{"id": 1, "area": 0.2}]
+        self.timestamps = []
 
     @property
     def debug_state(self):
         return {"fake": True}
 
-    def update(self, persons):
+    def update(self, persons, *, ts=None):
+        self.timestamps.append(ts)
         return list(self.events)
 
 

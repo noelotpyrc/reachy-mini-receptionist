@@ -31,6 +31,11 @@ from .reception import ReceptionPolicy, ReceptionPolicySettings
 from .robot_io import ReachyAudioSink, ReachyAudioSource, ReachyCameraFrameProvider, ReachyRobotSession
 from .s2s_realtime import S2SRealtimeHandler
 from .stream_runtime import CompositeRuntimeObserver, OfficialStyleStreamRuntime
+from .visitor_trigger_profiles import (
+    DEFAULT_VISITOR_TRIGGER_PROFILE,
+    VISITOR_TRIGGER_PROFILE_NAMES,
+    resolve_visitor_trigger_profile,
+)
 
 
 load_project_env()
@@ -87,6 +92,14 @@ def _instruction_provenance(instructions: str, *, source: str) -> dict[str, Any]
 @click.option("--conversation-cue-rest-s", type=float, default=0.38, show_default=True, help="Thinking cue rest-position hold seconds.")
 @click.option("--perception-threshold", type=float, default=0.5, show_default=True)
 @click.option("--perception-smooth", type=int, default=0, show_default=True)
+@click.option(
+    "--visitor-trigger-profile",
+    envvar="RECEPTION_VISITOR_TRIGGER_PROFILE",
+    type=click.Choice(VISITOR_TRIGGER_PROFILE_NAMES),
+    default=DEFAULT_VISITOR_TRIGGER_PROFILE,
+    show_default=True,
+    help="Versioned greet/goodbye trigger implementation.",
+)
 @click.option("--vision-interval", type=float, default=0.2, show_default=True)
 @click.option("--instructions-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=DEFAULT_PROFILE_INSTRUCTIONS)
 @click.option("--instructions", default=None, help="Inline backend instructions. Overrides --instructions-file.")
@@ -187,6 +200,7 @@ async def _run_live(
     conversation_cue_rest_s: float,
     perception_threshold: float,
     perception_smooth: int,
+    visitor_trigger_profile: str,
     vision_interval: float,
     instructions_file: Path,
     instructions: str | None,
@@ -211,6 +225,7 @@ async def _run_live(
     scripted_playback_wav: Path | None,
     scripted_playback_post_roll_s: float,
 ) -> None:
+    resolved_visitor_profile = resolve_visitor_trigger_profile(visitor_trigger_profile)
     backend_instructions, instructions_provenance = _load_backend_instructions(
         instructions_file=instructions_file,
         instructions=instructions,
@@ -230,6 +245,10 @@ async def _run_live(
             "capture_vision": capture_vision,
             "perception": perception,
             "gestures": gestures,
+            "perception_threshold": perception_threshold,
+            "perception_smooth": perception_smooth,
+            "vision_interval": vision_interval,
+            "visitor_trigger_profile": resolved_visitor_profile.metadata(smooth=perception_smooth),
             "audio_gate": audio_gate,
             "profile_owned_context": profile_owned_context,
             "ready_cue": ready_cue,
@@ -438,6 +457,7 @@ async def _run_live(
                     threshold=perception_threshold,
                     smooth=perception_smooth,
                     gestures=gestures,
+                    visitor_trigger_profile=resolved_visitor_profile.name,
                 ),
                 name="official-runtime-vision",
             )
@@ -1104,9 +1124,16 @@ async def _vision_loop(
     threshold: float,
     smooth: int,
     gestures: bool,
+    visitor_trigger_profile: str,
 ) -> None:
     pipeline = (
-        PerceptionPipeline(threshold=threshold, smooth=smooth, gestures=gestures, event_sink=diagnostic_sink)
+        PerceptionPipeline(
+            threshold=threshold,
+            smooth=smooth,
+            gestures=gestures,
+            event_sink=diagnostic_sink,
+            visitor_trigger_profile=visitor_trigger_profile,
+        )
         if perception_enabled
         else None
     )
@@ -1123,7 +1150,7 @@ async def _vision_loop(
             people = 0
             tracks: list[dict[str, Any]] = []
             if pipeline is not None:
-                events, people, tracks = pipeline.process(frame, bgr=True)
+                events, people, tracks = pipeline.process(frame, bgr=True, ts=frame_ts)
             recorder.vision_frame(frame, people=people, tracks=tracks, events=events, fps=fps, ts=frame_ts)
             for event in events:
                 await policy_engine.handle_event(

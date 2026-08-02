@@ -15,6 +15,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .events import EventSink, RuntimeEvent
+from .visitor_triggers import HeightSignalConfig, TrackBox, VisitorTriggerConfig, VisitorTriggerEngine
+from .visitor_trigger_profiles import (
+    DEFAULT_VISITOR_TRIGGER_PROFILE,
+    VisitorTriggerProfile,
+    resolve_visitor_trigger_profile,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -50,7 +56,139 @@ class PersonDetector:
 
 
 class ApproachTracker:
-    """Dominant-person approach/departure state machine."""
+    """Adapt ByteTrack person boxes to visitor greet/goodbye trigger rules."""
+
+    def __init__(
+        self,
+        frame_wh: tuple[int, int],
+        *,
+        growth_factor: float = 1.3,
+        greet_floor: float = 0.10,
+        min_area_frac: float = 0.06,
+        depart_factor: float = 0.6,
+        present_frac: float = 0.03,
+        reset_absent: int = 40,
+        history: int = 30,
+        smooth: int = 0,
+        trigger_config: VisitorTriggerConfig | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        import supervision as sv
+
+        self.W, self.H = frame_wh
+        # Retain the legacy constructor attributes for callers while evaluation selects
+        # replacement height thresholds independently from the old area heuristic.
+        self.growth_factor = growth_factor
+        self.greet_floor = greet_floor
+        self.min_area_frac = min_area_frac
+        self.depart_factor = depart_factor
+        self.present_frac = present_frac
+        self.reset_absent = reset_absent
+        self.history = history
+        self._clock = clock
+        self.frame_debug: list[dict[str, Any]] = []
+        self._last_dom_area = 0.0
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self._tracker = sv.ByteTrack()
+        self._smoother = sv.DetectionsSmoother(length=smooth) if smooth > 0 else None
+        if trigger_config is None:
+            trigger_config = VisitorTriggerConfig(
+                present_area_frac=present_frac,
+                absent_reset_s=reset_absent * 0.2,
+                height_signal=HeightSignalConfig(max_samples=history),
+            )
+        self._engine = VisitorTriggerEngine(trigger_config)
+
+    @property
+    def debug_state(self) -> dict[str, Any]:
+        return {"dom_area": self._last_dom_area, **self._engine.debug_state}
+
+    def update(self, persons: Any, *, ts: float | None = None) -> list[dict[str, Any]]:
+        tracked = self._tracker.update_with_detections(persons)
+        if self._smoother is not None:
+            tracked = self._smoother.update_with_detections(tracked)
+
+        boxes: list[TrackBox] = []
+        for i in range(len(tracked)):
+            if tracked.tracker_id is None:
+                continue
+            tid = int(tracked.tracker_id[i])
+            boxes.append(
+                self._track_box(
+                    tracked.xyxy[i],
+                    track_id=tid,
+                    source_track_id=tid,
+                    tracking_source="byte_track",
+                )
+            )
+
+        scene_person_count = len(persons)
+        if not boxes and scene_person_count == 1 and self._engine.active_track_id is not None:
+            boxes.append(
+                self._track_box(
+                    persons.xyxy[0],
+                    track_id=self._engine.active_track_id,
+                    source_track_id=None,
+                    tracking_source="raw_detection_fallback",
+                )
+            )
+        frame_ts = float(ts if ts is not None else self._clock())
+        events = self._engine.update(
+            frame_ts,
+            boxes,
+            scene_person_count=scene_person_count,
+        )
+        self._last_dom_area = max((box.area for box in boxes), default=0.0)
+        self.frame_debug = [
+            {
+                "id": box.track_id,
+                "source_track_id": box.source_track_id,
+                "tracking_source": box.tracking_source,
+                "area": round(box.area, 3),
+                "height": round(box.height, 3),
+                "clipped": box.clipped,
+                "cx": round(box.cx, 2),
+                "cy": round(box.cy, 2),
+                "box": list(box.box),
+                **self._engine.track_debug(box.track_id),
+            }
+            for box in boxes
+        ]
+        return events
+
+    def _track_box(
+        self,
+        xyxy: Any,
+        *,
+        track_id: int,
+        source_track_id: int | None,
+        tracking_source: str,
+    ) -> TrackBox:
+        x1, y1, x2, y2 = xyxy
+        frame_area = float(self.W * self.H)
+        area = max(0.0, ((x2 - x1) * (y2 - y1)) / frame_area)
+        cx = ((x1 + x2) / 2) / self.W
+        cy = ((y1 + y2) / 2) / self.H
+        visible_y1 = max(0.0, float(y1))
+        visible_y2 = min(float(self.H), float(y2))
+        height = max(0.0, visible_y2 - visible_y1) / self.H
+        clip_margin = max(2.0, self.H * 0.01)
+        return TrackBox(
+            track_id=track_id,
+            area=float(area),
+            cx=float(cx),
+            cy=float(cy),
+            height=float(height),
+            clipped=bool(y1 <= clip_margin or y2 >= self.H - clip_margin),
+            box=(int(x1), int(y1), int(x2), int(y2)),
+            tracking_source=tracking_source,
+            source_track_id=source_track_id,
+        )
+
+
+class LegacyApproachTracker:
+    """Original dominant-area heuristic retained as the rollback profile."""
 
     def __init__(
         self,
@@ -93,7 +231,8 @@ class ApproachTracker:
             "depart": self._depart_fired,
         }
 
-    def update(self, persons: Any) -> list[dict[str, Any]]:
+    def update(self, persons: Any, *, ts: float | None = None) -> list[dict[str, Any]]:
+        del ts
         tracked = self._tracker.update_with_detections(persons)
         if self._smoother is not None:
             tracked = self._smoother.update_with_detections(tracked)
@@ -132,7 +271,11 @@ class ApproachTracker:
         self._dom_hist: list[float] = []
         self._last_dom_area = 0.0
 
-    def _update_visit(self, dom_area: float, dom: tuple[int, float, float, float] | None) -> list[dict[str, Any]]:
+    def _update_visit(
+        self,
+        dom_area: float,
+        dom: tuple[int, float, float, float] | None,
+    ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         self._fc += 1
         self._last_dom_area = dom_area
@@ -152,8 +295,8 @@ class ApproachTracker:
                     events.append(self._event("approach", *dom))
 
             if not self._depart_fired and self._visit_peak >= self.min_area_frac:
-                thresh = self._visit_peak * self.depart_factor
-                receding = len(self._dom_hist) >= 2 and all(a <= thresh for a in self._dom_hist[-2:])
+                threshold = self._visit_peak * self.depart_factor
+                receding = len(self._dom_hist) >= 2 and all(area <= threshold for area in self._dom_hist[-2:])
                 if receding and dom is not None:
                     self._depart_fired = True
                     events.append(self._event("depart", *dom))
@@ -173,6 +316,19 @@ class ApproachTracker:
             "cx": float(round(cx, 2)),
             "cy": float(round(cy, 2)),
         }
+
+
+def build_approach_tracker(
+    frame_wh: tuple[int, int],
+    *,
+    profile: VisitorTriggerProfile,
+    smooth: int = 0,
+) -> ApproachTracker | LegacyApproachTracker:
+    if profile.implementation == "legacy_area_v1":
+        return LegacyApproachTracker(frame_wh, smooth=smooth, **profile.parameters)
+    if profile.implementation == "visitor_height_v1":
+        return ApproachTracker(frame_wh, smooth=smooth, trigger_config=profile.trigger_config)
+    raise ValueError(f"unsupported visitor trigger implementation: {profile.implementation}")
 
 
 class GestureDetector:
@@ -229,11 +385,13 @@ class PerceptionPipeline:
         gesture_detector: Any | None = None,
         event_sink: EventSink | None = None,
         clock: Callable[[], float] = time.time,
+        visitor_trigger_profile: str = DEFAULT_VISITOR_TRIGGER_PROFILE,
     ) -> None:
+        self.visitor_trigger_profile = resolve_visitor_trigger_profile(visitor_trigger_profile)
         self._detector = detector if detector is not None else PersonDetector(threshold=threshold)
         self._smooth = smooth
         self._tracker_factory = tracker_factory
-        self._approach: ApproachTracker | None = None
+        self._approach: Any | None = None
         self._gestures = gestures
         self._gesture_detector: Any | None = gesture_detector
         self._gesture_detector_ready_emitted = False
@@ -283,15 +441,25 @@ class PerceptionPipeline:
         self._gesture_detector_ready_emitted = True
         return metadata
 
-    def process(self, frame: NDArray[np.uint8], *, bgr: bool = True) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
+    def process(
+        self,
+        frame: NDArray[np.uint8],
+        *,
+        bgr: bool = True,
+        ts: float | None = None,
+    ) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
         if self._approach is None:
             h, w = frame.shape[:2]
             if self._tracker_factory is not None:
                 self._approach = self._tracker_factory((w, h))
             else:
-                self._approach = ApproachTracker((w, h), smooth=self._smooth)
+                self._approach = build_approach_tracker(
+                    (w, h),
+                    profile=self.visitor_trigger_profile,
+                    smooth=self._smooth,
+                )
         persons = self._detector.detect(frame, bgr=bgr)
-        events = self._approach.update(persons)
+        events = self._approach.update(persons, ts=float(ts if ts is not None else self._clock()))
         if self._gestures:
             wave = self._detect_wave(frame)
             if wave is not None:

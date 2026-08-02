@@ -9,6 +9,8 @@ from typing import Any
 
 import click
 
+from .visitor_trigger_profiles import DEFAULT_VISITOR_TRIGGER_PROFILE, VISITOR_TRIGGER_PROFILE_NAMES
+
 
 def handle_replay_command(args: Any) -> int:
     """Replay a video through the reception perception pipeline."""
@@ -23,6 +25,7 @@ def handle_replay_command(args: Any) -> int:
         threshold=args.threshold,
         smooth=args.smooth,
         gestures=args.gestures,
+        visitor_trigger_profile=args.visitor_trigger_profile,
     )
 
     cap = cv2.VideoCapture(str(video))
@@ -51,7 +54,8 @@ def handle_replay_command(args: Any) -> int:
         if idx % args.every != 0:
             continue
         processed += 1
-        events, people, tracks = pipe.process(frame, bgr=True)
+        replay_ts = idx / src_fps if src_fps > 0.0 else processed / 5.0
+        events, people, tracks = pipe.process(frame, bgr=True, ts=replay_ts)
         for event in events:
             kind = event["kind"]
             counts[kind] = counts.get(kind, 0) + 1
@@ -67,7 +71,7 @@ def handle_replay_command(args: Any) -> int:
         print(f"annotated debug video -> {args.annotate}")
 
     print(
-        f"=> {processed} frames processed | smooth={args.smooth} | "
+        f"=> {processed} frames processed | profile={args.visitor_trigger_profile} | smooth={args.smooth} | "
         f"approach={counts.get('approach', 0)} depart={counts.get('depart', 0)} wave={counts.get('wave', 0)}"
     )
     print(f"events -> {events_path}")
@@ -92,6 +96,14 @@ def handle_replay_command(args: Any) -> int:
 @click.option("--events", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Output event JSONL path.")
 @click.option("--threshold", type=float, default=0.5, show_default=True, help="Detector confidence threshold.")
 @click.option("--smooth", type=int, default=0, show_default=True, help="Approach tracker smoothing window.")
+@click.option(
+    "--visitor-trigger-profile",
+    envvar="RECEPTION_VISITOR_TRIGGER_PROFILE",
+    type=click.Choice(VISITOR_TRIGGER_PROFILE_NAMES),
+    default=DEFAULT_VISITOR_TRIGGER_PROFILE,
+    show_default=True,
+    help="Versioned greet/goodbye trigger implementation.",
+)
 @click.option("--gestures", is_flag=True, default=False, help="Enable wave detection.")
 @click.option("--every", type=int, default=1, show_default=True, help="Process every Nth frame.")
 @click.option("--reverse", is_flag=True, default=False, help="Process frames in reverse.")
@@ -117,7 +129,7 @@ def _annotate_frame(frame, idx: int, people: int, tracks: list[dict], state: dic
         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 200, 0), 2)
         cv2.putText(
             img,
-            f"id{track['id']} a={track['area']:.2f}",
+            f"id{track['id']} h={track.get('height', 0):.2f} {track.get('motion', 'UNKNOWN')}",
             (x1, max(12, y1 - 6)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
@@ -126,8 +138,9 @@ def _annotate_frame(frame, idx: int, people: int, tracks: list[dict], state: dic
             cv2.LINE_AA,
         )
     hud = (
-        f"f{idx} people={people} dom={state.get('dom_area', 0):.3f} "
-        f"peak={state.get('peak', 0):.3f} greet={state.get('greet')} depart={state.get('depart')}"
+        f"f{idx} people={people} presence={state.get('presence', 'ABSENT')} "
+        f"proximity={state.get('proximity', 'UNKNOWN')} motion={state.get('motion', 'UNKNOWN')} "
+        f"greet={state.get('greet')} depart={state.get('depart')} pending={state.get('goodbye_pending')}"
     )
     cv2.putText(img, hud, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
     cv2.putText(img, hud, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)

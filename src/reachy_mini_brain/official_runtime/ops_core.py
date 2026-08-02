@@ -23,6 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .env import PROJECT_ROOT, load_project_env
+from .visitor_trigger_profiles import DEFAULT_VISITOR_TRIGGER_PROFILE, resolve_visitor_trigger_profile
 
 
 LIVE_PATTERN = "reachy_mini_brain.official_runtime.live_app"
@@ -71,6 +72,7 @@ class OpsConfig:
     backend_start_timeout_s: float
     keep_awake: bool
     profile_owned_context: bool = False
+    visitor_trigger_profile: str = DEFAULT_VISITOR_TRIGGER_PROFILE
 
     @classmethod
     def from_env(cls) -> "OpsConfig":
@@ -120,6 +122,9 @@ class OpsConfig:
             backend_start_timeout_s=float(os.environ.get("BACKEND_START_TIMEOUT", "45")),
             keep_awake=_env_bool("OPS_KEEP_AWAKE", default=True),
             profile_owned_context=_env_bool("S2S_RESPONSES_CONVERSATION", default=False),
+            visitor_trigger_profile=resolve_visitor_trigger_profile(
+                os.environ.get("RECEPTION_VISITOR_TRIGGER_PROFILE", DEFAULT_VISITOR_TRIGGER_PROFILE)
+            ).name,
         )
 
     @property
@@ -527,6 +532,7 @@ def start_runner(
             "record_audio": config.record_audio if record_audio is None else record_audio,
             "record_video": config.record_video if record_video is None else record_video,
             "profile_owned_context": config.profile_owned_context,
+            "visitor_trigger_profile": config.visitor_trigger_profile,
             "keep_awake": config.keep_awake,
             "caffeinate_pid": caffeinate_pid,
         },
@@ -891,6 +897,8 @@ def build_live_command(
         "--record-audio" if record_audio else "--no-record-audio",
         "--record-video" if record_video else "--no-record-video",
         "--capture-vision" if capture_vision else "--no-capture-vision",
+        "--visitor-trigger-profile",
+        config.visitor_trigger_profile,
     ]
     if config.profile_owned_context:
         command.append("--profile-owned-context")

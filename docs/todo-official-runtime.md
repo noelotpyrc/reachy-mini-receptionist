@@ -214,6 +214,9 @@ typeâ†’behavior map. Refactoring `ReceptionPolicy` into per-behavior policies â€
 approach/greet and depart/goodbye speech while a visitor remains present, especially
 during the walk-in-and-wave interaction.
 
+**Proposal:** See [`vision-visitor-state-proposal.md`](vision-visitor-state-proposal.md) for the
+presence/proximity/motion classifiers, greet/goodbye trigger rules, and offline validation plan.
+
 **Evidence (2026-07-25 live run `official-live-20260725-111932`):**
 - Marker 2 (`11:21:01`, "unwanted goodbye/greet"): track 5 emitted `approach` at
   `ts=1785003657.610` after its detected area jumped to `0.579`, then emitted `depart`

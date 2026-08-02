@@ -7,6 +7,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -112,6 +113,8 @@ def test_build_live_command_includes_official_runtime_defaults(tmp_path):
     assert "--capture-vision" in command
     assert "--record-audio" in command
     assert "--record-video" in command
+    profile_index = command.index("--visitor-trigger-profile")
+    assert command[profile_index + 1] == "legacy"
     backend_index = command.index("--backend")
     assert command[backend_index + 1] == "s2s-local"
     assert env["HF_REALTIME_WS_URL"] == "ws://127.0.0.1:8765/v1/realtime"
@@ -147,6 +150,21 @@ def test_ops_config_uses_profile_owned_context_for_conversation_mode(monkeypatch
     config = ops_core.OpsConfig.from_env()
 
     assert config.profile_owned_context is True
+
+
+def test_ops_config_loads_versioned_visitor_trigger_profile(monkeypatch):
+    monkeypatch.setenv("RECEPTION_VISITOR_TRIGGER_PROFILE", "visitor-v1-20260802")
+
+    config = ops_core.OpsConfig.from_env()
+
+    assert config.visitor_trigger_profile == "visitor-v1-20260802"
+
+
+def test_ops_config_rejects_unknown_visitor_trigger_profile(monkeypatch):
+    monkeypatch.setenv("RECEPTION_VISITOR_TRIGGER_PROFILE", "latest")
+
+    with pytest.raises(ValueError, match="unknown visitor trigger profile"):
+        ops_core.OpsConfig.from_env()
 
 
 def test_build_policy_command_can_target_single_greet(tmp_path):
