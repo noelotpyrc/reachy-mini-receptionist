@@ -24,7 +24,13 @@ backend state, media ownership, wake/sleep, and teardown are handled by one owne
 Product/controller repo:
 
 - Local dev: `/Users/noel/projects/reachy_mini_receptionist_clean`
-- m1max deploy: `/Users/leon/projects/reachy_mini_receptionist_deploy`
+- m1max rollback checkout: `/Users/leon/projects/reachy_mini_receptionist_deploy`
+- Current clean m1max release: `/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6`
+
+Keep the dirty rollback checkout intact. A prepared release has its own `.release-venv`, while its
+ignored `.env`, `private`, and `artifacts` paths reference the existing deployment-owned data. Set
+`REACHY_REPO` and `OFFICIAL_RUNTIME_PYTHON` explicitly when operating a release so the OPS process
+and spawned runner use the same product revision.
 
 S2S backend runtime folder:
 
@@ -76,27 +82,31 @@ Run from m1max:
 
 ```bash
 ssh leon@100.127.86.67
-cd ~/projects/reachy_mini_receptionist_deploy
+RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6
+cd "$RELEASE"
+export REACHY_REPO="$RELEASE"
+export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"
+export PYTHONPATH="$RELEASE/src"
 
 # Safe status: backend + runner + latest-run pointer.
-PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli status
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli status
 
 # Optional fuller read-only status, including robot daemon state.
-PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli status --include-robot
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli status --include-robot
 ```
 
 Run preflight before a normal live session when time allows:
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli \
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
   --confirm-physical preflight
 ```
 
 Start the live session:
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli \
-  --confirm-physical start-session --record-audio --capture-vision
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
+  --confirm-physical start-session --record-audio --record-video --capture-vision
 ```
 
 The vision greet/goodbye implementation is selected in the deploy repo's `.env`:
@@ -107,29 +117,44 @@ RECEPTION_VISITOR_TRIGGER_PROFILE=legacy
 
 # Captured-evaluation candidate for controlled live acceptance.
 RECEPTION_VISITOR_TRIGGER_PROFILE=visitor-v1-20260802
+
+# Door-ordered greet/goodbye candidate.
+RECEPTION_VISITOR_TRIGGER_PROFILE=door-v1-20260805
+RECEPTION_VISION_PIPELINES_CONFIG=/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6/config/vision/door-policy-v1.json
+RECEPTION_RERUN_MODE=off
 ```
+
+For the current controlled acceptance, export the three door-policy values in the release shell
+instead of changing the shared rollback `.env`. Keeping Rerun streaming off isolates the conversation
+and policy test while raw video and detector observations are still recorded.
 
 Only one value should be active. A changed value applies to the next OPS invocation and live
 process, so stop the current session normally and start a new one. Unknown profile names fail at
 startup. The run manifest's `config.visitor_trigger_profile` object records the selected name and
 complete resolved configuration.
 
-To reproduce a live profile offline against a retained video:
+The door policy pipeline loads Grounding DINO when the runner starts. On the prepared m1max release,
+the first isolated model load took about 20 seconds; this is startup time before robot interaction,
+not per-frame inference latency.
+
+To reproduce a height-based live profile offline against a retained video:
 
 ```bash
 reception-vision-replay path/to/video.mkv \
   --visitor-trigger-profile visitor-v1-20260802
 ```
 
-Rollback is operational: set `RECEPTION_VISITOR_TRIGGER_PROFILE=legacy`, then start a new session.
-It does not require reverting a commit or redeploying code.
+Profile rollback is operational: set `RECEPTION_VISITOR_TRIGGER_PROFILE=legacy`, unset
+`RECEPTION_VISION_PIPELINES_CONFIG`, then start a new session. Release rollback uses the preserved
+`reachy_mini_receptionist_deploy` checkout and its environment. Neither path requires reverting a
+commit.
 
 Add `--record-video` only when raw MKV video is needed. It increases artifact size.
 
 Stop and clean up:
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli \
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
   --confirm-physical stop-session
 ```
 
