@@ -10,6 +10,50 @@ Each entry uses three buckets:
 
 ---
 
+## 2026-08-03 - native Rerun live stream and two-model door diagnosis
+
+**Setup:** m1max + real robot, official runtime run `official-live-20260803-160828`, raw audio,
+raw video, vision capture, detector JSONL, and Rerun `grpc+file` enabled. The diagnosis profile was
+`config/vision/door-live-compare-v1.json`: YOLO-World and Grounding DINO at one FPS with independent
+ByteTrack instances on MPS. The camera/Rerun image stream ran at five FPS.
+
+Artifacts:
+
+- manifest:
+  `/Users/leon/projects/reachy_mini_receptionist_deploy/artifacts/official-runtime-live/runs/run-official-live-20260803-160828.json`
+- Rerun recording:
+  `/Users/leon/projects/reachy_mini_receptionist_deploy/artifacts/official-runtime-live/rerun/review-official-live-20260803-160828-01.rrd`
+- detector observations:
+  `/Users/leon/projects/reachy_mini_receptionist_deploy/artifacts/official-runtime-live/detections/detections-official-live-20260803-160828-01.jsonl`
+- video:
+  `/Users/leon/projects/reachy_mini_receptionist_deploy/artifacts/official-runtime-live/video/video-official-live-20260803-160828-01.mkv`
+
+### Good
+
+- **The tested remote viewing path used the native Rerun app, not the web viewer.** The SDK on
+  m1max streamed to `rerun+http://127.0.0.1:9880/proxy`. The review Mac forwarded that endpoint
+  with `ssh -N -L 9880:127.0.0.1:9880 leon@100.127.86.67`, then the native viewer connected to
+  `rerun+http://127.0.0.1:9880/proxy`.
+- **Live camera and detector layers were visible through the tunnel.** The runner had an established
+  TCP connection to the m1max Rerun server. Both detector pipelines completed 437 sampled frames
+  with zero dropped frames.
+- **Shutdown finalized the recording cleanly.** The `.rrd` was 135 MB; the MKV was 17 MB with 1,309
+  frames. Robot media was released and motors were disabled. The native viewer and tunnel were left
+  open for review after the robot run stopped.
+
+### Limitation / observation
+
+- **This was not a valid door-model quality test because the robot camera did not point at the door.**
+  The live view showed two simultaneous low-confidence Grounding DINO boxes even though the actual
+  door location was outside the frame. Across the finalized artifact, Grounding DINO emitted one or
+  more boxes on all 437 samples (590 boxes total), while YOLO-World emitted none. The Grounding DINO
+  confidence distribution confirms that the boxes were low-confidence relative to the configured
+  `0.30` threshold: minimum `0.300`, median `0.365`, p95 `0.381`, maximum `0.391`; all 590 boxes were
+  below `0.40` and none reached `0.50`. Treat these results as off-target/false-detection evidence
+  only, not as evidence about moving-door detection quality.
+- A future door evaluation must first frame the actual door in the camera view, confirm framing in
+  native Rerun, and only then begin the open/close sequence.
+
 ## 2026-06-25 — deploy-checkout preflight playback: start clipped until robot reboot
 
 **Setup:** m1max + real robot, new Git-managed deploy checkout

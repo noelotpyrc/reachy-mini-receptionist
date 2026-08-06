@@ -486,6 +486,7 @@ class VisitorTriggerEngine:
         self._motion_change: str | None = None
         self._last_active_motion = Motion.UNKNOWN
         self._scene_person_count = 0
+        self._target_visible = False
 
     @property
     def active_track_id(self) -> int | None:
@@ -494,13 +495,27 @@ class VisitorTriggerEngine:
     @property
     def debug_state(self) -> dict[str, Any]:
         active = self._snapshots.get(self._active_track_id) if self._active_track_id is not None else None
+        retained_motion = active.motion if active is not None else Motion.UNKNOWN
+        observed_motion = retained_motion if self._target_visible else Motion.UNKNOWN
+        retained_presence = self._presence.current
+        observed_presence = Presence.PRESENT if self._target_visible else Presence.ABSENT
+        retained_proximity = self._proximity.current
+        observed_proximity = retained_proximity if self._target_visible else Proximity.UNKNOWN
         return {
             "active_track_id": self._active_track_id,
+            "target_visible": self._target_visible,
             "handoff": self._handoff,
             "handoff_from_track_id": self._handoff_from_track_id,
-            "presence": self._presence.current.value,
-            "proximity": self._proximity.current.value,
-            "motion": active.motion.value if active is not None else Motion.UNKNOWN.value,
+            "presence": retained_presence.value,
+            "visit_presence": retained_presence.value,
+            "observed_presence": observed_presence.value,
+            "retained_presence": retained_presence.value,
+            "proximity": retained_proximity.value,
+            "observed_proximity": observed_proximity.value,
+            "retained_proximity": retained_proximity.value,
+            "motion": observed_motion.value,
+            "observed_motion": observed_motion.value,
+            "retained_motion": retained_motion.value,
             "height_filtered": _rounded(active.filtered_height if active is not None else None),
             "log_height_slope": _rounded(active.log_slope if active is not None else None),
             "greet": self._triggers.greet_fired,
@@ -528,6 +543,7 @@ class VisitorTriggerEngine:
         self._scene_person_count = len(boxes) if scene_person_count is None else scene_person_count
         by_id = {box.track_id: box for box in boxes}
         target = self._select_target(ts, boxes, by_id, self._scene_person_count)
+        self._target_visible = target is not None
         if target is not None and self._handoff:
             self._transfer_signal_history(target.track_id)
         for box in boxes:

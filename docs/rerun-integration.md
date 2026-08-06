@@ -1,5 +1,8 @@
 # Rerun integration — the Rerun renderer
 
+Future per-frame tracking overlays and optional live streaming are scoped separately in
+[`rerun-vision-tracking-plan.md`](rerun-vision-tracking-plan.md).
+
 **Role:** the **Rerun renderer** for the diagnosis tooling (TODO #6) — one of *two* renderers that
 consume the settled model in **`docs/general-timeline-model.md`** (read that first; it owns the
 actors, spans/markers, event allowlist, and `event→behavior` adapter). This doc only covers *how to

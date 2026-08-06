@@ -73,6 +73,12 @@ class OpsConfig:
     keep_awake: bool
     profile_owned_context: bool = False
     visitor_trigger_profile: str = DEFAULT_VISITOR_TRIGGER_PROFILE
+    vision_pipelines_config: Path | None = None
+    rerun_mode: str = "off"
+    rerun_grpc_url: str = "rerun+http://127.0.0.1:9876/proxy"
+    rerun_image_fps: float = 5.0
+    rerun_jpeg_quality: int = 80
+    rerun_queue_size: int = 3
 
     @classmethod
     def from_env(cls) -> "OpsConfig":
@@ -125,6 +131,19 @@ class OpsConfig:
             visitor_trigger_profile=resolve_visitor_trigger_profile(
                 os.environ.get("RECEPTION_VISITOR_TRIGGER_PROFILE", DEFAULT_VISITOR_TRIGGER_PROFILE)
             ).name,
+            vision_pipelines_config=(
+                Path(os.environ["RECEPTION_VISION_PIPELINES_CONFIG"]).expanduser()
+                if os.environ.get("RECEPTION_VISION_PIPELINES_CONFIG")
+                else None
+            ),
+            rerun_mode=os.environ.get("RECEPTION_RERUN_MODE", "off"),
+            rerun_grpc_url=os.environ.get(
+                "RECEPTION_RERUN_GRPC_URL",
+                "rerun+http://127.0.0.1:9876/proxy",
+            ),
+            rerun_image_fps=float(os.environ.get("RECEPTION_RERUN_IMAGE_FPS", "5")),
+            rerun_jpeg_quality=int(os.environ.get("RECEPTION_RERUN_JPEG_QUALITY", "80")),
+            rerun_queue_size=int(os.environ.get("RECEPTION_RERUN_QUEUE_SIZE", "3")),
         )
 
     @property
@@ -470,6 +489,8 @@ def start_runner(
     capture_vision: bool | None = None,
     record_audio: bool | None = None,
     record_video: bool | None = None,
+    vision_pipelines_config: Path | None = None,
+    rerun_mode: str | None = None,
 ) -> ActionResult:
     _require_physical_authorization("runner.start", authorized)
     existing = runner_status(config)
@@ -487,6 +508,10 @@ def start_runner(
     config.log_dir.mkdir(parents=True, exist_ok=True)
     config.state_dir.mkdir(parents=True, exist_ok=True)
     path_errors = _validate_live_launch_paths(config)
+    resolved_vision_config = vision_pipelines_config or config.vision_pipelines_config
+    resolved_rerun_mode = rerun_mode or config.rerun_mode
+    if resolved_vision_config is not None and not resolved_vision_config.is_file():
+        path_errors.append(f"missing vision pipeline config: {resolved_vision_config}")
     if path_errors:
         return ActionResult(
             action="runner.start",
@@ -511,6 +536,8 @@ def start_runner(
         capture_vision=config.capture_vision if capture_vision is None else capture_vision,
         record_audio=config.record_audio if record_audio is None else record_audio,
         record_video=config.record_video if record_video is None else record_video,
+        vision_pipelines_config=resolved_vision_config,
+        rerun_mode=resolved_rerun_mode,
         scripted_policy_flow="none",
     )
     proc, caffeinate_pid = _launch_background(command, cwd=config.repo_path, env=env, logfile=logfile, keep_awake=config.keep_awake)
@@ -533,6 +560,13 @@ def start_runner(
             "record_video": config.record_video if record_video is None else record_video,
             "profile_owned_context": config.profile_owned_context,
             "visitor_trigger_profile": config.visitor_trigger_profile,
+            "vision_pipelines_config": (
+                str(resolved_vision_config) if resolved_vision_config is not None else None
+            ),
+            "rerun_mode": resolved_rerun_mode,
+            "rerun_image_fps": config.rerun_image_fps,
+            "rerun_jpeg_quality": config.rerun_jpeg_quality,
+            "rerun_queue_size": config.rerun_queue_size,
             "keep_awake": config.keep_awake,
             "caffeinate_pid": caffeinate_pid,
         },
@@ -754,6 +788,8 @@ def start_session_with_options(
     record_audio: bool | None = None,
     record_video: bool | None = None,
     capture_vision: bool | None = None,
+    vision_pipelines_config: Path | None = None,
+    rerun_mode: str | None = None,
 ) -> list[ActionResult]:
     _require_physical_authorization("session.start", authorized)
     return [
@@ -766,6 +802,8 @@ def start_session_with_options(
             record_audio=record_audio,
             record_video=record_video,
             capture_vision=capture_vision,
+            vision_pipelines_config=vision_pipelines_config,
+            rerun_mode=rerun_mode,
         ),
     ]
 
@@ -863,6 +901,8 @@ def build_live_command(
     scripted_policy_gap_s: float | None = None,
     scripted_policy_timeout_s: float | None = None,
     scripted_policy_greeting: str | None = None,
+    vision_pipelines_config: Path | None = None,
+    rerun_mode: str | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     env = _base_env(config)
     env.update(
@@ -899,7 +939,20 @@ def build_live_command(
         "--capture-vision" if capture_vision else "--no-capture-vision",
         "--visitor-trigger-profile",
         config.visitor_trigger_profile,
+        "--rerun-mode",
+        rerun_mode or config.rerun_mode,
+        "--rerun-grpc-url",
+        config.rerun_grpc_url,
+        "--rerun-image-fps",
+        str(config.rerun_image_fps),
+        "--rerun-jpeg-quality",
+        str(config.rerun_jpeg_quality),
+        "--rerun-queue-size",
+        str(config.rerun_queue_size),
     ]
+    resolved_vision_config = vision_pipelines_config or config.vision_pipelines_config
+    if resolved_vision_config is not None:
+        command.extend(["--vision-pipelines-config", str(resolved_vision_config)])
     if config.profile_owned_context:
         command.append("--profile-owned-context")
     if scripted_policy_flow != "none":

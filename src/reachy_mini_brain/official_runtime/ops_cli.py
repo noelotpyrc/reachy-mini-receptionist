@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import click
@@ -91,12 +92,20 @@ def runner_status_cmd(ctx: click.Context) -> None:
 @click.option("--record-audio/--no-record-audio", default=None, help="Persist raw/input/output audio artifacts for this run.")
 @click.option("--record-video/--no-record-video", default=None, help="Persist raw video MKV artifacts for this run.")
 @click.option("--capture-vision/--no-capture-vision", default=None, help="Persist per-frame vision capture JSONL for this run.")
+@click.option(
+    "--vision-pipelines-config",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+)
+@click.option("--rerun-mode", type=click.Choice(["off", "grpc", "file", "grpc+file"]), default=None)
 @click.pass_context
 def runner_start_cmd(
     ctx: click.Context,
     record_audio: bool | None,
     record_video: bool | None,
     capture_vision: bool | None,
+    vision_pipelines_config: Path | None,
+    rerun_mode: str | None,
 ) -> None:
     _emit(
         ctx,
@@ -106,6 +115,8 @@ def runner_start_cmd(
             record_audio=record_audio,
             record_video=record_video,
             capture_vision=capture_vision,
+            vision_pipelines_config=vision_pipelines_config,
+            rerun_mode=rerun_mode,
         ),
     )
 
@@ -148,12 +159,20 @@ def sleep_robot_cmd(ctx: click.Context) -> None:
 @click.option("--record-audio/--no-record-audio", default=None, help="Persist raw/input/output audio artifacts for this run.")
 @click.option("--record-video/--no-record-video", default=None, help="Persist raw video MKV artifacts for this run.")
 @click.option("--capture-vision/--no-capture-vision", default=None, help="Persist per-frame vision capture JSONL for this run.")
+@click.option(
+    "--vision-pipelines-config",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+)
+@click.option("--rerun-mode", type=click.Choice(["off", "grpc", "file", "grpc+file"]), default=None)
 @click.pass_context
 def start_session_cmd(
     ctx: click.Context,
     record_audio: bool | None,
     record_video: bool | None,
     capture_vision: bool | None,
+    vision_pipelines_config: Path | None,
+    rerun_mode: str | None,
 ) -> None:
     """Ensure backend/robot are ready and start one live runner."""
 
@@ -165,6 +184,8 @@ def start_session_cmd(
             record_audio=record_audio,
             record_video=record_video,
             capture_vision=capture_vision,
+            vision_pipelines_config=vision_pipelines_config,
+            rerun_mode=rerun_mode,
         ),
     )
 

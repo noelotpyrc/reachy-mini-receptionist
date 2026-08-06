@@ -30,12 +30,15 @@ class ArtifactRecorder:
         record_audio: bool = False,
         record_video: bool = False,
         capture_vision: bool = False,
+        capture_detections: bool = False,
+        rerun_path: str | Path | None = None,
     ) -> None:
         self.root = Path(root).expanduser()
         self.run_id = run_id or f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         self.record_audio_enabled = record_audio
         self.record_video_enabled = record_video
         self.capture_vision_enabled = capture_vision
+        self.capture_detections_enabled = capture_detections
 
         self._lock = threading.RLock()
         self._closed = False
@@ -45,6 +48,12 @@ class ArtifactRecorder:
         self._policy_path = self._artifact_path("policies", ".jsonl", subdir="policies")
         self._realtime_path = self._artifact_path("realtime", ".jsonl", subdir="realtime")
         self._capture_path = self._artifact_path("capture", ".jsonl", subdir="capture")
+        self._detection_path = (
+            self._artifact_path("detections", ".jsonl", subdir="detections")
+            if self.capture_detections_enabled
+            else None
+        )
+        self._rerun_path = Path(rerun_path).expanduser() if rerun_path is not None else None
         self._manifest_path = self.root / "runs" / f"run-{self.run_id}.json"
 
         self._video_path: Path | None = None
@@ -72,13 +81,32 @@ class ArtifactRecorder:
                 "policies": [{"path": str(self._policy_path), "run_id_field": True}],
                 "realtime": [{"path": str(self._realtime_path), "run_id_field": True}],
                 "capture": [],
+                "detections": [],
                 "video": [],
                 "audio": [],
+                "rerun": [],
             },
         }
         if self.capture_vision_enabled:
             self._manifest["artifacts"]["capture"].append(
                 {"path": str(self._capture_path), "status": "open", "started_ts": round(time.time(), 3)}
+            )
+        if self.capture_detections_enabled:
+            assert self._detection_path is not None
+            self._manifest["artifacts"]["detections"].append(
+                {
+                    "path": str(self._detection_path),
+                    "status": "open",
+                    "started_ts": round(time.time(), 3),
+                }
+            )
+        if self._rerun_path is not None:
+            self._manifest["artifacts"]["rerun"].append(
+                {
+                    "path": str(self._rerun_path),
+                    "status": "open",
+                    "started_ts": round(time.time(), 3),
+                }
             )
         self._write_manifest()
         self.event("run.started", source="official_runtime.artifacts")
@@ -150,9 +178,10 @@ class ArtifactRecorder:
             for stream_name in list(self._audio_meta_files):
                 self._close_audio_stream(stream_name)
 
-            for rec in self._manifest["artifacts"].get("capture", []):
-                if rec.get("status") == "open":
-                    rec.update({"status": "closed", "ended_ts": round(time.time(), 3)})
+            for kind in ("capture", "detections", "rerun"):
+                for rec in self._manifest["artifacts"].get(kind, []):
+                    if rec.get("status") == "open":
+                        rec.update({"status": "closed", "ended_ts": round(time.time(), 3)})
 
             self._manifest["ended_ts"] = round(time.time(), 3)
             self._write_manifest()
@@ -210,6 +239,15 @@ class ArtifactRecorder:
 
     def record_output_message(self, message: Mapping[str, Any]) -> None:
         self.message(message.get("role") if isinstance(message.get("role"), str) else None, message.get("content"))
+
+    def detection_layer(self, payload: Mapping[str, Any]) -> None:
+        if self.capture_detections_enabled:
+            assert self._detection_path is not None
+            self._write_jsonl(
+                self._detection_path,
+                {"type": "detection_layer", **dict(payload)},
+                ts=float(payload.get("completed_ts", time.time())),
+            )
 
     def vision_frame(
         self,

@@ -257,6 +257,44 @@ Main artifact roots on m1max:
 - Optional raw video MKV: `artifacts/official-runtime-live/video/`
 - Markers: `artifacts/markers-<run_id>.jsonl`
 
+## Live Rerun Viewer
+
+The validated remote workflow uses the native Rerun app on the review Mac through an SSH tunnel.
+It does not depend on the Rerun web viewer.
+
+1. Before starting the robot run, host the Rerun server on m1max:
+
+```bash
+cd /Users/leon/projects/reachy_mini_receptionist_deploy
+.venv/bin/rerun --serve-web --web-viewer-port 9092 --port 9880 --hide-welcome-screen
+```
+
+2. Configure the live runner to publish locally on m1max and retain an `.rrd`:
+
+```text
+RECEPTION_RERUN_GRPC_URL=rerun+http://127.0.0.1:9880/proxy
+--rerun-mode grpc+file
+--vision-pipelines-config config/vision/door-live-compare-v1.json
+```
+
+3. On the review Mac, keep this tunnel running:
+
+```bash
+ssh -N -L 9880:127.0.0.1:9880 leon@100.127.86.67
+```
+
+4. In another review-Mac shell, open the native viewer:
+
+```bash
+cd /Users/noel/projects/reachy_mini_receptionist_clean
+.venv/bin/rerun --connect rerun+http://127.0.0.1:9880/proxy
+```
+
+Verify the camera framing and detector overlays in the native viewer before beginning the physical
+test sequence. For a door test, the actual door must be visible; detections while the door is outside
+the frame are false-detection diagnostics, not door-localization results. The SSH tunnel and native
+viewer may remain open after `stop-session` so the finalized recording stays available for review.
+
 ## Manual Stop Rules
 
 If Codex started the run, tell Codex `stop`; Codex should run `stop-session` and report artifact

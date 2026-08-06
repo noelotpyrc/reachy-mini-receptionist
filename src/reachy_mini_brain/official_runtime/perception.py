@@ -15,11 +15,19 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .events import EventSink, RuntimeEvent
+from .inference_scheduler import inference_guard
 from .visitor_triggers import HeightSignalConfig, TrackBox, VisitorTriggerConfig, VisitorTriggerEngine
 from .visitor_trigger_profiles import (
     DEFAULT_VISITOR_TRIGGER_PROFILE,
     VisitorTriggerProfile,
     resolve_visitor_trigger_profile,
+)
+from .vision_observation import (
+    LogicalTrackResolver,
+    TrackMovementHistory,
+    TrackObservation,
+    VisionObservation,
+    detection_observations,
 )
 
 
@@ -51,7 +59,8 @@ class PersonDetector:
     def detect(self, image: Any, *, bgr: bool = False) -> Any:
         if isinstance(image, np.ndarray) and bgr:
             image = np.ascontiguousarray(image[:, :, ::-1])
-        detections = self._model.predict(image, threshold=self.threshold)
+        with inference_guard("mps"):
+            detections = self._model.predict(image, threshold=self.threshold)
         return detections[detections.class_id == self.PERSON_CLASS_ID]
 
 
@@ -87,6 +96,7 @@ class ApproachTracker:
         self.history = history
         self._clock = clock
         self.frame_debug: list[dict[str, Any]] = []
+        self.last_track_boxes: list[TrackBox] = []
         self._last_dom_area = 0.0
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -139,6 +149,7 @@ class ApproachTracker:
             boxes,
             scene_person_count=scene_person_count,
         )
+        self.last_track_boxes = list(boxes)
         self._last_dom_area = max((box.area for box in boxes), default=0.0)
         self.frame_debug = [
             {
@@ -214,6 +225,7 @@ class LegacyApproachTracker:
         self.reset_absent = reset_absent
         self.history = history
         self.frame_debug: list[dict[str, Any]] = []
+        self.last_track_boxes: list[TrackBox] = []
         self._fc = 0
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -239,6 +251,7 @@ class LegacyApproachTracker:
 
         frame_area = float(self.W * self.H)
         frame_debug: list[dict[str, Any]] = []
+        track_boxes: list[TrackBox] = []
         dom_area, dom = 0.0, None
         for i in range(len(tracked)):
             if tracked.tracker_id is None:
@@ -248,6 +261,23 @@ class LegacyApproachTracker:
             area = ((x2 - x1) * (y2 - y1)) / frame_area
             cx = ((x1 + x2) / 2) / self.W
             cy = ((y1 + y2) / 2) / self.H
+            visible_y1 = max(0.0, float(y1))
+            visible_y2 = min(float(self.H), float(y2))
+            height = max(0.0, visible_y2 - visible_y1) / self.H
+            clip_margin = max(2.0, self.H * 0.01)
+            track_boxes.append(
+                TrackBox(
+                    track_id=tid,
+                    area=float(area),
+                    cx=float(cx),
+                    cy=float(cy),
+                    height=float(height),
+                    clipped=bool(y1 <= clip_margin or y2 >= self.H - clip_margin),
+                    box=(int(x1), int(y1), int(x2), int(y2)),
+                    tracking_source="byte_track",
+                    source_track_id=tid,
+                )
+            )
             if area > dom_area:
                 dom_area, dom = area, (tid, area, cx, cy)
             frame_debug.append(
@@ -260,6 +290,7 @@ class LegacyApproachTracker:
                 }
             )
         self.frame_debug = frame_debug
+        self.last_track_boxes = track_boxes
         return self._update_visit(dom_area, dom)
 
     def _reset_visit(self) -> None:
@@ -326,7 +357,7 @@ def build_approach_tracker(
 ) -> ApproachTracker | LegacyApproachTracker:
     if profile.implementation == "legacy_area_v1":
         return LegacyApproachTracker(frame_wh, smooth=smooth, **profile.parameters)
-    if profile.implementation == "visitor_height_v1":
+    if profile.implementation in {"visitor_height_v1", "door_policy_v1"}:
         return ApproachTracker(frame_wh, smooth=smooth, trigger_config=profile.trigger_config)
     raise ValueError(f"unsupported visitor trigger implementation: {profile.implementation}")
 
@@ -386,9 +417,14 @@ class PerceptionPipeline:
         event_sink: EventSink | None = None,
         clock: Callable[[], float] = time.time,
         visitor_trigger_profile: str = DEFAULT_VISITOR_TRIGGER_PROFILE,
+        observation_mode: str = "runtime",
+        observation_run_id: str | None = None,
+        track_trail_window_s: float = 3.0,
+        doorway_zone: Any | None = None,
     ) -> None:
         self.visitor_trigger_profile = resolve_visitor_trigger_profile(visitor_trigger_profile)
         self._detector = detector if detector is not None else PersonDetector(threshold=threshold)
+        self._detector_threshold = float(threshold)
         self._smooth = smooth
         self._tracker_factory = tracker_factory
         self._approach: Any | None = None
@@ -400,6 +436,14 @@ class PerceptionPipeline:
         self._clock = clock
         self._event_sink = event_sink
         self._events_path = Path(events_path) if events_path else None
+        self._observation_mode = observation_mode
+        self._observation_run_id = observation_run_id
+        self._track_trail_window_s = float(track_trail_window_s)
+        self._movement_history = TrackMovementHistory(trail_window_s=track_trail_window_s)
+        self._logical_tracks = LogicalTrackResolver()
+        self._doorway_zone = doorway_zone
+        self._processed_frame_count = 0
+        self.last_observation: VisionObservation | None = None
         if self._events_path is not None:
             self._events_path.parent.mkdir(parents=True, exist_ok=True)
             self._events_path.touch(exist_ok=True)
@@ -447,6 +491,8 @@ class PerceptionPipeline:
         *,
         bgr: bool = True,
         ts: float | None = None,
+        frame_index: int | None = None,
+        timestamp_source: str | None = None,
     ) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
         if self._approach is None:
             h, w = frame.shape[:2]
@@ -458,23 +504,173 @@ class PerceptionPipeline:
                     profile=self.visitor_trigger_profile,
                     smooth=self._smooth,
                 )
+        frame_ts = float(ts if ts is not None else self._clock())
         persons = self._detector.detect(frame, bgr=bgr)
-        events = self._approach.update(persons, ts=float(ts if ts is not None else self._clock()))
+        events = self._approach.update(persons, ts=frame_ts)
+        if self.visitor_trigger_profile.implementation == "door_policy_v1":
+            events = [event for event in events if event.get("kind") not in {"approach", "depart"}]
         if self._gestures:
             wave = self._detect_wave(frame)
             if wave is not None:
                 events.append(wave)
-        self._write_events(events)
+        observation_index = self._processed_frame_count if frame_index is None else int(frame_index)
+        self.last_observation = self._build_observation(
+            frame,
+            persons,
+            events,
+            frame_ts=frame_ts,
+            frame_index=observation_index,
+            timestamp_source=timestamp_source or ("provided" if ts is not None else "clock"),
+        )
+        self._processed_frame_count += 1
+        self._write_events(events, ts=frame_ts)
         return events, len(persons), self._approach.frame_debug
 
     @property
     def debug_state(self) -> dict[str, Any]:
         return self._approach.debug_state if self._approach is not None else {}
 
+    def _build_observation(
+        self,
+        frame: NDArray[np.uint8],
+        persons: Any,
+        events: list[dict[str, Any]],
+        *,
+        frame_ts: float,
+        frame_index: int,
+        timestamp_source: str,
+    ) -> VisionObservation:
+        h, w = frame.shape[:2]
+        state = dict(self.debug_state)
+        detections = detection_observations(persons, (w, h))
+        handoff_from = _optional_track_id(state.get("handoff_from_track_id"))
+        active_track_id = _optional_track_id(state.get("active_track_id"))
+        if bool(state.get("handoff")):
+            self._logical_tracks.apply_handoff(handoff_from, active_track_id)
+            if self._doorway_zone is not None and handoff_from is not None and active_track_id is not None:
+                self._doorway_zone.handoff(handoff_from, active_track_id)
+
+        boxes = _exact_track_boxes(self._approach, frame_wh=(w, h))
+        state["raw_person_detection_count"] = len(detections)
+        state["possible_duplicate_person_detection_count"] = sum(
+            1 for detection in detections if detection.possible_duplicate
+        )
+        state["tracked_person_count"] = len(boxes)
+        state["byte_track_track_count"] = sum(
+            1 for box in boxes if box.tracking_source == "byte_track"
+        )
+        state.setdefault("target_visible", bool(boxes))
+        state.setdefault("visit_presence", state.get("presence", "UNKNOWN"))
+        state.setdefault(
+            "observed_presence",
+            "PRESENT" if state["target_visible"] else "ABSENT",
+        )
+        state.setdefault("retained_presence", state.get("presence", "UNKNOWN"))
+        state.setdefault(
+            "observed_proximity",
+            state.get("proximity", "UNKNOWN") if state["target_visible"] else "UNKNOWN",
+        )
+        state.setdefault("retained_proximity", state.get("proximity", "UNKNOWN"))
+        state.setdefault(
+            "observed_motion",
+            state.get("motion", "UNKNOWN") if state["target_visible"] else "UNKNOWN",
+        )
+        state.setdefault("retained_motion", state.get("motion", "UNKNOWN"))
+        debug_by_id = {
+            int(item["id"]): item
+            for item in getattr(self._approach, "frame_debug", ())
+            if item.get("id") is not None
+        }
+        zone_snapshots = self._doorway_zone.update(frame_ts, boxes) if self._doorway_zone is not None else {}
+        logical_by_track = {
+            box.track_id: self._logical_tracks.resolve(box.track_id)
+            for box in boxes
+        }
+        movement = self._movement_history.update_frame(
+            frame_ts,
+            {
+                logical_by_track[box.track_id]: (box.cx, box.cy + box.height / 2.0)
+                for box in boxes
+            },
+        )
+        tracks: list[TrackObservation] = []
+        for box in boxes:
+            logical_id = logical_by_track[box.track_id]
+            sample = movement[logical_id]
+            debug = debug_by_id.get(box.track_id, {})
+            zone_snapshot = zone_snapshots.get(box.track_id)
+            tracks.append(
+                TrackObservation(
+                    logical_track_id=logical_id,
+                    track_id=box.track_id,
+                    source_track_id=box.source_track_id,
+                    tracking_source=box.tracking_source,
+                    box=tuple(float(value) for value in box.box),
+                    center=(box.cx, box.cy),
+                    bottom_center=(box.cx, box.cy + box.height / 2.0),
+                    previous_anchor=sample.previous_anchor,
+                    displacement=sample.displacement,
+                    velocity=sample.velocity,
+                    track_age_s=sample.track_age_s,
+                    visible_sample_count=sample.visible_sample_count,
+                    trail=sample.trail,
+                    area=box.area,
+                    height=box.height,
+                    height_filtered=_optional_float(debug.get("height_filtered")),
+                    height_slope=_optional_float(debug.get("log_height_slope")),
+                    clipped=box.clipped,
+                    height_reliable=not box.clipped,
+                    active=bool(debug.get("active", box.track_id == active_track_id)),
+                    handoff_from_track_id=(
+                        handoff_from
+                        if bool(state.get("handoff")) and box.track_id == active_track_id
+                        else None
+                    ),
+                    motion=str(debug.get("motion", state.get("motion", "UNKNOWN"))),
+                    zone=zone_snapshot.to_debug_dict() if zone_snapshot is not None else None,
+                )
+            )
+
+        observation = VisionObservation(
+            frame_index=frame_index,
+            frame_ts=frame_ts,
+            timestamp_source=timestamp_source,
+            frame_width=w,
+            frame_height=h,
+            mode=self._observation_mode,
+            run_id=self._observation_run_id,
+            detector={
+                "implementation": type(self._detector).__name__,
+                "threshold": self._detector_threshold,
+                "class_filter": "person",
+                "possible_duplicate_containment_threshold": 0.9,
+                "possible_duplicate_action": "diagnostic_only",
+            },
+            visitor_profile=self.visitor_trigger_profile.metadata(smooth=self._smooth),
+            movement={
+                "anchor": "BOTTOM_CENTER",
+                "trail_window_s": self._track_trail_window_s,
+                "coordinate_space": "normalized_image",
+            },
+            zone_config=(
+                self._doorway_zone.config.to_dict()
+                if self._doorway_zone is not None
+                else None
+            ),
+            detections=detections,
+            tracks=tuple(tracks),
+            scene=state,
+            events=tuple(dict(event) for event in events),
+        )
+        if state.get("presence_change") == "PRESENT->ABSENT":
+            self._movement_history.reset()
+            self._logical_tracks.reset()
+        return observation
+
     def _detect_wave(self, frame: NDArray[np.uint8]) -> dict[str, Any] | None:
         detector = self._gesture_detector
         if detector is None:
-            metadata = self.ensure_gesture_detector()
+            self.ensure_gesture_detector()
             detector = self._gesture_detector
             if detector is None:
                 return None
@@ -549,17 +745,53 @@ class PerceptionPipeline:
             return
         self._event_sink.emit(RuntimeEvent(kind=event_kind, source="official_runtime.perception", data=data))
 
-    def _write_events(self, events: list[dict[str, Any]]) -> None:
+    def _write_events(self, events: list[dict[str, Any]], *, ts: float | None = None) -> None:
         if self._events_path is None:
             return
         with self._events_path.open("a", encoding="utf-8") as f:
             for event in events:
                 rec = {
                     "type": event["kind"],
-                    "ts": round(self._clock(), 3),
+                    "ts": round(float(ts if ts is not None else self._clock()), 3),
                     **{k: v for k, v in event.items() if k != "kind"},
                 }
                 f.write(json.dumps(rec, sort_keys=True) + "\n")
+
+
+def _exact_track_boxes(approach: Any, *, frame_wh: tuple[int, int]) -> list[TrackBox]:
+    exact = getattr(approach, "last_track_boxes", None)
+    if exact is not None:
+        return list(exact)
+
+    width, height = frame_wh
+    boxes: list[TrackBox] = []
+    for item in getattr(approach, "frame_debug", ()):
+        if item.get("id") is None:
+            continue
+        x1, y1, x2, y2 = (float(value) for value in item.get("box", (0.0, 0.0, 0.0, 0.0)))
+        visible_height = max(0.0, min(float(height), y2) - max(0.0, y1)) / height
+        boxes.append(
+            TrackBox(
+                track_id=int(item["id"]),
+                source_track_id=_optional_track_id(item.get("source_track_id")),
+                tracking_source=str(item.get("tracking_source", "debug_fallback")),
+                area=float(item.get("area", 0.0)),
+                cx=float(item.get("cx", ((x1 + x2) / 2.0) / width)),
+                cy=float(item.get("cy", ((y1 + y2) / 2.0) / height)),
+                height=float(item.get("height", visible_height)),
+                clipped=bool(item.get("clipped", False)),
+                box=(int(x1), int(y1), int(x2), int(y2)),
+            )
+        )
+    return boxes
+
+
+def _optional_track_id(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
 
 
 def _ensure_gesture_model() -> str:

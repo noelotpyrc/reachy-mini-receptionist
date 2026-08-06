@@ -160,6 +160,26 @@ def test_far_to_near_with_recent_approach_greets_once() -> None:
     assert events[0]["motion"] == "APPROACHING"
 
 
+def test_target_loss_reports_unknown_observation_while_visit_state_is_retained() -> None:
+    engine = VisitorTriggerEngine(_config(absent_reset_s=8.0))
+    _run(engine, [0.35, 0.35, 0.35, 0.40, 0.48, 0.56, 0.62, 0.66, 0.70])
+
+    engine.update(1.8, [])
+    state = engine.debug_state
+
+    assert state["target_visible"] is False
+    assert state["presence"] == "PRESENT"
+    assert state["visit_presence"] == "PRESENT"
+    assert state["observed_presence"] == "ABSENT"
+    assert state["retained_presence"] == "PRESENT"
+    assert state["proximity"] == "NEAR"
+    assert state["retained_proximity"] == "NEAR"
+    assert state["observed_proximity"] == "UNKNOWN"
+    assert state["retained_motion"] == "APPROACHING"
+    assert state["observed_motion"] == "UNKNOWN"
+    assert state["motion"] == "UNKNOWN"
+
+
 def test_near_to_far_requires_continued_recession_before_goodbye() -> None:
     engine = VisitorTriggerEngine(_config())
 
