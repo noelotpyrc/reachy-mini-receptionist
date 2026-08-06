@@ -54,6 +54,7 @@ from reachy_mini_brain.official_runtime.live_app import (
     _load_backend_instructions,
     _play_cached_policy_speech,
     _register_handler_conversation_session,
+    _register_handler_policy_speech,
     _run_scripted_playback_wav,
 )
 from reachy_mini_brain.official_runtime.benchmark_backends import _summarize_run
@@ -381,6 +382,36 @@ def test_reception_policy_wave_opens_gate_and_goodbye_closes_it():
     asyncio.run(run())
 
 
+def test_reception_policy_confirmed_depart_closes_active_conversation_and_speaks() -> None:
+    async def run() -> None:
+        events = InMemoryEventSink()
+        context = RuntimeContext(event_sink=events)
+        registry = CapabilityRegistry()
+        calls = []
+
+        async def speak_text(context, text, reason, event):
+            calls.append((reason, text))
+            return True
+
+        registry.register("speak_text", speak_text)
+        policy = ReceptionPolicy(ReceptionPolicySettings(cooldown_s=0.0))
+        engine = PolicyEngine([policy], capabilities=registry, context=context)
+        await engine.start()
+        await engine.handle_event(RuntimeEvent(kind="vision.wave", source="test"))
+        await engine.handle_event(RuntimeEvent(kind="vision.depart", source="door_policy"))
+
+        assert policy.conversation_active is False
+        assert calls == [
+            ("wave", "Hi! How can I help?"),
+            ("depart", "Goodbye! Have a nice day!"),
+        ]
+        closed = [event for event in events.events if event.kind == "policy.conversation_closed"]
+        assert closed[-1].data["reason"] == "vision_depart"
+        assert "policy.farewell" in events.kinds()
+
+    asyncio.run(run())
+
+
 def test_reception_policy_prepares_backend_session_before_opening_gate():
     async def run():
         events = InMemoryEventSink()
@@ -462,6 +493,70 @@ def test_live_app_registers_handler_conversation_session_capability():
     asyncio.run(run())
 
 
+def test_live_app_routes_all_fixed_policy_text_through_speech_capability():
+    class Handler:
+        def __init__(self):
+            self.calls = []
+
+        async def request_speech(self, text, *, metadata=None):
+            self.calls.append((text, metadata))
+            return True
+
+    async def run():
+        events = InMemoryEventSink()
+        context = RuntimeContext(event_sink=events)
+        registry = CapabilityRegistry()
+        handler = Handler()
+
+        assert _register_handler_policy_speech(registry, handler) is True
+        settings = ReceptionPolicySettings(
+            cooldown_s=0.0,
+            greeting="Configured greeting.",
+            farewell="Configured farewell.",
+            conversation_opener="Configured opener.",
+        )
+        for event in (
+            RuntimeEvent(kind="vision.approach", source="test"),
+            RuntimeEvent(kind="vision.depart", source="test"),
+            RuntimeEvent(kind="vision.wave", source="test"),
+        ):
+            policy = ReceptionPolicy(settings)
+            engine = PolicyEngine([policy], capabilities=registry, context=context)
+            await engine.start()
+            await engine.handle_event(event)
+            await engine.stop()
+
+        assert handler.calls == [
+            (
+                "Configured greeting.",
+                {
+                    "source": "reception_policy",
+                    "reason": "approach",
+                    "trigger_event": "vision.approach",
+                },
+            ),
+            (
+                "Configured farewell.",
+                {
+                    "source": "reception_policy",
+                    "reason": "depart",
+                    "trigger_event": "vision.depart",
+                },
+            ),
+            (
+                "Configured opener.",
+                {
+                    "source": "reception_policy",
+                    "reason": "wave",
+                    "trigger_event": "vision.wave",
+                },
+            ),
+        ]
+        assert _register_handler_policy_speech(CapabilityRegistry(), object()) is False
+
+    asyncio.run(run())
+
+
 def test_policy_visitor_boundary_reconnects_s2s_handler_before_second_opener():
     async def run():
         events = InMemoryEventSink()
@@ -485,10 +580,7 @@ def test_policy_visitor_boundary_reconnects_s2s_handler_before_second_opener():
         first_websocket = handler._connection
         _register_handler_conversation_session(registry, handler)
 
-        async def speak_text(context, text, reason, event):
-            return await handler.request_text_response(text)
-
-        registry.register("speak_text", speak_text)
+        _register_handler_policy_speech(registry, handler)
         policy = ReceptionPolicy(ReceptionPolicySettings(cooldown_s=0.0))
         engine = PolicyEngine([policy], capabilities=registry, context=context)
         await engine.start()
@@ -517,14 +609,16 @@ def test_policy_visitor_boundary_reconnects_s2s_handler_before_second_opener():
     assert second_websocket.closed is True
     assert [payload["type"] for payload in first_websocket.sent] == [
         "session.update",
-        "conversation.item.create",
-        "response.create",
+        "response.cancel",
+        "tts.create",
     ]
     assert [payload["type"] for payload in second_websocket.sent] == [
         "session.update",
-        "conversation.item.create",
-        "response.create",
+        "response.cancel",
+        "tts.create",
     ]
+    assert first_websocket.sent[-1]["text"] == "Hi! How can I help?"
+    assert second_websocket.sent[-1]["text"] == "Hi! How can I help?"
 
 
 def test_cached_policy_speech_plays_wav_and_emits_audio_lifecycle(tmp_path):
@@ -1832,28 +1926,44 @@ def test_s2s_realtime_handler_emits_transcript_audio_and_text_requests():
         transcript = await asyncio.wait_for(handler.emit(), timeout=1.0)
         frame = await asyncio.wait_for(handler.emit(), timeout=1.0)
         ok = await handler.request_text_response("Welcome.")
+        speech_ok = await handler.request_speech(
+            "Goodbye! Have a nice day!",
+            metadata={"source": "policy", "reason": "depart"},
+        )
         await handler.shutdown()
-        return events, websocket, transcript, frame, ok
+        return events, websocket, transcript, frame, ok, speech_ok
 
-    events, websocket, transcript, frame, ok = asyncio.run(run())
+    events, websocket, transcript, frame, ok, speech_ok = asyncio.run(run())
 
     assert ok is True
+    assert speech_ok is True
     assert transcript["role"] == "user"
     assert transcript["transcript"] == "I need directions."
     assert frame[0] == 16_000
     assert np.array_equal(frame[1], np.array([1, -2, 3, -4], dtype=np.int16))
     assert frame[2]["response_id"] == "resp-1"
-    assert websocket.sent[-2]["type"] == "conversation.item.create"
-    assert websocket.sent[-1]["type"] == "response.create"
+    assert websocket.sent[-4]["type"] == "conversation.item.create"
+    assert websocket.sent[-3]["type"] == "response.create"
+    assert websocket.sent[-2]["type"] == "response.cancel"
+    assert websocket.sent[-1] == {
+        "type": "tts.create",
+        "text": "Goodbye! Have a nice day!",
+        "metadata": {"source": "policy", "reason": "depart"},
+    }
     assert "hf.realtime.conversation.item.input_audio_transcription.completed" in events.kinds()
     assert "hf.realtime.response.output_audio.delta" in events.kinds()
     assert "hf.response.metadata" in events.kinds()
+    assert "hf.realtime.tts.requested" in events.kinds()
 
 
 def test_s2s_realtime_handler_reconnects_between_visitor_conversations():
     async def run():
         events = InMemoryEventSink()
         websockets = [_FakeWebSocket(), _FakeWebSocket(), _FakeWebSocket()]
+        settle_delays = []
+
+        async def sleep_factory(delay):
+            settle_delays.append(delay)
 
         async def connect_factory(url):
             websocket = websockets.pop(0)
@@ -1870,6 +1980,7 @@ def test_s2s_realtime_handler_reconnects_between_visitor_conversations():
             event_sink=events,
             startup_timeout_s=1.0,
             connect_factory=connect_factory,
+            sleep_factory=sleep_factory,
         )
         await handler.start_up()
         startup_websocket = handler._connection
@@ -1882,9 +1993,9 @@ def test_s2s_realtime_handler_reconnects_between_visitor_conversations():
         second_websocket = handler._connection
         await handler.request_text_response("Second visitor opener.")
         await handler.shutdown()
-        return first, second, startup_websocket, first_websocket, second_websocket, events
+        return first, second, startup_websocket, first_websocket, second_websocket, events, settle_delays
 
-    first, second, startup_websocket, first_websocket, second_websocket, events = asyncio.run(run())
+    first, second, startup_websocket, first_websocket, second_websocket, events, settle_delays = asyncio.run(run())
 
     assert first == {
         "conversation_generation": 1,
@@ -1911,6 +2022,7 @@ def test_s2s_realtime_handler_reconnects_between_visitor_conversations():
     assert [event["reconnected"] for event in starts] == [True, True]
     snapshots = [event.data for event in events.events if event.kind == "hf.session.snapshot"]
     assert [snapshot["connection_generation"] for snapshot in snapshots] == [1, 2, 3]
+    assert settle_delays == [0.2, 0.2]
 
 
 def test_s2s_realtime_handler_reuses_pristine_startup_session_for_first_visitor():

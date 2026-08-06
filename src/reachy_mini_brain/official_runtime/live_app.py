@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import math
-import os
 import signal
 import time
 from datetime import datetime
@@ -23,6 +22,9 @@ from .events import CompositeEventSink, EventSink, RuntimeEvent
 from .hf_official import DEFAULT_OFFICIAL_APP_SRC, build_hf_official_handler
 from .livekit_handler import LiveKitBackendConfig, LiveKitRealtimeHandler
 from .livekit_room_bridge import LiveKitRoomBridge
+from .live_detection import FramePacket, LiveDetectionManager, load_pipeline_config
+from .door_policy_live import LiveDoorPolicyCoordinator
+from .live_rerun import RERUN_MODES, LiveRerunPublisher
 from .moves import AntennaCueController, PlaybackMovementGate
 from .perception import PerceptionPipeline
 from .policies import PolicyEngine
@@ -43,6 +45,7 @@ load_project_env()
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "artifacts" / "official-runtime-live"
 DEFAULT_PROFILE_INSTRUCTIONS = PROJECT_ROOT / "profiles" / "clinic_receptionist" / "instructions.txt"
 DEFAULT_POLICY_AUDIO_CACHE_DIR = PROJECT_ROOT / "artifacts" / "policy-audio-cache" / "sohee"
+DEFAULT_DOOR_POLICY_PIPELINES = PROJECT_ROOT / "config" / "vision" / "door-policy-v1.json"
 
 
 def _load_backend_instructions(
@@ -101,6 +104,29 @@ def _instruction_provenance(instructions: str, *, source: str) -> dict[str, Any]
     help="Versioned greet/goodbye trigger implementation.",
 )
 @click.option("--vision-interval", type=float, default=0.2, show_default=True)
+@click.option(
+    "--vision-pipelines-config",
+    envvar="RECEPTION_VISION_PIPELINES_CONFIG",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Versioned JSON configuration for additional live detector/tracker pipelines.",
+)
+@click.option(
+    "--rerun-mode",
+    envvar="RECEPTION_RERUN_MODE",
+    type=click.Choice(RERUN_MODES),
+    default="off",
+    show_default=True,
+)
+@click.option(
+    "--rerun-grpc-url",
+    envvar="RECEPTION_RERUN_GRPC_URL",
+    default="rerun+http://127.0.0.1:9876/proxy",
+    show_default=True,
+)
+@click.option("--rerun-image-fps", type=float, default=5.0, show_default=True)
+@click.option("--rerun-jpeg-quality", type=click.IntRange(1, 100), default=80, show_default=True)
+@click.option("--rerun-queue-size", type=click.IntRange(1), default=3, show_default=True)
 @click.option("--instructions-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=DEFAULT_PROFILE_INSTRUCTIONS)
 @click.option("--instructions", default=None, help="Inline backend instructions. Overrides --instructions-file.")
 @click.option(
@@ -202,6 +228,12 @@ async def _run_live(
     perception_smooth: int,
     visitor_trigger_profile: str,
     vision_interval: float,
+    vision_pipelines_config: Path | None,
+    rerun_mode: str,
+    rerun_grpc_url: str,
+    rerun_image_fps: float,
+    rerun_jpeg_quality: int,
+    rerun_queue_size: int,
     instructions_file: Path,
     instructions: str | None,
     profile_owned_context: bool,
@@ -226,6 +258,36 @@ async def _run_live(
     scripted_playback_post_roll_s: float,
 ) -> None:
     resolved_visitor_profile = resolve_visitor_trigger_profile(visitor_trigger_profile)
+    door_policy_enabled = resolved_visitor_profile.implementation == "door_policy_v1"
+    if door_policy_enabled and not perception:
+        raise click.ClickException("door-v1 requires person perception")
+    resolved_pipeline_path = (
+        vision_pipelines_config
+        if vision_pipelines_config is not None
+        else DEFAULT_DOOR_POLICY_PIPELINES
+        if door_policy_enabled
+        else None
+    )
+    resolved_pipeline_config = (
+        load_pipeline_config(resolved_pipeline_path)
+        if resolved_pipeline_path is not None
+        else None
+    )
+    if door_policy_enabled:
+        policy_pipelines = [
+            item for item in resolved_pipeline_config.pipelines if item.role == "policy"
+        ]
+        if len(policy_pipelines) != 1 or policy_pipelines[0].detector != "grounding-dino":
+            raise click.ClickException(
+                "door-v1 requires exactly one policy-role Grounding DINO pipeline"
+            )
+    rerun_save_path = (
+        artifact_root / "rerun" / f"review-{run_id}-01.rrd"
+        if "file" in rerun_mode
+        else None
+    )
+    if rerun_save_path is not None and rerun_save_path.exists():
+        raise click.ClickException(f"refusing to overwrite existing Rerun artifact: {rerun_save_path}")
     backend_instructions, instructions_provenance = _load_backend_instructions(
         instructions_file=instructions_file,
         instructions=instructions,
@@ -248,6 +310,19 @@ async def _run_live(
             "perception_threshold": perception_threshold,
             "perception_smooth": perception_smooth,
             "vision_interval": vision_interval,
+            "vision_pipelines": (
+                resolved_pipeline_config.to_dict()
+                if resolved_pipeline_config is not None
+                else None
+            ),
+            "rerun": {
+                "mode": rerun_mode,
+                "grpc_url_set": bool(rerun_grpc_url) if "grpc" in rerun_mode else False,
+                "image_fps": rerun_image_fps,
+                "jpeg_quality": rerun_jpeg_quality,
+                "queue_size": rerun_queue_size,
+                "save_path": str(rerun_save_path) if rerun_save_path is not None else None,
+            },
             "visitor_trigger_profile": resolved_visitor_profile.metadata(smooth=perception_smooth),
             "audio_gate": audio_gate,
             "profile_owned_context": profile_owned_context,
@@ -272,7 +347,66 @@ async def _run_live(
         record_audio=record_audio,
         record_video=record_video,
         capture_vision=capture_vision,
+        capture_detections=resolved_pipeline_config is not None,
+        rerun_path=rerun_save_path,
     )
+    rerun_publisher: LiveRerunPublisher | None = None
+    detection_manager: LiveDetectionManager | None = None
+    door_policy_coordinator_holder: dict[str, LiveDoorPolicyCoordinator] = {}
+
+    def diagnosis_health(event: str, data: Any) -> None:
+        recorder.realtime("vision.diagnosis", event=event, **dict(data))
+
+    try:
+        if rerun_mode != "off":
+            rerun_publisher = LiveRerunPublisher(
+                mode=rerun_mode,
+                recording_id=run_id,
+                grpc_url=rerun_grpc_url,
+                save_path=rerun_save_path,
+                jpeg_quality=rerun_jpeg_quality,
+                image_fps=rerun_image_fps,
+                queue_size=rerun_queue_size,
+                health_callback=diagnosis_health,
+            )
+            rerun_publisher.start()
+        if resolved_pipeline_config is not None:
+            def detection_result(observation: Any) -> None:
+                recorder.detection_layer(observation.to_dict())
+                if rerun_publisher is not None:
+                    rerun_publisher.submit_detection_layer(observation)
+                coordinator = door_policy_coordinator_holder.get("coordinator")
+                if coordinator is not None:
+                    coordinator.submit_detection(observation)
+
+            detection_manager = LiveDetectionManager(
+                run_id=run_id,
+                config=resolved_pipeline_config,
+                result_callback=detection_result,
+                health_callback=diagnosis_health,
+            )
+            detection_manager.start()
+    except Exception:
+        if detection_manager is not None:
+            detection_manager.close()
+        if rerun_publisher is not None:
+            rerun_publisher.close()
+        recorder.close()
+        raise
+    diagnosis_closed = False
+
+    def close_diagnosis() -> None:
+        nonlocal diagnosis_closed
+        if diagnosis_closed:
+            return
+        diagnosis_closed = True
+        if detection_manager is not None:
+            detection_manager.close()
+            diagnosis_health("pipelines_closed", detection_manager.snapshot())
+        if rerun_publisher is not None:
+            stats = rerun_publisher.close()
+            diagnosis_health("rerun_closed", stats.__dict__)
+
     stop_event = asyncio.Event()
     stop_callbacks: list[Callable[[], None]] = []
     loop = asyncio.get_running_loop()
@@ -281,10 +415,21 @@ async def _run_live(
     robot_session = ReachyRobotSession(
         host=robot_host,
         warmup_audio=warmup_audio,
-        warmup_video=warmup_video or perception or record_video,
+        warmup_video=(
+            warmup_video
+            or perception
+            or record_video
+            or resolved_pipeline_config is not None
+            or rerun_mode != "off"
+        ),
         milestone_callback=lambda name, data: _record_milestone(recorder, run_id, name, **data),
     )
-    mini = await asyncio.to_thread(robot_session.start)
+    try:
+        mini = await asyncio.to_thread(robot_session.start)
+    except Exception:
+        close_diagnosis()
+        recorder.close()
+        raise
     camera_provider = ReachyCameraFrameProvider(mini)
 
     movement_gate = PlaybackMovementGate(on_change=lambda active, reason: recorder.realtime("movement_gate", active=active, reason=reason))
@@ -314,7 +459,6 @@ async def _run_live(
     )
     capabilities = CapabilityRegistry()
     register_camera_capabilities(capabilities)
-    handler_holder: dict[str, Any] = {}
     antenna_pulse_tasks: set[asyncio.Task[None]] = set()
 
     async def antenna_pulse(context: RuntimeContext) -> bool:
@@ -344,19 +488,35 @@ async def _run_live(
     capabilities.register("start_thinking_cue", start_thinking_cue)
     capabilities.register("stop_thinking_cue", stop_thinking_cue)
 
-    async def speak_text(context: RuntimeContext, text: str, reason: str, event: RuntimeEvent) -> bool:
-        handler = handler_holder.get("handler")
-        request_text_response = getattr(handler, "request_text_response", None)
-        if not callable(request_text_response):
-            return False
-        return bool(await request_text_response(_policy_speech_prompt(text, reason)))
-
-    capabilities.register("speak_text", speak_text)
     policies = [reception_policy]
     if conversation_cues:
         policies.append(ConversationCuePolicy())
     policy_engine = PolicyEngine(policies, capabilities=capabilities, context=context)
     policy_sink.bind(policy_engine, loop)
+    door_policy_coordinator: LiveDoorPolicyCoordinator | None = None
+    if door_policy_enabled:
+        def door_policy_result(door_observation: Any, policy_observation: Any) -> None:
+            recorder.realtime(
+                "vision.door_policy",
+                door=door_observation.to_dict(),
+                policy=policy_observation.to_dict(),
+            )
+            for event in policy_observation.events:
+                event_sink.emit(
+                    RuntimeEvent(
+                        kind=f"vision.{event['kind']}",
+                        source="official_runtime.door_policy",
+                        data=event,
+                    )
+                )
+
+        door_policy_coordinator = LiveDoorPolicyCoordinator(
+            result_callback=door_policy_result,
+            health_callback=lambda event, data: diagnosis_health(
+                f"door_policy.{event}", data
+            ),
+        )
+        door_policy_coordinator_holder["coordinator"] = door_policy_coordinator
 
     runtime_observer = CompositeRuntimeObserver(reception_policy, recorder, movement_gate)
     audio_source = ReachyAudioSource(mini, max_duration_s=duration, stop_event=stop_event)
@@ -377,6 +537,7 @@ async def _run_live(
                 await audio_sink.close()
                 await asyncio.to_thread(robot_session.stop)
             finally:
+                close_diagnosis()
                 recorder.close()
         click.echo(f"official runtime live artifacts: {recorder.manifest_path}")
         return
@@ -402,7 +563,7 @@ async def _run_live(
         camera_worker=camera_provider,
         reachy_mini=mini,
     )
-    handler_holder["handler"] = handler
+    _register_handler_policy_speech(capabilities, handler)
     _register_handler_conversation_session(capabilities, handler)
     ready_cue_task: asyncio.Task[None] | None = None
     scripted_flow_task: asyncio.Task[None] | None = None
@@ -443,7 +604,13 @@ async def _run_live(
 
     try:
         await policy_engine.start()
-        if perception or record_video or capture_vision:
+        if (
+            perception
+            or record_video
+            or capture_vision
+            or detection_manager is not None
+            or rerun_publisher is not None
+        ):
             vision_task = asyncio.create_task(
                 _vision_loop(
                     camera_provider=camera_provider,
@@ -458,6 +625,10 @@ async def _run_live(
                     smooth=perception_smooth,
                     gestures=gestures,
                     visitor_trigger_profile=resolved_visitor_profile.name,
+                    run_id=run_id,
+                    detection_manager=detection_manager,
+                    rerun_publisher=rerun_publisher,
+                    door_policy_coordinator=door_policy_coordinator,
                 ),
                 name="official-runtime-vision",
             )
@@ -511,6 +682,7 @@ async def _run_live(
         try:
             await asyncio.to_thread(robot_session.stop)
         finally:
+            close_diagnosis()
             recorder.close()
 
     click.echo(f"official runtime live artifacts: {recorder.manifest_path}")
@@ -533,6 +705,31 @@ def _register_handler_conversation_session(
         return await begin_conversation_session()
 
     capabilities.register("begin_conversation_session", begin_handler_conversation_session)
+    return True
+
+
+def _register_handler_policy_speech(
+    capabilities: CapabilityRegistry,
+    handler: Any,
+) -> bool:
+    request_speech = getattr(handler, "request_speech", None)
+    if not callable(request_speech):
+        return False
+
+    async def speak_text(
+        context: RuntimeContext,
+        text: str,
+        reason: str,
+        event: RuntimeEvent,
+    ) -> bool:
+        metadata = {
+            "source": "reception_policy",
+            "reason": reason,
+            "trigger_event": event.kind,
+        }
+        return bool(await request_speech(text, metadata=metadata))
+
+    capabilities.register("speak_text", speak_text)
     return True
 
 
@@ -1125,6 +1322,10 @@ async def _vision_loop(
     smooth: int,
     gestures: bool,
     visitor_trigger_profile: str,
+    run_id: str,
+    detection_manager: LiveDetectionManager | None = None,
+    rerun_publisher: LiveRerunPublisher | None = None,
+    door_policy_coordinator: LiveDoorPolicyCoordinator | None = None,
 ) -> None:
     pipeline = (
         PerceptionPipeline(
@@ -1133,6 +1334,8 @@ async def _vision_loop(
             gestures=gestures,
             event_sink=diagnostic_sink,
             visitor_trigger_profile=visitor_trigger_profile,
+            observation_mode="live",
+            observation_run_id=run_id,
         )
         if perception_enabled
         else None
@@ -1142,6 +1345,7 @@ async def _vision_loop(
     if ready_event is not None:
         ready_event.set()
     fps = 1.0 / interval_s if interval_s > 0 else 5.0
+    frame_index = 0
     while not stop_event.is_set():
         frame = camera_provider.get_latest_frame()
         if frame is not None:
@@ -1150,12 +1354,36 @@ async def _vision_loop(
             people = 0
             tracks: list[dict[str, Any]] = []
             if pipeline is not None:
-                events, people, tracks = pipeline.process(frame, bgr=True, ts=frame_ts)
+                events, people, tracks = pipeline.process(
+                    frame,
+                    bgr=True,
+                    ts=frame_ts,
+                    frame_index=frame_index,
+                    timestamp_source="live_camera",
+                )
+            if rerun_publisher is not None or detection_manager is not None:
+                frame_packet = FramePacket(
+                    frame_index=frame_index,
+                    frame_ts=frame_ts,
+                    frame_bgr=frame.copy(),
+                )
+                if rerun_publisher is not None:
+                    rerun_publisher.submit_frame(frame_packet)
+                    if pipeline is not None and pipeline.last_observation is not None:
+                        rerun_publisher.submit_visitor_observation(pipeline.last_observation)
+                if detection_manager is not None:
+                    if door_policy_coordinator is not None:
+                        door_policy_coordinator.submit_frame(
+                            frame_packet,
+                            pipeline.last_observation if pipeline is not None else None,
+                        )
+                    detection_manager.submit(frame_packet)
             recorder.vision_frame(frame, people=people, tracks=tracks, events=events, fps=fps, ts=frame_ts)
             for event in events:
                 await policy_engine.handle_event(
                     RuntimeEvent(kind=f"vision.{event['kind']}", source="official_runtime.vision", data=event)
                 )
+            frame_index += 1
         await asyncio.sleep(max(0.01, interval_s))
 
 
@@ -1200,13 +1428,6 @@ def _install_signal_handlers(
             loop.add_signal_handler(sig, request_stop)
         except NotImplementedError:
             pass
-
-
-def _policy_speech_prompt(text: str, reason: str) -> str:
-    return (
-        f"Reception policy event: {reason}. "
-        f"Say exactly this line aloud, without adding extra words: {text}"
-    )
 
 
 if __name__ == "__main__":

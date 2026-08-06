@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "pipelines": [
+    {
+      "id": "door_grounding_dino",
+      "detector": "grounding-dino",
+      "model": "IDEA-Research/grounding-dino-tiny",
+      "targets": ["door", "doorway", "entrance door"],
+      "threshold": 0.30,
+      "text_threshold": 0.15,
+      "inference_fps": 2.0,
+      "input_size": 480,
+      "tracker": "none",
+      "role": "policy",
+      "device": "mps"
+    }
+  ]
+}

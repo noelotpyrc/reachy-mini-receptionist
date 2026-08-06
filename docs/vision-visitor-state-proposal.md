@@ -42,6 +42,128 @@ ReceptionPolicy greet / farewell
 Depth estimation is not part of the first implementation. It can later supply another proximity
 measurement without changing the trigger contract.
 
+## Dynamic Door Policy Follow-Up
+
+The door observation layer supplies two inputs to a versioned policy profile:
+
+- a categorical door state: `STABLE`, `MOVING`, or `UNKNOWN`;
+- a retained logical door-region box and timestamp-aligned spatial measurements against person
+  boxes.
+
+`STABLE` means the observed door is not moving, regardless of whether it is open or closed.
+`UNKNOWN` means the observer cannot make a reliable motion decision because localization is
+unavailable or stale, or the door is not sufficiently observable.
+
+Grounding DINO provides periodic semantic localization. Raw detections can split between the door
+leaf and doorway while the door moves, so the highest-confidence box and ByteTrack ID are not a
+stable door identity. The observer instead associates compatible detections and retains one logical
+door-region box through short gaps. YOLO-World remains an offline comparison signal until it
+matches Grounding DINO's open-door coverage.
+
+Door movement uses detection-box geometry change by default. Relative door-leaf motion remains an
+optional additive fallback, disabled by default because it adds about 13 ms per processed frame and
+missed motion that geometry detected in the initial two-clip evaluation. When enabled, it tracks
+sparse image features inside the retained door box and in a surrounding background ring, masks
+current and previous person boxes, rejects inconsistent tracks with forward/backward checks and
+RANSAC, and compares the fitted door transform with the fitted background transform. Valid relative
+evidence can raise the combined motion score but cannot suppress geometry evidence. When disabled,
+the observer skips feature detection, optical flow, and affine fitting entirely. The full-frame
+changed pixel fraction remains recorded as `global_frame_change_score` for diagnosis only and does
+not affect classification.
+
+Offline review generation defaults to `--geometry-only`. Pass `--relative-motion` to evaluate the
+fallback and populate its diagnostic lanes.
+
+For each logical person track, record the fraction of the person box intersecting the retained door
+box and the normalized distance from the person's feet anchor to the nearest door-box edge. The
+policy uses those measurements with hysteresis: an interaction enters when distance is at most
+`0.06` or overlap is at least `0.10`, and exits only when distance exceeds `0.08` and overlap falls
+below `0.05`. Both measurements must be available before the interaction can participate in a
+trigger.
+
+### Door-Ordered Trigger Contract
+
+The `door-v1-20260805` profile leaves the existing height-based profile available for rollback and
+uses opposite evidence ordering to distinguish arrival from departure:
+
+1. **Greet:** a `STABLE -> MOVING` door edge with no observed or recently retained person arms a
+   greet candidate. A later person interaction entering the threshold emits one `vision.approach`.
+2. **Goodbye:** a person interaction entering the threshold arms a goodbye candidate. A later
+   `STABLE/UNKNOWN -> MOVING` door edge emits one `vision.depart`.
+
+The interaction crossing alone never emits goodbye. Door movement and a newly observed interaction
+on the same source frame are treated as ambiguous and emit neither event. A person remains retained
+for `0.75 s` through ordinary detector gaps, including a clipped but credible person box. Both
+greet candidates expire after `4.0 s`. A goodbye candidate remains supported while at least one
+interaction stays inside the exit hysteresis (`distance <= 0.08` or `overlap >= 0.05`); its `4.0 s`
+expiry starts only after that support is lost. Goodbye does not require a prior greeting or
+conversation.
+
+Grounding DINO runs continuously as an asynchronous policy-role pipeline at up to `2 Hz`; RF-DETR
+person perception remains on the camera path. DINO output is fused with the person observation and
+image from the DINO source frame, not the frame current when inference completes. The first M1 Max
+benchmark used the 2026-08-04 14:46:21 clip, frames 40-110:
+
+| DINO shortest edge | Detected samples | Median inference | Maximum inference |
+| --- | ---: | ---: | ---: |
+| model default | 45/45 | 546.6 ms | 564.1 ms |
+| 640 px | 45/45 | 334.1 ms | 393.3 ms |
+| 480 px | 45/45 | 226.5 ms | 231.0 ms |
+
+The 480 px setting preserves detection coverage and the retained door geometry on this source while
+leaving input size configurable. It is the first policy-profile default, subject to the captured
+acceptance set below.
+
+The earlier `TrackedPolygonZone` implementation remains available for fixed, manually calibrated
+doorway occupancy experiments. The dynamic door observer does not require that polygon and must not
+silently substitute polygon occupancy for semantic door localization.
+
+### Offline Door Policy Review Contract
+
+Manual acceptance uses one spatial view plus focused observation and policy timelines. All timeline panels link their
+X axes to the global frame timeline so an independently retained Rerun zoom cannot make populated
+series appear empty. The generator embeds the blueprint as both active and default; merely storing
+it as the default allows an older active layout for the same Rerun application to override the
+artifact's intended panels and time ranges.
+
+1. The spatial view overlays thin raw Grounding DINO boxes, a thick retained door box, person boxes,
+   logical person IDs, and the current door state on the source frame.
+2. **Door State** shows `STABLE`, `MOVING`, or `UNKNOWN` as a categorical lane.
+3. **Combined Door Motion** shows the combined score and enter/exit hysteresis thresholds.
+4. **Door Geometry Score** shows detection-box geometry change independently.
+5. **Relative Door-Leaf Motion** shows background-relative feature motion independently.
+6. **Relative-Flow Quality** shows whether relative motion is valid plus door inlier ratio, door
+   feature coverage, and background inlier ratio. Detailed point counts and normalized relative
+   displacement remain available in `frames.jsonl`.
+7. **Door Box Geometry** shows normalized retained-box center X, center Y, width, and height. A gap
+   means there is no valid retained box.
+8. **Person-Door Overlap** shows `intersection(person_box, door_box) / person_box_area` as one series
+   per logical person track plus an always-present maximum-overlap series. The aggregate is zero
+   when no person is observed; track-specific series end when that track disappears.
+9. **Person-Door Distance** shows feet-anchor distance to the nearest door-box edge, normalized by
+   frame diagonal, as one series per logical person track. The distance is zero when the anchor is
+   inside the box.
+10. **Observed and Retained Presence** distinguishes current RF-DETR evidence from the short policy
+    retention window.
+11. **Policy Candidate** records idle, greet-armed, or goodbye-armed state, and **Policy Trigger**
+    records `approach` and `depart` decisions.
+12. **DINO Latency** records inference latency and source-frame age. **Source-to-Decision Latency**
+    records when the asynchronous policy decision became available relative to its source frame.
+
+The first trigger acceptance set consists of two human-approved positive sequences and one negative:
+
+- `official-live-20260804-144621`, frames 40-110: exactly `depart -> approach`;
+- `official-live-20260804-145713`, frames 600-690: exactly two `depart` events and no
+  `approach`; the operator intentionally approaches and opens/closes the door twice without leaving,
+  and both door-opening sequences are intended goodbye triggers;
+- `official-live-20260625-133754--trigger-02`: no greet or goodbye event.
+
+Each Rerun artifact must make the evidence order reviewable from source frames. Door-motion to policy
+decision latency must be at most `1.0 s`. During a future controlled live acceptance, the policy DINO
+pipeline must not starve RF-DETR for more than `1.0 s` or reduce its effective cadence by more than
+20 percent. Generate and review the acceptance artifacts one at a time; stop if an expected sequence fails
+before proceeding to the next artifact.
+
 ## Problem
 
 `ApproachTracker` currently selects the largest tracked person box, measures its normalized area,
