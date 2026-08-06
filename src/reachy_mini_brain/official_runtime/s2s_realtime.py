@@ -18,6 +18,7 @@ from .stream_runtime import AudioFrame, HandlerOutput
 
 
 ConnectFactory = Callable[[str], Awaitable[Any]]
+SleepFactory = Callable[[float], Awaitable[None]]
 
 
 class S2SRealtimeHandler:
@@ -44,6 +45,8 @@ class S2SRealtimeHandler:
         connect_factory: ConnectFactory | None = None,
         instructions_source: str | None = None,
         instructions_sha256: str | None = None,
+        reconnect_settle_s: float = 0.2,
+        sleep_factory: SleepFactory = asyncio.sleep,
     ) -> None:
         self.realtime_ws_url = realtime_ws_url
         self.instructions = instructions
@@ -56,6 +59,8 @@ class S2SRealtimeHandler:
         self.transcription_model = transcription_model
         self.transcription_language = transcription_language
         self.connect_factory = connect_factory
+        self.reconnect_settle_s = max(0.0, reconnect_settle_s)
+        self.sleep_factory = sleep_factory
         self._outputs: asyncio.Queue[HandlerOutput] = asyncio.Queue()
         self._connected_event = asyncio.Event()
         self._send_lock = asyncio.Lock()
@@ -97,6 +102,8 @@ class S2SRealtimeHandler:
                 await self._open_connection()
             elif reconnected:
                 await self._close_connection(clear_outputs=True)
+                if self.reconnect_settle_s:
+                    await self.sleep_factory(self.reconnect_settle_s)
                 await self._open_connection()
             self._conversation_generation += 1
             result = {
@@ -189,6 +196,24 @@ class S2SRealtimeHandler:
         )
         return True
 
+    async def request_speech(
+        self,
+        text: str,
+        *,
+        metadata: dict[str, str] | None = None,
+    ) -> bool:
+        """Synthesize exact text without creating an LLM turn."""
+        if self._connection is None:
+            return False
+        payload: dict[str, Any] = {"type": "tts.create", "text": text}
+        if metadata:
+            payload["metadata"] = dict(metadata)
+        # Deterministic policy speech has priority over an in-flight conversational
+        # response. A no-op cancel is valid when the backend is already idle.
+        await self._send_many([{"type": "response.cancel"}, payload])
+        self._emit("hf.realtime.tts.requested", text=text, metadata=metadata or {})
+        return True
+
     def copy(self) -> "S2SRealtimeHandler":
         return type(self)(
             realtime_ws_url=self.realtime_ws_url,
@@ -202,6 +227,8 @@ class S2SRealtimeHandler:
             connect_factory=self.connect_factory,
             instructions_source=self.instructions_source,
             instructions_sha256=self.instructions_sha256,
+            reconnect_settle_s=self.reconnect_settle_s,
+            sleep_factory=self.sleep_factory,
         )
 
     async def _connect(self) -> Any:
@@ -410,6 +437,8 @@ def _response_metadata(event: dict[str, Any]) -> dict[str, Any]:
     response = event.get("response")
     if isinstance(response, dict):
         metadata["status"] = response.get("status")
+        if isinstance(response.get("metadata"), dict):
+            metadata["request_metadata"] = response["metadata"]
     text = _event_text(event)
     if text:
         metadata["text"] = text

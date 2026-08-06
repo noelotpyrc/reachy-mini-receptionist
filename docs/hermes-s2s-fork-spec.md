@@ -1,7 +1,7 @@
-# Spec — S2S backend fork: Hermes conversation state + policy-turn routing
+# Spec — S2S backend fork: Hermes conversation state + deterministic policy speech
 
-Date: 2026-07-03; staging-profile and latency-observability facts updated 2026-07-24
-Status: implementation in progress (todo #8, Hermes track); fork pushed, product wiring implemented locally, staging-profile wiring pending
+Date: 2026-07-03; deterministic policy-speech design updated 2026-08-05
+Status: implementation in progress (todo #8, Hermes track); deterministic policy-speech changes implemented locally, not committed or deployed
 Audience: implementing agent. Read this whole doc before coding.
 
 ## 1. Goal
@@ -9,8 +9,8 @@ Audience: implementing agent. Read this whole doc before coding.
 Make the local S2S backend session-aware when its LLM slot points at the Hermes
 agent wrapper, so one policy-level visitor conversation maps to one server-side Hermes
 `conversation` (memory, context-file reads, and tool results persist across
-turns) — while **greet/goodbye/opener policy speeches keep using the plain
-LLM API directly** and never touch Hermes.
+turns), while **greet/goodbye/opener policy speeches synthesize exact fixed
+text through the configured TTS backend without invoking any LLM**.
 
 This requires forking the HF `speech-to-speech` package (pinned 0.2.10 today):
 the LLM handler class is hardcoded in `s2s_pipeline.py` and has no plugin
@@ -25,9 +25,10 @@ fields become `--responses_api_*` flags for free.
   while the local buffer rewrote in place. We will judge the real UX in live
   testing before adding any tighter fix. Emit a `logger.warning` at setup when
   conversation mode and speculative turns are both active.
-- **Policy speeches (greet / farewell / opener) route to the direct LLM API**
-  (OpenRouter Responses), not Hermes. They are one-off canned-prompt turns;
-  they must not spin Hermes agent runs nor enter the Hermes conversation.
+- **Policy speeches (greet / farewell / opener) use the generic realtime
+  `tts.create` event.** The backend validates the exact supplied text and
+  injects it directly into the existing TTS queue. It must not invoke Hermes,
+  the direct Responses client, STT, a second TTS engine, Piper, or cached WAVs.
 - **Warmup must not hit Hermes.** Every Hermes `/v1/responses` call is a full
   agent run (prompt assembly + stored session). Skip warmup (or point it at
   the direct client) when conversation mode is enabled.
@@ -37,7 +38,7 @@ fields become `--responses_api_*` flags for free.
   visitor heard everything. Verified structurally (no cancel propagation on
   that path); confirm live with the barge-in check in §8.
 - **Known gap, accepted for v1:** greetings/goodbyes won't exist in the Hermes
-  chain (they're generated on the direct path), so the first wave-chat turn's
+  chain (they are deterministic TTS-only responses), so the first wave-chat turn's
   model doesn't know the robot already said "Welcome!". Generic greetings make
   this low-risk. Revisit only if live UX shows it.
 - **A test-only Hermes profile is the mandatory first deployment target.** Draft
@@ -65,14 +66,12 @@ Backend package: `/Users/leon/projects/speech_to_speech_backend/.venv/lib/python
     stateless full-transcript replay.
   - **Correction verified during implementation (2026-07-14):** a bare
     `response.create` was originally queued with `request.response=None`, which
-    made it indistinguishable from an automatic VAD turn. The live app's policy
-    speeches go through
-    `request_text_response()` (`src/reachy_mini_brain/official_runtime/s2s_realtime.py:111`)
-    which sends `conversation.item.create` + bare `response.create`. The fork
-    therefore normalizes every explicit `response.create` to an empty non-null
+    made it indistinguishable from an automatic VAD turn. The fork normalizes
+    every explicit `response.create` to an empty non-null
     `RealtimeResponseCreateParams`; wave-chat auto turns from server VAD retain
     `response=None`. After that normalization,
-    **`request.response is not None` ⇔ explicit/policy turn**.
+    **`request.response is not None` means explicit LLM turn**. Policy speech no
+    longer uses this marker; it uses `tts.create` and bypasses both LLM clients.
   - `warmup()` (~line 105): fires a real `responses.create` at startup.
   - `on_session_end()` (~line 492): per-websocket-session reset hook.
 - `arguments_classes/responses_api_language_model_arguments.py`: dataclass →
@@ -97,14 +96,14 @@ Backend package: `/Users/leon/projects/speech_to_speech_backend/.venv/lib/python
   (`s2s_realtime.py:251`) and Hermes ignores client-supplied tools — no tool
   round-trip concerns.
 
-## 4. Fork changes (implemented in 4 source files + focused tests)
+## 4. Fork changes (implemented with focused tests)
 
 Fork: https://github.com/noelotpyrc/speech-to-speech (created 2026-07-13). Branch
 `reachy/conversation-state` off upstream commit `f3b1971` (`Prepare 0.2.10
 release`). The upstream/fork repository did not contain the assumed `v0.2.10`
 tag, so the release commit is the verified base. Keep `main` tracking upstream
 so future rebases stay cheap. The implementation is pushed at
-`be84d4f7ba4aa11cc21ddcd7c47698af318eabd1`; m1max installs that exact sha (see
+`a963ca68b9aa3599b7ea5eeabb9505a68263fbff`; m1max installs that exact sha (see
 §5). The fork is public — keep it generic (feature flags only, nothing
 clinic-specific or secret).
 
@@ -118,7 +117,7 @@ responses_api_conversation: bool = False
     # OpenAI/OpenRouter reject arbitrary conversation names.
 responses_api_conversation_prefix: str = "s2s"
 responses_api_direct_base_url: Optional[str] = None
-    # Plain Responses endpoint for explicit response.create (policy) turns.
+    # Plain Responses endpoint for explicit response.create turns.
     # Falls back to responses_api_base_url when unset.
 responses_api_direct_model_name: Optional[str] = None   # falls back to model_name
 responses_api_direct_api_key: Optional[str] = None      # falls back to RESPONSES_API_DIRECT_API_KEY, responses_api_api_key, or env
@@ -130,8 +129,9 @@ responses_api_direct_api_key: Optional[str] = None      # falls back to RESPONSE
   from the `direct_*` values (reuse `self.client` when all three are unset);
   `self._conversation_id = None`; warn if `conversation` mode and
   `speculative_turns` are both enabled.
-- **Warmup**: when `conversation` mode is on, warm the **direct** client only
-  (policy turns still benefit); do not send any request to the wrapper.
+- **Warmup**: when `conversation` mode is on, warm the **direct** client only;
+  do not send any request to the wrapper. Deterministic policy speech does not
+  use either LLM client.
 - **Conversation id helper** — lazy per session:
 
   ```python
@@ -145,8 +145,8 @@ responses_api_direct_api_key: Optional[str] = None      # falls back to RESPONSE
   call site):
 
   ```python
-  is_policy_turn = response is not None          # explicit response.create
-  if self.conversation_enabled and not is_policy_turn:
+  is_explicit_turn = response is not None        # explicit response.create
+  if self.conversation_enabled and not is_explicit_turn:
       # Hermes lane: server-side state, delta-only input
       optional_kwargs["conversation"] = self._active_conversation_id()
       optional_kwargs["instructions"] = build_voice_system_prompt(instructions)
@@ -175,7 +175,7 @@ responses_api_direct_api_key: Optional[str] = None      # falls back to RESPONSE
 - **`on_session_end()`**: add `self._conversation_id = None` so each realtime
   WebSocket starts a fresh Hermes conversation.
 - **Do not touch** the local `Chat` buffer lifecycle. It still records
-  everything (policy + wave-chat turns) and feeds speculative rewrites,
+  explicit LLM and wave-chat turns and feeds speculative rewrites,
   compaction, and our artifact recording. It is simply no longer shipped whole
   to the wrapper. The `enable_lang_prompt` extra user message is not supported
   in conversation mode (it would pollute the chain); it's off by default —
@@ -185,7 +185,7 @@ responses_api_direct_api_key: Optional[str] = None      # falls back to RESPONSE
 
 - Normalize a bare explicit `response.create` to
   `RealtimeResponseCreateParams()` when constructing `GenerateResponseRequest`.
-  This is the policy-turn marker consumed by §4b. Automatic server-VAD turns
+  This is the explicit-turn marker consumed by §4b. Automatic server-VAD turns
   continue to carry `response=None`.
 - Focused fork verification: Responses API handler, Chat, and realtime-service
   suites pass (228 tests). The full suite currently aborts during collection in
@@ -204,6 +204,53 @@ test reproduces the prior failure: current-generation audio and
 blanket-dropped. Focused fork verification after the cherry-pick: 174 realtime,
 LLM output, and Responses API tests pass.
 
+### 4e. Generic deterministic TTS-only responses
+
+- Add a validated client event:
+
+  ```json
+  {
+    "type": "tts.create",
+    "text": "Exact text to synthesize.",
+    "metadata": {"source": "caller", "reason": "announcement"}
+  }
+  ```
+
+- Reject blank text, unavailable TTS queues, and requests made while another
+  response is active using the normal realtime error envelope.
+- Allocate the normal response and item IDs, emit `response.created`, enqueue
+  the exact text as both `AssistantTextEvent` and `TTSInput`, then enqueue
+  `EndOfResponse`. The normal send loop consequently emits
+  `response.output_audio_transcript.done`, streamed
+  `response.output_audio.delta`, `response.output_audio.done`, and
+  `response.done`.
+- Copy optional string metadata into the response lifecycle. Carry the current
+  cancellation generation on text, TTS, and completion so `response.cancel`
+  and stale-output filtering behave exactly as they do for LLM responses.
+- `tts.create` does not append user or assistant messages to the backend chat
+  and never writes to the LLM input queue.
+
+#### Policy TTS integration benchmark (2026-08-05)
+
+`scripts/m1max/benchmark_policy_tts.py` exercised the deployed realtime
+WebSocket on m1max with the production sequence `response.cancel` then
+`tts.create`. It used one persistent session, one warmup per phrase, and 30
+measured greet plus 30 measured goodbye responses. All 60 responses produced an
+exact authoritative transcript, nonempty PCM audio, `response.output_audio.done`,
+and a completed `response.done`; the backend log contained no error.
+
+| Phrase | First audio P50 | First audio P95 | First audio max | Audio done P50 | Audio done P95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Greet | 155.6 ms | 158.4 ms | 158.7 ms | 1095.0 ms | 1401.2 ms |
+| Goodbye | 154.9 ms | 157.5 ms | 158.6 ms | 908.5 ms | 1760.7 ms |
+
+Across both phrases, `response.created` P50 was `0.5 ms`, exact transcript
+availability P50 was `11.2 ms`, and first-audio P50/P95 were `155.5/158.4 ms`.
+These measurements end when the WebSocket client receives audio; they exclude
+vision-policy dispatch, the robot audio queue, and physical speaker onset. The
+full JSON report and representative WAVs are under
+`artifacts/benchmarks/policy-tts-30x2-20260805*`.
+
 ## 5. Product-repo wiring
 
 - The live app defines the visitor boundary, not the backend WebSocket lifetime.
@@ -218,6 +265,15 @@ LLM output, and Responses API tests pass.
   and the audio gate closed, and the next accepted wave retries the connection
   without requiring an app restart. Handlers without this capability retain
   their existing behavior.
+- `S2SRealtimeHandler.request_speech(text, metadata=...)` sends
+  `response.cancel` followed by one generic `tts.create`. The cancel is a no-op
+  when idle and gives deterministic policy speech priority over an in-flight
+  conversational response. The live policy registers `speak_text` only through this method
+  and supplies the configured greet, farewell, or conversation-opener text
+  unchanged, with `source=reception_policy`, the policy `reason`, and the
+  trigger event in metadata. Ordinary conversational generation continues to
+  use server-VAD/Hermes; generic explicit LLM requests continue to use
+  `conversation.item.create` plus `response.create`.
 - `scripts/m1max/setup_s2s_backend.sh`: replace the `speech-to-speech==0.2.10`
   pip install with an install from the fork at a **pinned sha**:
   `uv pip install "git+https://github.com/noelotpyrc/speech-to-speech@<sha>"`.
@@ -227,7 +283,7 @@ LLM output, and Responses API tests pass.
   temporarily point at a local clone via `pip install -e`; re-run the setup
   script afterwards to restore the pinned state.
   Current pin:
-  `be84d4f7ba4aa11cc21ddcd7c47698af318eabd1`.
+  `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`.
 - `scripts/m1max/run_s2s_backend.sh`: add env switches:
 
   ```bash
@@ -248,14 +304,14 @@ LLM output, and Responses API tests pass.
   `S2S_RESPONSES_BASE_URL=http://127.0.0.1:8643/v1`
   (`reachyclinic-test`, wave-chat lane) +
   `S2S_RESPONSES_DIRECT_BASE_URL=https://openrouter.ai/api/v1` +
-  `S2S_RESPONSES_DIRECT_MODEL=openai/gpt-5.6-luna` (policy lane).
+  `S2S_RESPONSES_DIRECT_MODEL=openai/gpt-5.6-luna` (explicit LLM lane).
   Note the direct lane needs the OpenRouter key even when the primary key is
   the Hermes `API_SERVER_KEY`. Port 8642 is reserved for the production
   candidate `reachyclinic` profile after the promotion gate in §6.
 
   Current model selection, updated 2026-07-30: both Hermes profiles use
   `openai/gpt-5.6-luna` with `agent.reasoning_effort: low` and latency-first
-  provider routing. The direct policy lane uses the same model without an
+  provider routing. The direct explicit-response lane uses the same model without an
   explicit reasoning or provider-routing override, matching its benchmarked
   request shape.
 
@@ -508,10 +564,12 @@ test. Reproduction is provided by
 2. **Regression (flag off):** with the fork installed and
    `responses_api_conversation=False`, existing offline suite passes and a
    direct-OpenRouter preflight run behaves identically to 0.2.10.
-3. **Lane routing (text-only):** against Hermes + direct lanes, drive one
-   policy `response.create` and two wave-chat turns; assert via Hermes logs /
-   `GET /v1/responses/{id}` that only the wave-chat turns exist in the named
-   conversation, and the policy turn hit the direct endpoint.
+3. **Lane routing (text-only):** drive one policy `tts.create`, one explicit
+   LLM `response.create`, and two wave-chat turns. Assert that policy speech
+   produces the exact authoritative assistant transcript and audio lifecycle
+   without any Hermes or direct-provider call; only wave-chat turns enter the
+   named Hermes conversation; the explicit LLM turn alone hits the direct
+   endpoint.
 4. **State works:** turn 1 states a fact ("my name is X"), turn 2 asks for it
    with only the new user message on the wire; answer must recall it. Also
    verify a clinic-facts question answers from generated `HERMES.md` without a

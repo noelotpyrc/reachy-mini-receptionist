@@ -730,7 +730,7 @@ def test_s2s_backend_setup_script_contract() -> None:
     assert script.exists()
     assert "S2S_BACKEND_VERSION:-0.2.10" in text
     assert "https://github.com/noelotpyrc/speech-to-speech.git" in text
-    assert "be84d4f7ba4aa11cc21ddcd7c47698af318eabd1" in text
+    assert "a963ca68b9aa3599b7ea5eeabb9505a68263fbff" in text
     assert "speech_to_speech_fork_url" in text
     assert "speech_to_speech_fork_sha" in text
     assert "/Users/leon/projects/speech_to_speech_backend" in text
