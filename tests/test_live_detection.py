@@ -10,6 +10,7 @@ from typing import Callable
 import numpy as np
 import pytest
 
+from reachy_mini_brain.official_runtime import live_detection
 from reachy_mini_brain.official_runtime.artifacts import ArtifactRecorder
 from reachy_mini_brain.official_runtime.live_detection import (
     DetectionLayerObservation,
@@ -143,6 +144,100 @@ def test_slow_pipeline_replaces_stale_pending_frame() -> None:
     }
 
 
+def test_grounding_dino_output_mismatch_is_normalized() -> None:
+    detection_count, labels, mismatch = live_detection._align_grounding_dino_output(
+        box_count=1,
+        score_count=1,
+        labels=["door", "doorway"],
+        fallback_label="door",
+    )
+
+    assert detection_count == 1
+    assert labels == ["door"]
+    assert mismatch == {
+        "box_count": 1,
+        "score_count": 1,
+        "label_count": 2,
+        "emitted_count": 1,
+        "fallback_label": "door",
+    }
+
+
+def test_grounding_dino_output_pads_missing_labels() -> None:
+    detection_count, labels, mismatch = live_detection._align_grounding_dino_output(
+        box_count=2,
+        score_count=2,
+        labels=[],
+        fallback_label="door",
+    )
+
+    assert detection_count == 2
+    assert labels == ["door", "door"]
+    assert mismatch is not None
+
+
+def test_pipeline_worker_recovers_after_transient_frame_failure() -> None:
+    health: list[tuple[str, dict[str, object]]] = []
+    results: list[DetectionLayerObservation] = []
+    detector = _FailOnceDetector()
+    manager = LiveDetectionManager(
+        run_id="test",
+        config=_config(
+            PipelineSpec("dino", "grounding-dino", "model", ("door",), 0.3, 100.0)
+        ),
+        result_callback=results.append,
+        health_callback=lambda event, data: health.append((event, dict(data))),
+        detector_factory=lambda spec: detector,
+        tracker_factory=lambda spec: NoopLayerTracker(),
+    )
+    manager.start()
+    frame = np.zeros((8, 10, 3), dtype=np.uint8)
+    manager.submit(FramePacket(0, 10.0, frame))
+    _wait_until(lambda: any(event == "pipeline_frame_failed" for event, _ in health))
+    manager.submit(FramePacket(1, 10.02, frame))
+    _wait_until(lambda: len(results) == 1)
+    manager.close()
+
+    assert results[0].frame_index == 1
+    recovery_events = [event for event, _ in health if event != "pipeline_ready"]
+    assert recovery_events == ["pipeline_frame_failed", "pipeline_recovered"]
+
+
+def test_pipeline_worker_reports_degraded_after_three_failures() -> None:
+    health: list[tuple[str, dict[str, object]]] = []
+    detector = _FailThreeTimesDetector()
+    manager = LiveDetectionManager(
+        run_id="test",
+        config=_config(
+            PipelineSpec("dino", "grounding-dino", "model", ("door",), 0.3, 100.0)
+        ),
+        result_callback=lambda observation: None,
+        health_callback=lambda event, data: health.append((event, dict(data))),
+        detector_factory=lambda spec: detector,
+        tracker_factory=lambda spec: NoopLayerTracker(),
+    )
+    manager.start()
+    frame = np.zeros((8, 10, 3), dtype=np.uint8)
+    for frame_index in range(3):
+        manager.submit(FramePacket(frame_index, 10.0 + frame_index * 0.02, frame))
+        _wait_until(
+            lambda: sum(event == "pipeline_frame_failed" for event, _ in health)
+            == frame_index + 1
+        )
+    manager.submit(FramePacket(3, 10.06, frame))
+    _wait_until(lambda: any(event == "pipeline_recovered" for event, _ in health))
+    manager.close()
+
+    recovery_events = [event for event, _ in health if event != "pipeline_ready"]
+    assert recovery_events == [
+        "pipeline_frame_failed",
+        "pipeline_frame_failed",
+        "pipeline_frame_failed",
+        "pipeline_degraded",
+        "pipeline_recovered",
+    ]
+
+
 def test_detection_artifact_and_manifest_are_finalized(tmp_path: Path) -> None:
     rerun_path = tmp_path / "rerun" / "review.rrd"
     recorder = ArtifactRecorder(
@@ -241,6 +336,30 @@ class _BlockingDetector:
         if self.calls == 1:
             self.started.set()
             assert self.release.wait(1.0)
+        return []
+
+
+class _FailOnceDetector:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def detect(self, frame_bgr: np.ndarray) -> list[LayerDetection]:
+        del frame_bgr
+        self.calls += 1
+        if self.calls == 1:
+            raise ValueError("malformed detector output")
+        return []
+
+
+class _FailThreeTimesDetector:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def detect(self, frame_bgr: np.ndarray) -> list[LayerDetection]:
+        del frame_bgr
+        self.calls += 1
+        if self.calls <= 3:
+            raise ValueError("malformed detector output")
         return []
 
 

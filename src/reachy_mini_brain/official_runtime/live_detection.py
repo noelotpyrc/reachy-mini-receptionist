@@ -241,7 +241,9 @@ class GroundingDinoLayerDetector:
         self._text_threshold = spec.text_threshold
         self._device = spec.device
         self._target_ids = {target.casefold(): index for index, target in enumerate(spec.targets)}
+        self._fallback_label = spec.targets[0] if spec.targets else "object"
         self._input_size = spec.input_size
+        self._health_events: list[tuple[str, dict[str, Any]]] = []
 
     def detect(self, frame_bgr: NDArray[np.uint8]) -> list[LayerDetection]:
         image_rgb = np.ascontiguousarray(frame_bgr[:, :, ::-1])
@@ -267,7 +269,17 @@ class GroundingDinoLayerDetector:
             text_threshold=self._text_threshold,
             target_sizes=[(height, width)],
         )[0]
-        labels = result.get("text_labels", result.get("labels", []))
+        labels = result.get("text_labels")
+        if labels is None:
+            labels = result.get("labels", [])
+        detection_count, aligned_labels, mismatch = _align_grounding_dino_output(
+            box_count=len(result["boxes"]),
+            score_count=len(result["scores"]),
+            labels=labels,
+            fallback_label=self._fallback_label,
+        )
+        if mismatch is not None:
+            self._health_events.append(("pipeline_output_mismatch", mismatch))
         detections = [
             LayerDetection(
                 detection_index=index,
@@ -277,10 +289,20 @@ class GroundingDinoLayerDetector:
                 box=tuple(float(item) for item in box.tolist()),
             )
             for index, (box, score, label) in enumerate(
-                zip(result["boxes"], result["scores"], labels, strict=True)
+                zip(
+                    result["boxes"][:detection_count],
+                    result["scores"][:detection_count],
+                    aligned_labels,
+                    strict=True,
+                )
             )
         ]
         return _nms(detections, threshold=0.5)
+
+    def drain_health_events(self) -> tuple[tuple[str, dict[str, Any]], ...]:
+        events = tuple(self._health_events)
+        self._health_events.clear()
+        return events
 
 
 class ByteTrackLayerTracker:
@@ -438,16 +460,34 @@ class _PipelineWorker:
         self._lock = threading.RLock()
         self._last_submitted_ts: float | None = None
         self._closed = False
+        self._started = False
+        self._dead_reported = False
         self._submitted = 0
         self._completed = 0
         self._dropped = 0
+        self._failed = 0
+        self._consecutive_failures = 0
 
     def start(self) -> None:
+        self._started = True
         self.thread.start()
 
     def submit(self, packet: FramePacket) -> bool:
         with self._lock:
             if self._closed:
+                return False
+            if self._started and not self.thread.is_alive():
+                if not self._dead_reported:
+                    self._dead_reported = True
+                    self._health(
+                        "pipeline_worker_dead",
+                        {
+                            "pipeline_id": self.spec.id,
+                            "submitted_frames": self._submitted,
+                            "completed_frames": self._completed,
+                            "failed_frames": self._failed,
+                        },
+                    )
                 return False
             interval = 1.0 / self.spec.inference_fps
             if self._last_submitted_ts is not None and packet.frame_ts - self._last_submitted_ts < interval - 1e-6:
@@ -480,8 +520,8 @@ class _PipelineWorker:
                 pass
             self.queue.put_nowait(None)
         self.thread.join(timeout=10.0)
-        if self.thread.is_alive() and self.health_callback is not None:
-            self.health_callback(
+        if self.thread.is_alive():
+            self._health(
                 "pipeline_close_timeout",
                 {"pipeline_id": self.spec.id, "timeout_s": 10.0},
             )
@@ -506,6 +546,7 @@ class _PipelineWorker:
                     scheduler_wait_ms = (inference_started - wait_started) * 1000.0
                     detections = self.detector.detect(packet.frame_bgr)
                     latency_ms = (self.perf_counter() - inference_started) * 1000.0
+                self._drain_detector_health()
                 tracks = self.tracker.update(detections)
                 completed_ts = self.clock()
                 with self._lock:
@@ -537,12 +578,87 @@ class _PipelineWorker:
                 )
                 self.result_callback(observation)
             except Exception as exc:  # noqa: BLE001
-                if self.health_callback is not None:
-                    self.health_callback(
-                        "pipeline_failed",
-                        {"pipeline_id": self.spec.id, "error": repr(exc)},
+                with self._lock:
+                    self._failed += 1
+                    self._consecutive_failures += 1
+                    consecutive_failures = self._consecutive_failures
+                    failed_frames = self._failed
+                self._health(
+                    "pipeline_frame_failed",
+                    {
+                        "pipeline_id": self.spec.id,
+                        "frame_index": packet.frame_index,
+                        "error": repr(exc),
+                        "consecutive_failures": consecutive_failures,
+                        "failed_frames": failed_frames,
+                    },
+                )
+                if consecutive_failures == 3:
+                    self._health(
+                        "pipeline_degraded",
+                        {
+                            "pipeline_id": self.spec.id,
+                            "consecutive_failures": consecutive_failures,
+                            "failed_frames": failed_frames,
+                        },
                     )
-                return
+                continue
+            with self._lock:
+                recovered_failures = self._consecutive_failures
+                self._consecutive_failures = 0
+            if recovered_failures:
+                self._health(
+                    "pipeline_recovered",
+                    {
+                        "pipeline_id": self.spec.id,
+                        "frame_index": packet.frame_index,
+                        "consecutive_failures": recovered_failures,
+                        "failed_frames": self._failed,
+                    },
+                )
+
+    def _drain_detector_health(self) -> None:
+        drain = getattr(self.detector, "drain_health_events", None)
+        if not callable(drain):
+            return
+        for event, data in drain():
+            self._health(event, {"pipeline_id": self.spec.id, **dict(data)})
+
+    def _health(self, event: str, data: Mapping[str, Any]) -> None:
+        if self.health_callback is None:
+            return
+        try:
+            self.health_callback(event, data)
+        except Exception:
+            # A diagnosis sink must never terminate the inference worker it observes.
+            return
+
+
+def _align_grounding_dino_output(
+    *,
+    box_count: int,
+    score_count: int,
+    labels: Any,
+    fallback_label: str,
+) -> tuple[int, list[str], dict[str, Any] | None]:
+    label_values = [str(label) for label in labels]
+    detection_count = min(box_count, score_count)
+    aligned_labels = label_values[:detection_count]
+    if len(aligned_labels) < detection_count:
+        aligned_labels.extend([fallback_label] * (detection_count - len(aligned_labels)))
+    if box_count == score_count == len(label_values):
+        return detection_count, aligned_labels, None
+    return (
+        detection_count,
+        aligned_labels,
+        {
+            "box_count": box_count,
+            "score_count": score_count,
+            "label_count": len(label_values),
+            "emitted_count": detection_count,
+            "fallback_label": fallback_label,
+        },
+    )
 
 
 def _nms(detections: list[LayerDetection], *, threshold: float) -> list[LayerDetection]:

@@ -10,6 +10,40 @@ Each entry uses three buckets:
 
 ---
 
+## 2026-08-07 - unattended run exposed terminal DINO frame failure
+
+**Run:** `official-live-20260807-063649`
+**Setup:** frozen release `749ee18`, `door-v1-20260805`, Grounding DINO at two FPS on MPS,
+raw audio/video and vision artifacts enabled, no Rerun streaming.
+
+### Good
+
+- The runner, S2S backend, audio/video recording, person perception, and event recording remained
+  active. Shutdown finalized all artifacts cleanly.
+- Grounding DINO completed `3607` semantic frames before the failure. The exact failure window was
+  replayed independently on MPS: six selected frames completed with `243 ms` median and `248 ms`
+  maximum inference latency, so the recorded image was not a deterministic failure input.
+
+### Bad and remediation
+
+- At `2026-08-07 07:19:31 PDT`, the DINO adapter received more `text_labels` than filtered
+  boxes/scores. Its strict three-way zip raised
+  `ValueError('zip() argument 3 is longer than arguments 1-2')`.
+- The worker logged `pipeline_failed` and returned permanently. The scheduler continued accepting
+  work for the dead worker, ending at `6384` submitted, `3607` completed, and `2775` replaced
+  pending frames. Door-policy source frames then overflowed continuously, disabling greet/goodbye
+  evaluation for the remainder of the run.
+- The adapter now aligns labels to the usable box/score count, pads missing labels with the first
+  configured target, and emits `pipeline_output_mismatch`. A per-frame inference failure now emits
+  `pipeline_frame_failed` and continues; three consecutive failures emit `pipeline_degraded`, and
+  the next successful frame emits `pipeline_recovered`. Submission also reports a detector thread
+  that exits unexpectedly as `pipeline_worker_dead`.
+
+**Disposition:** code-level regression tests pass. A non-live m1max preflight and a later controlled
+live run must confirm sustained DINO operation before production acceptance.
+
+---
+
 ## 2026-08-06 - clean-release unattended idle run and recording finalization
 
 **Run:** `official-live-20260806-114813`
