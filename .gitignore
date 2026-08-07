@@ -1,10 +1,14 @@
-.venv/
+.venv
+.release-venv
+.validation-venv
 .env
-private/
+private
 __pycache__/
 *.egg-info/
-artifacts/
+artifacts
 .pytest_cache/
+.release-manifest.json
+.release-packages.txt
 reachy_transcript.txt
 .DS_Store
 /reachy/

@@ -71,7 +71,7 @@ src/reachy_mini_brain/
 ```bash
 # Current live-test path on m1max
 ssh leon@100.127.86.67
-RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6
+RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen
 cd "$RELEASE"
 export REACHY_REPO="$RELEASE"
 export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"

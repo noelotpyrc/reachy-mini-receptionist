@@ -16,12 +16,11 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 ## Current Baseline
 
-- Product candidate: local `main` at `729bb76` after documentation consolidation and removal of the
-  superseded reception-daemon stack. The pre-removal source is tagged `legacy-daemon-last` at
-  `260e2f2`.
-- Current m1max assisted release: clean checkout at commit `612ea43`, with the previous dirty
-  deployment preserved as a rollback copy. A new clean release for the current candidate is the
-  next non-live promotion step.
+- Validated m1max assisted release: clean checkout at `749ee18` in
+  `/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen`. Runtime code is unchanged
+  from cleanup commit `729bb76`; `749ee18` adds only the readiness review.
+- Recovery and rollback: pre-removal source is tagged `legacy-daemon-last` at `260e2f2`; the previous
+  clean release at `612ea43` and the dirty deployment checkout remain intact.
 - S2S backend: `speech-to-speech==0.2.10`, fork SHA `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`,
   listening only on `127.0.0.1:8765`.
 - Agent wrapper: production Hermes profile on `127.0.0.1:8642`; clinic context remains outside Git.
@@ -38,7 +37,7 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 | Area | Gate | Status | Evidence / remaining work |
 | --- | --- | --- | --- |
-| Release | Immutable product revision, reproducible venv, documented rollback | **Candidate pending deployment** | The current m1max release at `612ea43` remains usable and preserved. Prepare and verify a new release from the post-cleanup candidate before controlled acceptance; replace commit-named/manual activation with a stable production release mechanism before non-technical operation. |
+| Release | Immutable product revision, reproducible venv, documented rollback | **Pass for assisted use** | Release `749ee18` uses Python `3.12.13`, lock-enforced non-editable runtime/validation venvs, a generated release manifest/package inventory, and preserved rollback revisions. Replace commit-named/manual activation with a stable production release mechanism before non-technical operation. |
 | Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Backend setup script, runtime metadata, Hermes text/integration tests, and deterministic policy-TTS benchmark completed. Add wrapper/provider checks to aggregate health. |
 | Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Physical runner restart must remain operator-authorized. |
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Blocked** | Door policy passed captured offline evaluation. A controlled live door-entry, conversation, and exit sequence is still required. |
@@ -70,11 +69,31 @@ Grounding DINO door observations, and Rerun streaming disabled.
   This confirms the open frame-timestamp/container-duration issue recorded in
   `docs/archive/reviews/rerun-review-issues-20260626.md`.
 
+## Latest Release Evidence
+
+The non-live release build at `749ee18` completed on 2026-08-06:
+
+- `uv lock --check` passed; runtime installation used `uv sync --frozen --no-editable`.
+- Runtime and validation environments use Python `3.12.13`; uv is `0.11.19`.
+- `uv pip check` passed in both environments.
+- Full default suite: `225 passed, 1 skipped, 36 deselected`.
+- Runtime and OPS CLI help smoke checks passed.
+- The runtime package versions match `uv.lock`, including `aiortc 1.14.0`, `av 16.1.0`,
+  `openai 2.44.0`, OpenCV `4.13.0.92`, and `torch 2.12.1`.
+- Full Ruff is not yet clean: 24 pre-existing findings were recorded and no automatic changes were
+  applied. This is tracked as cleanup debt rather than evidence of dependency drift.
+- `.release-manifest.json` and `.release-packages.txt` record non-secret release provenance locally
+  in the ignored release root.
+- The first non-frozen build at `/Users/leon/projects/reachy_mini_receptionist_release_749ee18`
+  resolved newer transitive packages and is not an accepted release. It remains untouched pending
+  explicit cleanup approval.
+
 ## Assisted Production Sequence
 
 Complete these in order. Stop and diagnose when a gate fails.
 
 1. Correct active documentation and establish this checklist as the promotion source of truth.
+   **Complete.**
 2. Diagnose and fix or explicitly bound the long-run video duration/alignment problem.
 3. Implement explicit unlimited session duration and startup progress/fault reporting.
 4. Define the production configuration outside Git: release, visitor profile, recording mode,

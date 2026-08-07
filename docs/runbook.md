@@ -29,12 +29,39 @@ Product/controller repo:
 
 - Local dev: `/Users/noel/projects/reachy_mini_receptionist_clean`
 - m1max rollback checkout: `/Users/leon/projects/reachy_mini_receptionist_deploy`
-- Current clean m1max release: `/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6`
+- Current validated m1max release:
+  `/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen` at `749ee18`
+- Previous clean assisted release:
+  `/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6` at `612ea43`
 
 Keep the dirty rollback checkout intact. A prepared release has its own `.release-venv`, while its
 ignored `.env`, `private`, and `artifacts` paths reference the existing deployment-owned data. Set
 `REACHY_REPO` and `OFFICIAL_RUNTIME_PYTHON` explicitly when operating a release so the OPS process
 and spawned runner use the same product revision.
+
+Do not use `/Users/leon/projects/reachy_mini_receptionist_release_749ee18`: its initial environment
+was resolved without enforcing `uv.lock` and is retained only until deletion is separately approved.
+
+### Prepare A Frozen Release
+
+Use an exact Git revision, Python version, and lockfile. Do not build a release with direct
+`uv pip install -e`; that command resolves current compatible versions instead of enforcing
+`uv.lock`.
+
+```bash
+RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_<revision>_frozen
+/Users/leon/.local/bin/uv lock --check --project "$RELEASE"
+/Users/leon/.local/bin/uv venv --python 3.12.13 "$RELEASE/.release-venv"
+
+env VIRTUAL_ENV="$RELEASE/.release-venv" /Users/leon/.local/bin/uv sync \
+  --project "$RELEASE" --active --frozen --no-editable --no-dev \
+  --extra official-runtime --extra vision --extra gesture \
+  --extra door-vision --extra diagnosis
+```
+
+Use a separate `.validation-venv` with the same command plus `--extra dev` for pytest and lint.
+Record the Git SHA, `uv.lock` hash, Python/uv versions, extras, installed package inventory, and
+non-secret configuration-link provenance before accepting the release.
 
 S2S backend runtime folder:
 
@@ -90,7 +117,7 @@ Run from m1max:
 
 ```bash
 ssh leon@100.127.86.67
-RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6
+RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen
 cd "$RELEASE"
 export REACHY_REPO="$RELEASE"
 export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"
@@ -128,7 +155,7 @@ RECEPTION_VISITOR_TRIGGER_PROFILE=visitor-v1-20260802
 
 # Door-ordered greet/goodbye candidate.
 RECEPTION_VISITOR_TRIGGER_PROFILE=door-v1-20260805
-RECEPTION_VISION_PIPELINES_CONFIG=/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6/config/vision/door-policy-v1.json
+RECEPTION_VISION_PIPELINES_CONFIG=/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen/config/vision/door-policy-v1.json
 RECEPTION_RERUN_MODE=off
 ```
 

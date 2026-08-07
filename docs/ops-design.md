@@ -52,7 +52,7 @@ across runs; only restart it to change model/voice/config or when wedged.
 - The product/controller repo owns backend lifecycle and launch flags:
   - local dev: `/Users/noel/projects/reachy_mini_receptionist_clean`
   - m1max rollback checkout: `/Users/leon/projects/reachy_mini_receptionist_deploy`
-  - current clean release: `/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6`
+  - current clean release: `/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen`
   - setup/update: `scripts/m1max/setup_s2s_backend.sh`
   - launcher: `scripts/m1max/run_s2s_backend.sh`
 - The backend package is currently Hugging Face `speech-to-speech==0.2.10`, exposed locally as

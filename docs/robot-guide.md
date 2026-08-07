@@ -12,7 +12,7 @@ Use this path for live receptionist tests unless explicitly comparing against le
 Run from m1max:
 
 ```bash
-RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6
+RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen
 cd "$RELEASE"
 export REACHY_REPO="$RELEASE"
 export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"
