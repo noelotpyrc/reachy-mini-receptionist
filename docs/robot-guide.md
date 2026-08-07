@@ -176,77 +176,16 @@ Direct current-runtime entrypoint:
 
 Prints JSON with head pose matrix, antenna angles, and IMU data (if wireless).
 
-## Legacy Reception Daemon
+## Replay And Review
 
-Deprecated as the product path. Keep this runnable for fallback/regression comparison, but use the
-official-runtime flow above for normal live tests.
-
-The legacy resident daemon (see `docs/archive/legacy/plan-reception.md`) owns one robot session; all other
-`reception` commands are thin clients that talk to it over a Unix socket
-(`/tmp/reachy_mini_reception.sock`) — run them from any other shell. Prefix everything with
-`.venv/bin/python -m reachy_mini_brain.reception` (or the `reception` console-script after
-`pip install -e .`).
+Use the official-runtime diagnostic tools for current artifacts:
 
 ```bash
-# Start the daemon (blocks). Workers boot OFF; toggle them from another shell.
-reception serve --perception --gestures            # vision pipeline + wave detection
-reception serve --perception --brain               # vision + claude -p voice brain (needs auth)
-
-# Worker toggles + reactions (from another shell)
-reception status                                   # vision/voice + session health (connected/audio/video)
-reception vision on | off                          # RF-DETR person/approach pipeline
-reception voice  on | off                          # mic → STT → (brain) → speak
-reception react                                    # greeting   ("Welcome!")
-reception farewell                                 # goodbye    ("Goodbye! Have a nice day!")
-reception wave                                     # wave ack   ("Hi there!" — distinct from greet)
-reception reset                                    # head + body + antennas → neutral (no speech)
-
-# Data capture (vision must be ON)
-reception record  on | off                         # camera → artifacts/video-<run_id>-NN.mkv  (crash-resilient)
-reception capture on | off                         # per-frame tracks/events → artifacts/capture-<run_id>-NN.jsonl
-reception stream  on | off                         # live MJPEG on 127.0.0.1:8090 (view via ssh -L 8090:localhost:8090)
-reception audio-record on | off                    # raw mic audio → artifacts/audio-<run_id>-NN.wav + .jsonl sidecar
-
-reception shutdown                                 # graceful stop — finalizes record/capture, removes socket
-
-# Alert engine — SEPARATE process: tails artifacts/events.jsonl → fires robot reactions
-python -m reachy_mini_brain.alert_engine --cooldown 5   # approach→react, depart→farewell, wave→wave_back
-#  ([--types approach,depart,wave] restricts which event types fire)
+.venv/bin/python -m reachy_mini_brain.official_runtime.replay_vision --help
+.venv/bin/python -m reachy_mini_brain.official_runtime.audio_review --help
+.venv/bin/python -m reachy_mini_brain.official_runtime.door_review --help
 ```
 
-### `serve` flags
-
-| Flag | Default | Notes |
-|------|---------|-------|
-| `--perception / --no-perception` | off | Run RF-DETR person/approach pipeline in the vision worker |
-| `--gestures / --no-gestures` | off | Also run MediaPipe wave detection (`Open_Palm`) — needs `mediapipe` |
-| `--brain / --no-brain` | off | Route heard speech to the `claude -p` receptionist brain |
-| `--brain-model` | `sonnet` | Brain model (`haiku` in practice) |
-| `--vision-interval` | `2.0` | Seconds between frame grabs (post-processing wait; ~3 fps at 0.2) |
-| `--voice-interval` | `3.0` | Seconds between mic reads |
-| `--threshold` | `0.5` | Detector confidence threshold |
-| `--mock` | — | Fake session (no SDK/robot) for plumbing tests |
-
-### Notes
-
-- **Durable log:** the daemon writes `artifacts/logs/reception-<run_id>.log` (timestamped, survives
-  restarts). Launch it detached with `nohup caffeinate -dimsu … &` on m1max so it doesn't sleep.
-- **Run manifest:** every `serve` process gets a `run_id` and writes
-  `artifacts/runs/run-<run_id>.json`, tying the durable log, shared `events.jsonl`,
-  video, capture, raw audio, and turn files together. `reception status` prints the
-  active `run_id` and manifest path.
-- **Recording is `.mkv`** (`mp4v` codec): a hard kill/battery-off keeps footage up to the crash
-  (an `.mp4` would be unreadable without its trailing index). Graceful `shutdown`/`record off`
-  finalizes cleanly either way.
-- **Raw audio recording:** `audio-record on` starts the shared mic loop and writes a 16 kHz mono
-  float WAV plus a JSONL timestamp sidecar. The sidecar has `ts`, sample offsets, chunk lengths,
-  RMS, and `speaking` flags so audio can be aligned with video/capture/events.
-- **One session only:** the daemon and the official Control app can't both hold the robot — stop
-  one before the other.
-- Offline replay/eval of recorded clips: `python -m reachy_mini_brain.replay <clip> [--trace]
-  [--smooth N] [--annotate out.mkv] [--expect-approach N --expect-depart N]`.
-- Offline audio review: `python -m reachy_mini_brain.review_audio <run_id> [--sync]
-  [--clips flagged|delayed|all|none]`. It validates the run, aligns turn WAVs against raw
-  audio, and writes review clips plus `review.md`/`review.csv`/`review.json` under
-  `artifacts/reviews/<run_id>/`. Use `--sync` to pull the run from m1max into
-  `artifacts/remote-runs/<run_id>/` first.
+The removed reception daemon, alert engine, and old replay/review tools remain recoverable at Git
+tag `legacy-daemon-last`. Their historical design is documented in
+`docs/archive/legacy/plan-reception.md`; they are not supported runtime fallbacks.

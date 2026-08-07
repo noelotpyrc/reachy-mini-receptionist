@@ -351,11 +351,11 @@ Use backend stop only when intentionally shutting down the warm backend:
 PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli backend stop
 ```
 
-## Legacy Reception Daemon
+## Removed Legacy Reception Daemon
 
-The old `reachy_mini_brain.reception` daemon + `alert_engine` flow is legacy fallback/reference
-only. It should not be used for normal live tests unless explicitly comparing against legacy
-behavior.
+The old `reachy_mini_brain.reception` daemon and `alert_engine` flow were removed after the
+official-runtime path was accepted. The final source snapshot is available at Git tag
+`legacy-daemon-last`; it is not a supported fallback runtime.
 
 Historical details live in:
 

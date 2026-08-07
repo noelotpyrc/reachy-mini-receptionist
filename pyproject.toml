@@ -20,7 +20,7 @@ audio = [
     "pathvalidate",
     "silero-vad",
 ]
-# Vision pipeline dependencies used by official-runtime perception and the legacy daemon.
+# Vision pipeline dependencies used by official-runtime perception.
 vision = [
     "rfdetr",
     "supervision>=0.27,<0.29",
@@ -57,10 +57,6 @@ official-runtime = [
     "reachy_mini_toolbox",
     "mcp>=1.27.1",
 ]
-# Legacy reception-daemon brain backend.
-brain = [
-    "pydantic-ai-slim[openai]",
-]
 sim = ["reachy-mini[mujoco]"]
 livekit = [
     "livekit>=1.0",
@@ -78,9 +74,6 @@ door-vision = [
 dev = ["pytest", "ruff"]
 
 [project.scripts]
-# Legacy fallback entry points; official-runtime is the accepted live path.
-reception = "reachy_mini_brain.reception:cli"
-review-audio = "reachy_mini_brain.review_audio:cli"
 # Current official-runtime helpers.
 livekit-replay = "reachy_mini_brain.official_runtime.replay_livekit:cli"
 backend-benchmark = "reachy_mini_brain.official_runtime.benchmark_backends:cli"

@@ -78,33 +78,16 @@ reasonable (protects the work + gives a clean revert point); ordering here honor
 labelled deprecated everywhere it's still mentioned as current.
 
 ### 4. Houseclean repo structure (deprecate now, delete behind confirmation)  `[x]`
-**Goal:** Quarantine the legacy stack without breaking the product path.
-**Dependency map (verified — do not break these):**
+**Status:** completed on 2026-08-06. The final legacy-daemon source snapshot is tagged
+`legacy-daemon-last`.
+**Result:**
 - `official_runtime/` is self-contained **except** two keepers it imports from legacy:
   - `audio_pacing.py` — constants, used by 4 official modules. **KEEP.**
   - `audio.py` — `robot_io.py:53` lazily uses `_patch_bin_add_check`. **KEEP.**
-- **Legacy-only, safe to retire** (14 modules): `reception.py`, `session.py`,
-  `perception.py` (legacy — official has its own `official_runtime/perception.py`),
-  `detector.py`, `approach.py`, `gesture.py`, `alert_engine.py`, `stt.py`, `stt_worker.py`(*),
-  `tts.py`, `brain.py`, `replay.py` (already orphaned — no entry point),
-  `review_audio.py`, `transcribe.py`.
-  - (*) `stt_worker.py` is currently untracked and only used by legacy `session.py`; it
-    retires with the daemon. Commit-then-remove, or just don't commit it under Phase 0 —
-    decide explicitly.
-  - **Tangle:** `audio.py` (kept) lazily imports `stt`/`tts` inside its `listen`/`speak`
-    CLI functions. Deleting `stt.py`/`tts.py` breaks those legacy audio CLIs and
-    `tests/test_e2e_audio.py` (shells out to `tts.synthesize`). Decide whether those
-    manual audio CLIs stay before removing `stt`/`tts`.
-- **Tests that die with legacy:** `tests/test_reception_manifest.py` (imports `reception`).
-- **Entry points to remove when legacy goes** (`pyproject.toml`): `reception`,
-  `review-audio`.
-**Steps:**
-- First pass: add deprecation headers / a `legacy` note; stop documenting them as current.
-- Actual quarantine (move to `legacy/` or tag-then-delete) and any file deletion: **only
-  after explicit user confirmation** — surface the exact file list and disposition choice
-  (tag+delete vs `legacy/` subdir vs delete) at that point.
-**Done when:** legacy is clearly marked deprecated and the deletion/quarantine plan is
-written and waiting on a go/no-go; product path still imports and tests pass.
+- Removed the 12 legacy daemon/harness modules listed in `docs/legacy-cleanup-plan.md`, their
+  manifest test, the `reception` and `review-audio` entrypoints, and the legacy-only `brain` extra.
+- Kept `stt.py`, `tts.py`, and `audio.py` for the manual audio CLI and current shared helpers.
+- Historical experiments and stale tests remain a separate cleanup decision.
 
 ---
 

@@ -1,10 +1,9 @@
 # Legacy Cleanup Plan
 
-Status: inventory revalidated 2026-08-06; waiting for an explicit delete/quarantine decision.
+Status: approved removal completed 2026-08-06. Recovery tag: `legacy-daemon-last`.
 
-This plan covers the old reception-daemon stack after the accepted pivot to
-`reachy_mini_brain.official_runtime` plus the m1max local S2S backend. It is intentionally
-non-destructive: no files are deleted or moved by this document.
+This document records removal of the old reception-daemon stack after the accepted pivot to
+`reachy_mini_brain.official_runtime` plus the m1max local S2S backend.
 
 ## Current Canonical Path
 
@@ -27,24 +26,24 @@ Keep these as product path:
 
 ## Legacy Files
 
-These are old-daemon or old-harness modules. They now have module-level legacy/fallback status
-notes and should not be used as the default live path.
+These old-daemon or old-harness modules were removed after explicit approval. Their final source is
+available from Git tag `legacy-daemon-last`.
 
-| File | Current role | Proposed disposition after approval |
+| File | Former role | Disposition |
 | --- | --- | --- |
-| `src/reachy_mini_brain/reception.py` | Old resident daemon and socket control plane | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/session.py` | Old persistent SDK session and Unix-socket server | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/perception.py` | Old daemon person/wave event pipeline | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/detector.py` | Old RF-DETR wrapper used by old perception | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/approach.py` | Old approach/depart state machine | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/gesture.py` | Old MediaPipe gesture wrapper | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/alert_engine.py` | Old separate event-to-action process | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/brain.py` | Old `claude -p` / Pydantic receptionist brain | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/replay.py` | Old video replay harness for daemon perception | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/review_audio.py` | Old daemon-run audio review tool | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/transcribe.py` | Older meeting transcription trigger process | Delete after tagging, or move to `legacy/` |
-| `src/reachy_mini_brain/stt_worker.py` | Old daemon STT worker | Delete after tagging, or move to `legacy/` |
-| `tests/test_reception_manifest.py` | Tests old daemon manifest/audio-record behavior | Delete or move with old daemon |
+| `src/reachy_mini_brain/reception.py` | Old resident daemon and socket control plane | Deleted |
+| `src/reachy_mini_brain/session.py` | Old persistent SDK session and Unix-socket server | Deleted |
+| `src/reachy_mini_brain/perception.py` | Old daemon person/wave event pipeline | Deleted |
+| `src/reachy_mini_brain/detector.py` | Old RF-DETR wrapper used by old perception | Deleted |
+| `src/reachy_mini_brain/approach.py` | Old approach/depart state machine | Deleted |
+| `src/reachy_mini_brain/gesture.py` | Old MediaPipe gesture wrapper | Deleted |
+| `src/reachy_mini_brain/alert_engine.py` | Old separate event-to-action process | Deleted |
+| `src/reachy_mini_brain/brain.py` | Old `claude -p` / Pydantic receptionist brain | Deleted |
+| `src/reachy_mini_brain/replay.py` | Old video replay harness for daemon perception | Deleted |
+| `src/reachy_mini_brain/review_audio.py` | Old daemon-run audio review tool | Deleted |
+| `src/reachy_mini_brain/transcribe.py` | Older meeting transcription trigger process | Deleted |
+| `src/reachy_mini_brain/stt_worker.py` | Old daemon STT worker | Deleted |
+| `tests/test_reception_manifest.py` | Tested old daemon manifest/audio-record behavior | Deleted |
 
 ## Conditional Keepers
 
@@ -59,10 +58,7 @@ at the same time:
 
 ## Entry Points
 
-Remove only when the corresponding legacy modules are removed:
-
-- `reception = "reachy_mini_brain.reception:cli"`
-- `review-audio = "reachy_mini_brain.review_audio:cli"`
+The `reception` and `review-audio` console scripts were removed with their modules.
 
 Keep:
 
@@ -74,30 +70,23 @@ Keep:
 
 ## Dependency Notes
 
-- Keep `vision` and `gesture` optional extras. They are used by official-runtime perception as well as
-  the old daemon.
-- `brain` optional extra appears legacy-only today. Remove it only after deleting `brain.py` and any
-  legacy tests that import it.
+- Keep `vision` and `gesture` optional extras. They are used by official-runtime perception.
+- The legacy-only `brain` optional extra was removed with `brain.py`.
 - `audio` optional extra still supports current manual audio debugging and should remain for now.
 
-## Recommended Deletion Strategy
+## Completed Removal
 
-Preferred next destructive step, if approved:
+The approved sequence was:
 
-1. Create a tag at the last commit containing the runnable legacy daemon, for example
-   `legacy-daemon-last`.
-2. Delete the old-daemon modules listed in **Legacy Files**.
-3. Delete or move `tests/test_reception_manifest.py`.
-4. Remove `reception` and `review-audio` console scripts from `pyproject.toml`.
-5. Keep `stt.py`, `tts.py`, and `audio.py` until the manual audio CLI is explicitly retired or
+1. Tag the last commit containing the runnable legacy daemon as `legacy-daemon-last`.
+2. Delete the modules and test listed above.
+3. Remove their console scripts and the legacy-only dependency extra.
+4. Keep `stt.py`, `tts.py`, and `audio.py` until the manual audio CLI is explicitly retired or
    replaced.
-6. Run:
+5. Run:
    - `.venv/bin/python -m pytest tests/test_official_runtime.py tests/test_audio_pacing.py -v`
    - `.venv/bin/python -m py_compile src/reachy_mini_brain/official_runtime/live_app.py`
    - `.venv/bin/python -m reachy_mini_brain.official_runtime.live_app --help`
-
-Alternative: move legacy modules under a `legacy/` folder. This preserves source files in the tree but
-adds import/path churn, so it is not the preferred path unless we expect to run old daemon code often.
 
 ## Additional Stale Test And Experiment Candidates
 
@@ -118,10 +107,10 @@ These are not included in the deletion list above until their replacement/dispos
 
 As of 2026-08-06:
 
-- Legacy modules are marked in docstrings.
+- The approved legacy modules, test, entrypoints, and dependency extra are removed.
 - OPS library/CLI and the clean release are the canonical product path; `live_ops.sh` is
   compatibility-only.
-- Current production and diagnosis code has no import dependency on the listed legacy daemon group;
-  the group remains internally connected and is referenced by the stale tests/experiments above.
-- No deletion or file move has been performed.
-- Destructive cleanup remains blocked on an explicit file-list/disposition confirmation.
+- Current production and diagnosis code has no import dependency on the removed group.
+- Deferred historical experiments still reference `brain.py` or `session.py`; they are not part of
+  the package runtime or automatic test suite and remain a separate disposition decision.
+- The removed implementation is recoverable from `legacy-daemon-last`.

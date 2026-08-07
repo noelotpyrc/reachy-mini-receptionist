@@ -84,10 +84,6 @@ export PYTHONPATH="$RELEASE/src"
 
 # Direct CLI entrypoint used by the ops wrapper
 .venv/bin/python -m reachy_mini_brain.official_runtime.live_app --help
-
-# Legacy fallback only: old resident daemon + alert engine
-.venv/bin/python -m reachy_mini_brain.reception serve --perception --brain
-.venv/bin/python -m reachy_mini_brain.alert_engine
 ```
 
 See `docs/robot-guide.md` for the full CLI reference.
