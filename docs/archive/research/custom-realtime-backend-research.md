@@ -1,6 +1,9 @@
 # Agentic Backend Research: Hermes / Context Memory
 
-Status: active next-feature research, updated 2026-07-01.
+Status: historical research baseline. Hermes/profile integration was implemented; backend feature
+development was paused on 2026-08-06 for production preparation. Use
+[`hermes-s2s-fork-spec.md`](../../hermes-s2s-fork-spec.md) for the deployed contract and
+[`production-readiness.md`](../../production-readiness.md) for current priority.
 
 This document supersedes the earlier LiveKit-first backend-replacement framing. The accepted live path
 is now:

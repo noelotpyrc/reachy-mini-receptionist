@@ -11,10 +11,10 @@ native strength) plus the **L1 spans as state-scalars** under `<actor>/<sub-enti
 layout below). The **conversation/audio** layer (listening to input/output audio) is the *other*
 renderer — the in-house player, `docs/conversation-audio-player.md` — because Rerun can't play audio.
 
-**Status:** a **flat-firehose prototype** exists (`official_runtime/rerun_review.py`) that logs every
-event type as its own `TextLog` by lane/prefix — **not** the model. TODO #6 reworks it to the model
-(allowlist → `<actor>/<sub-entity>` → spans-as-state-scalars). `rerun-sdk==0.33.1` is pinned as the
-optional `diagnosis` extra.
+**Status:** general-timeline v1 is implemented and accepted. The renderer uses the event allowlist,
+actor/sub-entity layout, span state-scalars, markers, physical/vision layers, and explicit span
+details. `rerun-sdk==0.33.1` is pinned as the optional `diagnosis` extra. Detailed live/offline
+tracking views are implemented separately in [`rerun-vision-tracking-plan.md`](rerun-vision-tracking-plan.md).
 
 > **Superseded sections below.** The "Why Rerun", "Inputs", and entity-layout sections are current.
 > The **lane-reading description and the Stage 0/1 gap framing predate the model** and are kept only
@@ -49,7 +49,8 @@ rr.log(entity_for(row), archetype_for(row))
 
 All under `artifacts/official-runtime-live/` for a run, except markers (one level up).
 Record defaults: **`--record-audio` ON**, `--record-video` OFF, `--capture-vision` ON via
-`live_ops.sh`.
+OPS configuration. Live Rerun streaming is optional and remains off for the first production
+acceptance run.
 
 | Artifact | Path | Rows carry | Have it? |
 |---|---|---|---|
@@ -57,7 +58,7 @@ Record defaults: **`--record-audio` ON**, `--record-video` OFF, `--capture-visio
 | Policy events | `policies/policies-<id>-NN.jsonl` | `ts` + `type` (greet, wave, cue start/stop, suppression) | ✅ always |
 | Events lane | `events/events-<id>-NN.jsonl` | superset — **and the only place backend conversation events land today**, tagged `hf.*` (speech start/stop, transcript, response.created, audio deltas/done) | ✅ always |
 | Audio | `audio/audio-{input,output,response-*}-<id>-NN.wav` + `.jsonl` | sidecar: `ts`, `sample_start`, `samples`, **`rms`** per chunk | ✅ on by default |
-| Detections | `capture/capture-<id>-NN.jsonl` | `ts`, `people`, `tracks[]`, `events[]` | ✅ on via live_ops |
+| Detections | `capture/capture-<id>-NN.jsonl` | `ts`, `people`, `tracks[]`, `events[]` | ✅ on via OPS configuration |
 | Video | `video/video-<id>-NN.mkv` + `.jsonl` sidecar on new runs | frames; sidecar rows carry runner-observed frame `ts` | ⚠️ only if `--record-video` |
 | Manifest | `runs/run-<id>.json` | `responses{}` latencies, `session{}`, `config` | ✅ always |
 | Markers | `../markers-<id>.jsonl` (top-level `artifacts/`) | `ts`, `n`, `note` (from `scripts/m1max/mark.py`) | ✅ when marking |

@@ -1,5 +1,9 @@
 # Official Runtime Refactor Plan
 
+**Status:** accepted architecture and historical implementation plan. The refactor is complete;
+current work is tracked in [`todo-official-runtime.md`](../../todo-official-runtime.md) and
+[`production-readiness.md`](../../production-readiness.md).
+
 ## Decision
 
 Adopt the official `pollen-robotics/reachy_mini_conversation_app` core runtime design as the

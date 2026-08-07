@@ -3,7 +3,8 @@
 > **Status:** historical/legacy daemon plan. As of the accepted 2026-06-21 and 2026-06-23 live
 > tests, the product direction is the ported official-runtime architecture plus the m1max local S2S
 > backend. Use `docs/runbook.md`, `docs/todo-official-runtime.md`, and
-> `docs/plan-official-runtime-refactor.md` for current implementation work. This document remains
+> `docs/production-readiness.md` for current implementation work. The completed refactor plan is at
+> `docs/archive/plans/plan-official-runtime-refactor.md`. This document remains
 > useful for original requirements, data-harness history, and legacy-daemon fallback context.
 
 > A standalone, always-on "reception guy" for a clinic front desk:
@@ -200,7 +201,7 @@ frame-source switch (camera vs file). Two sub-modes:
 
 **Stage 2 — Live (robot + real camera).** Only what genuinely needs hardware: real
 framing, motion, audio playback over WebRTC/WiFi, network. Captured in
-[`live-test-log.md`](./live-test-log.md) (good / ugly / bad).
+[`live-test-log.md`](../../live-test-log.md) (good / ugly / bad).
 
 ### Eval framework — auto-labeled regression loop (the debug/improv flow)
 
@@ -292,7 +293,7 @@ unblocked.
 
 **Still open:**
 - **TOP PRIORITY — official Reachy Mini conversation-app architecture integration.** (added 2026-06-11,
-  decision revised 2026-06-12; see `docs/plan-official-runtime-refactor.md`)
+  decision revised 2026-06-12; see `docs/archive/plans/plan-official-runtime-refactor.md`)
   The official `pollen-robotics/reachy_mini_conversation_app` should become the reference architecture
   for the next voice iteration. It is an official Reachy Mini app and uses realtime audio backends
   (OpenAI Realtime, Gemini Live, Hugging Face/default realtime) rather than our current serial
@@ -313,7 +314,8 @@ unblocked.
   **Silero-VAD endpointer** so each turn is one clean utterance — fixed the fragment/15s-garble problem
   (live-validated); bumped to faster-whisper `medium`. But `medium` is **batch + ~2s/utterance** and
   still fumbles short/fast/mumbled speech → off replies, so **STT is now the bottleneck.** Replacement
-  candidates (detail + table in `voice-ai-research.md`): **(1) quick offline A/B** rerun faster-whisper
+  candidates (detail + table in `docs/archive/research/voice-ai-research.md`): **(1) quick offline A/B**
+  rerun faster-whisper
   `medium` vs `large-v3` vs `large-v3-turbo` on the clearer Haiku review clips
   (`20260610-145250-1a7624`, especially 03/04 split-turn + 05/06/13 transcript issues); do **not**
   score STT quality on the choppy GPT-OSS run. **(2) real fix** `parakeet-mlx` (NVIDIA Parakeet on
@@ -488,4 +490,4 @@ robot greets (B); talk → it converses (C). Prereq on the brain machine:
 `uv pip install -e ".[vision]"` (rfdetr + supervision) and the `claude` CLI authed.
 
 > Live-test results, issues, and the good/ugly/bad log live in
-> [`live-test-log.md`](./live-test-log.md) — not here.
+> [`live-test-log.md`](../../live-test-log.md) — not here.

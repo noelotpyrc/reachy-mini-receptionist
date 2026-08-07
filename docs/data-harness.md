@@ -4,24 +4,29 @@ What the reception robot records, how to reason about it (raw vs opinionated vs 
 the gaps are for debugging/tuning. Reference for anyone — **including other agents** — working on
 instrumentation, the eval framework, or performance tuning.
 
+**Status:** official-runtime artifact layout updated 2026-08-06. Legacy daemon artifacts may still
+exist in historical runs, but they are not the current recording contract.
+
 ## Channels — what gets recorded
 
 | Channel | File | Content | When | Code |
 |---|---|---|---|---|
-| **Run manifest** | `artifacts/runs/run-<run_id>.json` | Per-daemon manifest tying all artifacts together: config, log path, event log path, video/capture/audio/turn files, counts, open/closed status | always | `reception.py` manifest helpers |
-| **Durable log** | `artifacts/logs/reception-<run_id>.log` | Human-readable timeline (HH:MM:SS): `N person(s)`, APPROACH events, visit-state (`dom/absent/peak/greet/depart`), `react`/`farewell`, conversation opened/ended, `voice: heard`/`reply`, errors | always | `reception.py` (`logging.basicConfig` + `log.info` throughout) |
-| **Events** | `artifacts/events.jsonl` | Alert-engine trigger feed; one JSON line per event: `{run_id, type: approach\|depart\|wave, ts, id, area, cx, cy}`; wave: `{run_id, type, ts, gesture, score}` | always | `perception.py` (`DEFAULT_EVENTS_PATH`, event `rec` ~L55; wave ~L75) |
-| **Video** | `artifacts/video-<run_id>-NN.mkv` | **Raw** camera frames (cv2 `mp4v` in mkv, ~5 fps = `--vision-interval`). **No audio track, no annotations.** mkv (not mp4) = crash-resilient | `record on` | `reception.py` `record_on` / `_write_video` |
-| **Raw audio** | `artifacts/audio-<run_id>-NN.wav` + `.jsonl` | **Raw** 16 kHz mono float mic samples + sidecar: `{run_id, ts, sample_start, samples, rms, speaking/forwarded}`. `sample_start`/`samples` are exact WAV locations; `ts` is recorder-observed write/drain time, not guaranteed physical capture/playback time | `audio-record on` / official-runtime `--record-audio` | legacy `session.py`; official-runtime `ArtifactRecorder` |
-| **Utterances** | `artifacts/utterances/utterances-<run_id>.jsonl` + per-utterance `.wav` | First-pass VAD-endpointed audio events with timing: `{run_id, utterance_id, speech_start_ts, speech_end_ts, queued_ts, wav, dur}` | `--save-turns` + voice transcripts | `session.py` VAD queue; `reception.py` `_save_transcript_artifacts` |
-| **Transcripts** | `artifacts/transcripts/transcripts-<run_id>.jsonl` | First-pass STT worker output: `{run_id, utterance_id, speech_start_ts, speech_end_ts, queued_ts, stt_start_ts, stt_done_ts, model, text, error?}` | voice transcripts | `stt_worker.py`; `session.py` `listen_read`; `reception.py` |
-| **Capture** | `artifacts/capture-<run_id>-NN.jsonl` | Per-frame detector output: `{run_id, ts, n, tracks:[{id, area, cx, cy, box}], events:[…]}` | `capture on` | `reception.py` `capture_on` / `_write_capture` |
-| **Turns** | `artifacts/turns/turns-<run_id>.jsonl` + per-turn `.wav` | Per conversation turn: `{run_id, ts, n, dur, heard, reply, wav}` + the utterance audio (16 kHz) | `--save-turns` | `reception.py` `_save_turn` |
-| **Markers** | `artifacts/markers-<run_id>.jsonl` | Live **human** feedback anchors: `{run_id, n, ts, clock, note}` — one line per Enter-press during a live test, annotated after. Turns subjective UX reactions into queryable timestamps aligned (by `ts`) to every other channel | live test (manual) | `scripts/m1max/mark.py` |
+| **Run manifest** | `official-runtime-live/runs/run-<run_id>.json` | Resolved config, provenance, lane paths, recording state, counts, and close status | always | `official_runtime.artifacts.ArtifactRecorder` |
+| **Runner log** | `artifacts/logs/<run_id>.log` | Human-readable startup, media, backend, policy, and shutdown diagnostics | always | OPS-launched `official_runtime.live_app` |
+| **Events** | `official-runtime-live/events/events-<run_id>-NN.jsonl` | Runtime, perception, conversation, speaker, and robot events | always | `ArtifactRecorder.event` |
+| **Policies** | `official-runtime-live/policies/policies-<run_id>-NN.jsonl` | Policy inputs, decisions, suppression, and speech requests | always | `ArtifactRecorder.policy` |
+| **Realtime** | `official-runtime-live/realtime/realtime-<run_id>-NN.jsonl` | S2S protocol lifecycle, transcripts, audio lifecycle, milestones, and door-policy observations | always | `ArtifactRecorder.realtime` |
+| **Raw video** | `official-runtime-live/video/video-<run_id>-NN.mkv` plus `.jsonl` | Raw camera frames plus runner-observed per-frame timestamps; no annotations or audio track | `--record-video` | `ArtifactRecorder.vision_frame` |
+| **Raw audio** | `official-runtime-live/audio/audio-<stream>-<run_id>-NN.wav` plus `.jsonl` | Continuous input/output samples with exact sample offsets, timestamps, RMS, and forwarding/speaking context | `--record-audio` | `ArtifactRecorder.audio_frame` |
+| **Vision capture** | `official-runtime-live/capture/capture-<run_id>-NN.jsonl` | Per-frame people, logical tracks, visitor state, and emitted perception events | `--capture-vision` | official-runtime perception pipeline |
+| **Detection layers** | `official-runtime-live/detections/detections-<run_id>-NN.jsonl` | Configured semantic detector outputs, confidence, boxes, latency, and queue counters | additional vision pipeline configured | `LiveDetectionManager` through `ArtifactRecorder` |
+| **Per-response audio** | `official-runtime-live/audio/playable/*.wav` plus metadata | Robot-playable response audio associated with realtime response IDs | response audio present | S2S handler/artifact recorder |
+| **Markers** | `official-runtime-live/markers/markers-<run_id>.jsonl` | Human feedback anchors aligned by wall timestamp | manual live test | `scripts/m1max/mark.py` |
+| **Derived review** | `audio-review/<run_id>/...`, `.rrd`, and review JSON | Reconstructed timelines, aligned listening, recovered transcript sidecars, and vision overlays | offline review | audio/Rerun/door review tools |
 
-`replay.py` re-runs perception on a recorded `.mkv` (+ annotates boxes) → offline vision tuning/regression.
-Raw audio is not yet replay-wired, but the WAV + JSONL sidecar preserves the Cat-1 signal needed to
-re-run VAD/STT offline.
+Use `reception-vision-replay`, `reception-door-review`, the audio-review app, and the S2S replay
+harnesses for offline reproduction. Derived review output must remain provenance-separated from raw
+recordings and backend-emitted text.
 
 ## Audio input flow & echo cancellation (verified 2026-06-25)
 
@@ -59,51 +64,55 @@ against** → the reusable reference for tuning + eval.
 ### 2. Opinionated / conditional — a model's interpretation
 Output of some model, conditional on its weights + thresholds. Tunable and fallible; **validate against
 Cat-1, never trust as truth.** Worth recording only to see *what the model decided at the time*.
-- **Detections / tracks** (`capture.tracks`) — RF-DETR, conditional on `threshold`.
-- **Events** (`events.jsonl`: approach/depart/wave) — perception geometry + debounce (the false-greets live here).
-- **STT `heard`** — faster-whisper transcript (e.g. the "Also they're going" errors).
-- **Transcript events** — STT text plus the true speech timing and STT timing; first-pass brain input
-  now drains ordered transcript batches instead of a synchronous one-utterance `listen_read` result.
+- **Detections / tracks** (`capture` and `detections`) — RF-DETR, MediaPipe, and configured semantic
+  detectors, conditional on model versions and thresholds.
+- **Events** (`events` and `policies`) — visitor geometry, door state, debounce, policy rules, and
+  suppression decisions.
+- **STT transcripts** — backend Parakeet output plus endpointing/timing decisions.
 - **STT-recovered assistant text sidecars** (`audio-review/<run_id>/recovered-text-<run_id>.jsonl`)
   — offline ASR over the robot's own per-response WAVs, used only when backend assistant transcript
   events are missing. This is fallible model output and must stay visually/provenance-separated from
   backend-emitted assistant transcript.
 - **Wave `score`** — MediaPipe Open_Palm probability.
-- **Brain `reply`** — LLM generation, conditional on model + persona + context.
+- **Assistant response text** — Hermes/direct-provider LLM generation, conditional on model,
+  profile-owned context, tools, and session state.
 
 ### 3. Derived / aggregated — computed from 1 + 2
 Re-derivable; inherits Cat-2's errors. Convenient for monitoring / debugging logic, not a source of truth.
-- **Visit-state** (`dom/absent/peak/greet/depart` latches, `approach.py`) — smoothed/latched area signal.
-- **Conversation lifecycle** (idle-45s / max-cap close) — from `last_heard` timestamps.
-- **Counts / summaries** (capture frames/events; `buffer_duration` / `dur`).
-- **The durable-log narrative** — a human-readable rendering of 2 + 3.
+- **Visitor and door state** — observed/retained presence, proximity, motion, door movement, logical
+  track handoff, policy candidates, and latches.
+- **Conversation lifecycle** — policy-owned session state plus backend response lifecycle.
+- **Counts, latency summaries, and renderer spans** — convenient views reconstructed from raw and
+  opinionated lanes.
+- **The runner-log narrative** — a human-readable rendering of model and runtime decisions.
 
 ## Gaps (debugging/tuning blind spots)
-1. **Raw audio is separate from video** — can't watch + listen in one file; align by sidecar `ts` for now.
-2. **No audio replay tool yet** — raw WAV exists, but VAD/STT cannot yet be re-run from the same harness style as `replay.py`.
-3. **STT-worker transcript stream needs live validation** — first pass is implemented offline, but queue
-   age/backlog behavior and CPU contention still need controlled robot runs.
-4. **No VAD/STT diagnostics** — VAD fire/miss + speech probabilities, and STT confidence, are not logged.
-5. **Latency is partial** — transcript events capture VAD-endpoint → STT timing, but brain/TTS timing is
-   still mostly inferred from durable logs.
-6. **Per-frame gesture scores not captured** — only the debounced wave *event*, not every frame's Open_Palm probability.
-7. **`save-turns` still not a full eval record** — turns now include transcript batch metadata, but not
-   STT confidence, VAD probabilities, or a structured brain/TTS latency breakdown.
-8. **Timeline still not rendered** — files now share `run_id` + wall-clock `ts`, but there is no merged human-readable timeline artifact yet.
-9. **Recording lifecycle is still runner-coupled** — WAV/video/capture files are streamed during
+1. **Long-run MKV duration does not match runner-observed time.** Run
+   `official-live-20260806-114813` reported about `5740 s` of input-loop activity while `ffprobe`
+   reports about `3311 s` for the MKV. Compare video sidecar timestamps, decoded frame count, capture
+   timestamps, and writer FPS before changing playback or policy code.
+2. **Raw audio is separate from video.** The review tools align channels from sidecars; there is no
+   single audiovisual recording container.
+3. **Recording lifecycle is still runner-coupled.** WAV/video/capture files are streamed during
    the run, but finalization still depends on the live runner reaching `ArtifactRecorder.close()`.
    Immediate fix: graceful runner shutdown. Planned stronger fix: recorder sidecar process owned by
    OPS, so artifacts can flush/finalize even if the runner crashes.
-10. **Audio chunk timestamps are recorder-observed, not physical audio timestamps** — current audio
+4. **Audio chunk timestamps are recorder-observed, not physical audio timestamps.** Current audio
    sidecar `ts` values are written by M1Max when frames are drained/written. They can be bursty and
    should not be treated as exact mic-capture or speaker-playback times. Current audio review can use
    `first_speech_vad_sync` as a practical inferred anchor for controlled wave-chat runs, but the real
    fix is to record explicit capture/read/playback-submit timestamps and sequence numbers.
+5. **Camera timestamps are runner-observed, not sensor PTS.** The SDK still returns pixels without a
+   camera timestamp. The video sidecar is the current practical alignment source.
+6. **Production health is incomplete.** OPS does not yet prove Hermes/provider reachability,
+   camera/microphone progress, artifact growth, or disk thresholds.
+7. **Continuous recording lacks an approved privacy/retention policy.** Raw clinic audio/video must
+   not become a production default until access and retention are decided.
 
 ## Takeaway + instrumentation priority
 - **Cat-1 is the reusable asset; Cat-2/3 are disposable** (re-derivable from Cat-1 + a model).
 - **Vision already has its Cat-1** (raw video) → replayable + tunable offline. That's why vision tuning works.
-- **Audio now has Cat-1** → the next step is making the voice path replayable from that raw signal.
-- **Priority order:** (1) live-validate timestamped utterance artifacts + separate STT worker /
-  transcript stream, (2) audio replay/eval from `audio-*.wav`, then fuller per-stage latency,
-  VAD/STT diagnostics, and a merged timeline view over one run manifest.
+- **Audio and video have Cat-1**, and both have offline review/replay consumers.
+- **Priority order for production:** diagnose video duration/alignment, define recording privacy and
+  retention, make finalization failure explicit/crash-resilient, and add active media/artifact health
+  checks. See [`production-readiness.md`](production-readiness.md).

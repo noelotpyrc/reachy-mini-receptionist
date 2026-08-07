@@ -17,7 +17,7 @@ as the default live-test path unless explicitly comparing against legacy behavio
 ## Setup
 
 ```bash
-uv sync --extra official-runtime --extra vision --extra gesture --extra diagnosis --extra dev
+uv sync --extra official-runtime --extra vision --extra gesture --extra diagnosis --extra door-vision --extra dev
 uv sync --extra audio --extra brain  # optional: legacy listen/speak + legacy brain tools
 ```
 
@@ -71,11 +71,16 @@ src/reachy_mini_brain/
 ```bash
 # Current live-test path on m1max
 ssh leon@100.127.86.67
-cd ~/projects/reachy_mini_receptionist_deploy
-scripts/m1max/live_ops.sh status
-scripts/m1max/live_ops.sh preflight     # requires human confirmation before live test
-LIVE_DURATION=900 scripts/m1max/live_ops.sh clean-run
-scripts/m1max/live_ops.sh clean-stop
+RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6
+cd "$RELEASE"
+export REACHY_REPO="$RELEASE"
+export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"
+export PYTHONPATH="$RELEASE/src"
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli status
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
+  --confirm-physical start-session --record-audio --capture-vision
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
+  --confirm-physical stop-session
 
 # Direct CLI entrypoint used by the ops wrapper
 .venv/bin/python -m reachy_mini_brain.official_runtime.live_app --help
@@ -90,7 +95,7 @@ See `docs/robot-guide.md` for the full CLI reference.
 ## Architecture
 
 ```text
-m1max live_ops.sh
+m1max reception-ops / ops_core
     -> local speech-to-speech backend (Parakeet STT + remote LLM + Qwen3 TTS)
     -> official_runtime.live_app
         -> robot REST lifecycle/motors
@@ -99,8 +104,10 @@ m1max live_ops.sh
     -> Reachy Mini robot runtime
 ```
 
+- `docs/production-readiness.md` owns production promotion gates and pass/block status.
 - `docs/runbook.md` is the operational entrypoint for live tests.
-- `scripts/m1max/live_ops.sh` owns preflight, backend lifecycle, wake/sleep, live start, and cleanup.
+- `official_runtime.ops_core` owns lifecycle behavior; `reception-ops` is its developer CLI.
+- `scripts/m1max/live_ops.sh` remains a compatibility wrapper, not the source of truth.
 - `official_runtime.live_app` owns the live stream loop, reception policies, cues, and run artifacts.
 - `robot.py` still wraps daemon REST lifecycle/motor APIs used by both current and legacy paths.
 - Camera and audio use the SDK WebRTC pipeline; simple one-shot CLIs remain available for debugging.
@@ -111,24 +118,24 @@ m1max live_ops.sh
 - Always `wake_up()` before motion, `go_to_sleep()` when done
 - CLI modules use `click` with `@click.group()` + `@cli.command()` pattern
 - Photos save to `artifacts/` by default (gitignored)
-- Live-test commands that require physical confirmation should run through `live_ops.sh`.
+- Robot-affecting operations must run through OPS and require explicit physical authorization.
 
 ## Tests
 
 ```bash
-# Automated integration tests
-.venv/bin/python -m pytest tests/test_integration.py -m hardware -v
+# Offline suite
+.venv/bin/python -m pytest -q
 
-# Human-observable e2e tests (requires -s for confirm prompts)
-.venv/bin/python -m pytest tests/test_e2e.py -m hardware -v -s
-.venv/bin/python -m pytest tests/test_e2e_vision.py -m hardware -v -s
+# See the catalog before running controlled integration or physical tests.
+sed -n '1,240p' docs/runtime-test-catalog.md
 ```
 
 ## Docs
 
+- `docs/README.md` — documentation index and source-of-truth map
+- `docs/production-readiness.md` — production promotion checklist and current blockers
 - `docs/runbook.md` — current live-test operations for the official-runtime path
 - `docs/todo-official-runtime.md` — ordered post-pivot execution checklist
-- `docs/plan-official-runtime-refactor.md` — accepted architecture and cleanup direction
 - `docs/live-test-log.md` — **on-robot test log** (good / ugly / bad, newest first)
 - `docs/robot-guide.md` — full CLI reference, including current official-runtime ops and legacy CLIs
 - `docs/archive/legacy/plan-reception.md` — legacy daemon plan and historical design context

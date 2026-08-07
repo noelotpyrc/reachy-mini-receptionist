@@ -1,5 +1,9 @@
 # Review — Rerun review implementation (#6 v1)
 
+**Status:** superseded implementation review. Its v1 findings were addressed and exercised with the
+real Rerun SDK; use [`rerun-integration.md`](../../rerun-integration.md) and
+[`rerun-vision-tracking-plan.md`](../../rerun-vision-tracking-plan.md) for current behavior.
+
 **Reviewed:** `src/reachy_mini_brain/official_runtime/rerun_review.py`,
 `tests/test_rerun_review.py`, the `diagnosis = ["rerun-sdk"]` extra + `reception-rerun-review`
 entry point (`pyproject.toml`).

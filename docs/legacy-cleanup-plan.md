@@ -1,6 +1,6 @@
 # Legacy Cleanup Plan
 
-Status: waiting for an explicit delete/quarantine decision.
+Status: inventory revalidated 2026-08-06; waiting for an explicit delete/quarantine decision.
 
 This plan covers the old reception-daemon stack after the accepted pivot to
 `reachy_mini_brain.official_runtime` plus the m1max local S2S backend. It is intentionally
@@ -18,7 +18,7 @@ Keep these as product path:
 - `src/reachy_mini_brain/vision.py`
 - `src/reachy_mini_brain/video.py`
 - `src/reachy_mini_brain/state.py`
-- `scripts/m1max/live_ops.sh`
+- `scripts/m1max/live_ops.sh` (compatibility wrapper only)
 - `scripts/m1max/run_official_runtime_live.sh`
 - `scripts/m1max/run_s2s_backend.sh`
 - `profiles/clinic_receptionist/`
@@ -99,11 +99,29 @@ Preferred next destructive step, if approved:
 Alternative: move legacy modules under a `legacy/` folder. This preserves source files in the tree but
 adds import/path churn, so it is not the preferred path unless we expect to run old daemon code often.
 
+## Additional Stale Test And Experiment Candidates
+
+These are not included in the deletion list above until their replacement/disposition is reviewed:
+
+- `tests/test_e2e.py`, `tests/test_e2e_audio.py`, `tests/test_e2e_vision.py`, and
+  `tests/test_integration.py` hardcode `/Users/lliao/work/reachy_mini`; the integration test also
+  expects robot SDK `1.5.0`. They are not current production acceptance tests.
+- `tests/test_antenna_manual.py` is a useful manual diagnostic but belongs under a manual scripts
+  surface rather than automatic pytest discovery.
+- `experiments/brain_bench/*`, `experiments/stream_speak_test.py`, and
+  `experiments/vad_endpoint_test.py` import legacy `brain.py` or `session.py`; archive or delete them
+  with the legacy stack after explicit approval.
+- `experiments/agentic_api/` is historical backend research. Its documentation is archived, but the
+  executable experiment directory remains a separate archive-or-delete decision.
+
 ## Current State
 
-As of 2026-06-23:
+As of 2026-08-06:
 
 - Legacy modules are marked in docstrings.
-- Operator docs point to official-runtime as primary.
+- OPS library/CLI and the clean release are the canonical product path; `live_ops.sh` is
+  compatibility-only.
+- Current production and diagnosis code has no import dependency on the listed legacy daemon group;
+  the group remains internally connected and is referenced by the stale tests/experiments above.
 - No deletion or file move has been performed.
 - Destructive cleanup remains blocked on an explicit file-list/disposition confirmation.

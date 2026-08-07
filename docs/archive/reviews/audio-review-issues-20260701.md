@@ -9,7 +9,8 @@ fix-proposal note; it now records the disposition of those fixes after implement
 Why a tmp doc (doc-placement reasoning):
 - `docs/conversation-audio-player.md` is the **spec** for this app and is the eventual home once a fix is
   accepted — but delivering a reviewed issue list to another agent is a different job (see the precedent
-  `tmp-rerun-review-issues.md`, which delivered fix proposals for the Rerun renderer the same way).
+  `rerun-review-issues-20260626.md`, which delivered fix proposals for the Rerun renderer the same
+  way).
 - There is no audio-review review doc yet, so per that precedent this is a fresh `tmp-*-review-issues.md`.
 - When a proposal is accepted, fold it into `docs/conversation-audio-player.md` (spec) and, where it touches
   span/marker anchoring, `docs/general-timeline-model.md`.

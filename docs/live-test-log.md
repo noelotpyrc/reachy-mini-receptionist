@@ -10,6 +10,38 @@ Each entry uses three buckets:
 
 ---
 
+## 2026-08-06 - clean-release unattended idle run and recording finalization
+
+**Run:** `official-live-20260806-114813`
+**Setup:** clean release `612ea43`, `door-v1-20260805`, Grounding DINO policy pipeline, raw audio,
+raw video, vision capture, detector JSONL, no Rerun streaming, effectively unbounded assisted run.
+
+### Good
+
+- OPS remotely woke, started, monitored, stopped, and slept the robot. Shutdown disabled motors,
+  released media, finalized artifacts, and left the S2S backend warm.
+- Wireless WebRTC audio/video warmups passed despite non-fatal local USB/GStreamer warnings.
+- The runtime reached `software_pipeline_initialized`; audio, video, capture, detections, events,
+  policies, and realtime lanes grew during the run.
+- In the analyzed 50-minute policy window, Grounding DINO produced exactly one door in `4397 / 4397`
+  semantic updates. After two startup `UNKNOWN` frames, door state stayed `STABLE`; geometry score
+  never crossed the motion threshold and no false policy event fired.
+
+### Limitation / issue
+
+- No person was observed in the analyzed window. This run validates idle stability, not real visitor
+  greet, goodbye, person-door interaction, or wave-chat behavior.
+- The runtime input loop reported about `5740 s`, while the finalized MKV reports about `3311 s` via
+  `ffprobe`. The MKV is readable, but its duration/timestamp behavior is not reliable enough for
+  production acceptance. Compare decoded frames against video/capture sidecars before fixing it.
+- Startup took roughly two minutes due to semantic/person model initialization and media startup.
+  Progress was visible only in logs, not as an operator-level readiness state.
+
+**Disposition:** evidence added to `production-readiness.md`; controlled visitor acceptance and the
+recording-duration diagnosis remain open.
+
+---
+
 ## 2026-08-03 - native Rerun live stream and two-model door diagnosis
 
 **Setup:** m1max + real robot, official runtime run `official-live-20260803-160828`, raw audio,
@@ -663,7 +695,7 @@ Runs discussed during live testing:
 ### 🔴 Bad → resolved / rejected
 - **Streaming TTS = choppy → REJECTED.** Chunked render-ahead over the WebRTC pipeline starves the audio
   thread → "choppiest voice ever." Kept whole-utterance `speak()` + the thinking-antenna mask. See
-  `voice-ai-research.md`.
+  `docs/archive/research/voice-ai-research.md`.
 - **STT garble (no endpointing)** → root-caused + **FIXED** by the VAD endpointer (above).
 
 ### Process notes (mine)
@@ -736,7 +768,7 @@ tmux session** so `brain.py`'s `claude -p` is keychain-authed (the Phase C auth 
   (~1s) + brain/Haiku (~1.5–2s) + TTS-start synth+cushion (~1s). No single villain — it's the sum.
   The thinking-antenna fills the dead air so it *reads* as "thinking," and prewarm/cushion shaved
   the worst, but the real fix is **VAD endpointing + a streaming STT/LLM/TTS stack**
-  (see `voice-ai-research.md`) — deferred.
+  (see `docs/archive/research/voice-ai-research.md`) — deferred.
 - **STT quality variable** — clean when close/clear single utterances, garbled when continuous/far.
 - **Wave needs a min distance** (scores hover near the 0.5 floor).
 

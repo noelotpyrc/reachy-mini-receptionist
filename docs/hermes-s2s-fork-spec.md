@@ -1,7 +1,7 @@
 # Spec — S2S backend fork: Hermes conversation state + deterministic policy speech
 
-Date: 2026-07-03; deterministic policy-speech design updated 2026-08-05
-Status: implementation in progress (todo #8, Hermes track); deterministic policy-speech changes implemented locally, not committed or deployed
+Date: 2026-07-03; deployment status updated 2026-08-06
+Status: implemented, tested, committed, and deployed; backend feature development paused for production preparation
 Audience: implementing agent. Read this whole doc before coding.
 
 ## 1. Goal
@@ -724,7 +724,7 @@ constraints permit both `B` and `C` in the last slot.
   earlier latency benchmark (its `hermes_conversation` mode already validated
   first-turn-instructions + delta-only requests against Hermes, mean request
   ~316 chars vs ~2.5k full-history).
-- `docs/custom-realtime-backend-research.md` — the #8 research plan this
+- `docs/archive/research/custom-realtime-backend-research.md` — the archived #8 research plan this
   implements.
 - `docs/todo-official-runtime.md` #8 — parent todo.
 - Hermes docs: context files, skills, SOUL.md guide, memory, API server,

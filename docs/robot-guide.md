@@ -3,8 +3,8 @@
 Full reference for all CLI commands. All commands run from project root.
 
 > **Bringing the reception robot up on m1max?** Follow [`runbook.md`](./runbook.md).
-> The current path is `scripts/m1max/live_ops.sh preflight`, human audio confirmation,
-> then `scripts/m1max/live_ops.sh clean-run`.
+> The current path is the Python `reception-ops` CLI over `official_runtime.ops_core`.
+> `scripts/m1max/live_ops.sh` is compatibility-only.
 
 ## Current Reception Live Path
 
@@ -12,11 +12,16 @@ Use this path for live receptionist tests unless explicitly comparing against le
 Run from m1max:
 
 ```bash
-cd ~/projects/reachy_mini
-scripts/m1max/live_ops.sh status
-scripts/m1max/live_ops.sh preflight
-LIVE_DURATION=900 scripts/m1max/live_ops.sh clean-run
-scripts/m1max/live_ops.sh clean-stop
+RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6
+cd "$RELEASE"
+export REACHY_REPO="$RELEASE"
+export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"
+export PYTHONPATH="$RELEASE/src"
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli status
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
+  --confirm-physical start-session --record-audio --capture-vision
+"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
+  --confirm-physical stop-session
 ```
 
 The wrapper owns the normal live-test lifecycle:

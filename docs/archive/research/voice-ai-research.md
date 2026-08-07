@@ -1,5 +1,8 @@
 # Voice AI Research: Recommended Models & Stacks for Conversational Apps
 
+**Status:** historical model/stack research. Backend feature work is paused at the deployed
+Hermes/GPT-5.6-Luna baseline while production readiness is addressed.
+
 **Date:** June 2026 (research synthesized from X.com posts and discussions, ~2025–mid-2026)  
 **Focus:** Practical solutions for **customer-facing** voice conversation apps, especially **short chats and Q&A**.  
 **Relevance to Reachy Mini:** This project previously used local `faster-whisper` (STT) + `piper-tts` (TTS) with a custom continuous-listen buffer (see `docs/archive/legacy/continuous-listen.md`) and WebRTC audio. The robot's reception use case (greeting, FAQ, directions, simple Q&A) is a classic short-form conversational scenario. Findings here can guide upgrades for lower latency, better naturalness, interruption handling, and cost at "production" volume with real humans.

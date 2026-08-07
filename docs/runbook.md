@@ -4,6 +4,10 @@ Offline profile, model, policy, and S2S checks are indexed in the
 [Runtime Test Catalog](runtime-test-catalog.md). This runbook remains the source
 of truth for physical preflight and live operation.
 
+Production promotion gates and unresolved reliability/privacy decisions are tracked separately in
+the [Production Readiness checklist](production-readiness.md). A successful command in this runbook
+does not by itself mean the system is approved for unattended production.
+
 ## Current Live Path
 
 Use the accepted official-runtime path for normal live tests:
@@ -60,11 +64,15 @@ For direct OpenRouter model swaps, keep the backend launcher on OpenRouter and s
 S2S_PROVIDER=openrouter S2S_MODEL_NAME=openai/gpt-5.6-luna scripts/m1max/run_s2s_backend.sh
 ```
 
-For a Hermes / agentic wrapper experiment, point the S2S Responses slot at the wrapper's
-OpenAI-compatible `/v1` endpoint:
+The current production-candidate backend uses the Hermes wrapper on `127.0.0.1:8642`, with direct
+OpenRouter/GPT-5.6-Luna retained as its configured direct model path. Backend feature development is
+paused during production preparation.
+
+For a staging Hermes experiment, point the S2S Responses slot at the test wrapper's
+OpenAI-compatible `/v1` endpoint (normally port `8643`, never the production profile):
 
 ```bash
-S2S_RESPONSES_BASE_URL=http://127.0.0.1:8787/v1 \
+S2S_RESPONSES_BASE_URL=http://127.0.0.1:8643/v1 \
 S2S_MODEL_NAME=wrapper-routed \
 S2S_RESPONSES_API_KEY=local-wrapper \
 S2S_RESPONSES_CONVERSATION=1 \
@@ -136,6 +144,10 @@ complete resolved configuration.
 The door policy pipeline loads Grounding DINO when the runner starts. On the prepared m1max release,
 the first isolated model load took about 20 seconds; this is startup time before robot interaction,
 not per-frame inference latency.
+
+There is not yet a first-class unlimited duration. For the 2026-08-06 long run, OPS used a very
+large `LIVE_DURATION` as a run-until-stopped workaround. This is acceptable only for assisted
+operation and remains a production-readiness item.
 
 To reproduce a height-based live profile offline against a retained video:
 
@@ -216,7 +228,8 @@ Current backend contract:
 - WebSocket: `ws://127.0.0.1:8765/v1/realtime`
 - Live handler: native `s2s-local`, not the official app's handler
 - STT: `parakeet-tdt`
-- LLM slot: `responses-api` via remote provider path, currently OpenRouter by default
+- LLM slot: `responses-api` through the local Hermes wrapper on `127.0.0.1:8642`
+- Direct model path: OpenRouter `openai/gpt-5.6-luna`
 - TTS: `qwen3`, voice `Sohee`
 
 The accepted live app talks to this backend directly. It should not require
@@ -229,8 +242,8 @@ become queryable timestamps instead of memory. Press Enter to stamp "now"; type 
 for an inline note. Annotate the rest after Ctrl-D.
 
 ```bash
-cd ~/projects/reachy_mini_receptionist_deploy
-.venv/bin/python scripts/m1max/mark.py
+cd "$RELEASE"
+"$OFFICIAL_RUNTIME_PYTHON" scripts/m1max/mark.py
 ```
 
 This writes `artifacts/markers-<run_id>.jsonl`, aligned by wall-clock `ts` to events/audio/video
@@ -290,8 +303,8 @@ It does not depend on the Rerun web viewer.
 1. Before starting the robot run, host the Rerun server on m1max:
 
 ```bash
-cd /Users/leon/projects/reachy_mini_receptionist_deploy
-.venv/bin/rerun --serve-web --web-viewer-port 9092 --port 9880 --hide-welcome-screen
+cd "$RELEASE"
+"$RELEASE/.release-venv/bin/rerun" --serve-web --web-viewer-port 9092 --port 9880 --hide-welcome-screen
 ```
 
 2. Configure the live runner to publish locally on m1max and retain an `.rrd`:

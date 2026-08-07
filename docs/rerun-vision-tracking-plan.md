@@ -1,7 +1,7 @@
 # Rerun Vision Tracking Feature Plan
 
-**Status:** Offline feature implemented and reviewed; configurable real-time feature approved for
-implementation
+**Status:** Offline replay and configurable real-time tracking display implemented and exercised;
+live Rerun streaming remains optional and off for the first production acceptance run
 
 **Scope:** Add detailed vision-tracking review to Rerun in two stages:
 

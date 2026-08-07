@@ -2,6 +2,11 @@
 
 Date: 2026-06-15; runtime ownership updated 2026-07-01
 
+**Status:** historical feasibility/baseline document. The backend is now deployed and reproducible;
+use [`runbook.md`](../../runbook.md) for current commands and
+[`hermes-s2s-fork-spec.md`](../../hermes-s2s-fork-spec.md)
+for the current wrapper/session contract.
+
 ## Purpose
 
 Run the open-source Hugging Face `speech-to-speech` realtime backend on the m1max and connect to it through

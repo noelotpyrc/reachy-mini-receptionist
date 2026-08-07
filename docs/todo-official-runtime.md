@@ -210,12 +210,15 @@ type→behavior map. Refactoring `ReceptionPolicy` into per-behavior policies �
 ## Phase 3 — Iterate UX & backend with the fast loop
 
 ### 7a. Stabilize vision-triggered greet/goodbye policy  `[ ]`
-**Goal:** Prevent unstable person-box area estimates from emitting contradictory
-approach/greet and depart/goodbye speech while a visitor remains present, especially
-during the walk-in-and-wave interaction.
+**Status:** implementation and captured offline evaluation complete; controlled visitor live
+acceptance pending.
 
-**Proposal:** See [`vision-visitor-state-proposal.md`](vision-visitor-state-proposal.md) for the
-presence/proximity/motion classifiers, greet/goodbye trigger rules, and offline validation plan.
+**Goal:** Promote the door-ordered visitor policy only after real entry, conversation, and exit
+behavior is accepted without contradictory greet/goodbye speech.
+
+**Current implementation:** `door-v1-20260805` uses continuous Grounding DINO door observations,
+RF-DETR person observations, and ordered door-motion/person-interaction evidence. Fixed policy text
+uses deterministic TTS. See [`vision-visitor-state-proposal.md`](vision-visitor-state-proposal.md).
 
 **Evidence (2026-07-25 live run `official-live-20260725-111932`):**
 - Marker 2 (`11:21:01`, "unwanted goodbye/greet"): track 5 emitted `approach` at
@@ -229,22 +232,15 @@ presence/proximity/motion classifiers, greet/goodbye trigger rules, and offline 
 - The direct policy lane then correctly spoke each event it was given. Hermes and the
   wave-chat conversation were not the source of these two unwanted sequences.
 
-**Diagnosis:** `ApproachTracker` currently uses unsmoothed detections (`smooth=0`), stores
-the maximum raw area as the visit peak, and declares departure after two recent areas
-are at or below `0.6 * peak`. A single inflated person box can therefore poison the
-peak and make the visitor's stable box look like a departure. The reception policy
-suppresses greet/farewell only after a wave conversation is active; it cannot prevent
-the contradictory events that fire just before the wave.
+**Implemented result:** logical track handoff, observed/retained state separation, door observation,
+door-person interaction metrics, ordered greet/goodbye candidates, live/offline Rerun diagnosis,
+and a versioned rollback profile are covered by focused tests and accepted captured clips.
 
-**Steps:**
-- Reproduce both captured area sequences offline as `ApproachTracker` regression cases.
-- Choose and test a robust geometry rule (for example peak filtering/smoothing plus
-  sustained receding evidence); do not tune directly on the robot.
-- Add an interaction-level regression that a continuously present visitor cannot
-  produce an approach -> depart speech pair around a wave.
-- Preserve the genuine first walk-away in the same run: the area fell from `0.244` to
-  `0.144` and continued toward `0.087` before the visitor left the tracked scene.
-- Validate on recorded video/capture first, then run one short user-present live test.
+**Remaining steps:**
+- Run one controlled door entry, greet, wave-chat, and door exit with a person onsite.
+- Confirm trigger order, policy-speech latency, no duplicate greeting/farewell, and normal wave-chat.
+- Review the retained video, person/door observations, policy events, audio, and transcripts.
+- Promote `door-v1-20260805` or restore `legacy`; do not retune thresholds from an unlabelled run.
 
 **Done when:** the two false sequences above produce no farewell, genuine walk-away
 still produces one farewell, and a live walk-in-and-wave produces one coherent opener
@@ -260,9 +256,14 @@ live tests — see `docs/live-test-log.md` 06-14/06-15).
 not from guesses.
 
 ### 8. Backend context & model experiments  `[ ]`
+**Status:** paused on 2026-08-06 for production preparation. The deployed Hermes/profile-owned
+context path, GPT-5.6 Luna direct fallback, session mapping, read-only reference tools, latency
+tracing, and deterministic policy speech are the frozen baseline. Do not start new backend feature
+or model experiments unless this item is explicitly resumed.
+
 **Goal:** Give the receptionist real clinic context, then decide model/wrapper.
-**Reference:** `docs/custom-realtime-backend-research.md` is the active agentic-backend/context-memory
-research plan for this item.
+**Reference:** `docs/archive/research/custom-realtime-backend-research.md` preserves the completed
+agentic-backend/context-memory research baseline for this paused item.
 **Steps:**
 - Add clinic-receptionist system context to the local S2S backend prompt/config.
 - Comparison tracks (current stack: local STT/TTS + remote LLM via OpenRouter Responses API):
@@ -300,6 +301,10 @@ documented commands, and live OPS still uses the same `ws://127.0.0.1:8765/v1/re
 verification, and `runtime-info.json` output. It does not delete logs/model caches/runtime artifacts.
 
 ### 10. Recorder sidecar process  `[ ]`
+**Production relevance:** tracked as a promotion gate in
+[`production-readiness.md`](production-readiness.md). The 2026-08-06 long run also exposed a large
+input-loop versus MKV-duration discrepancy that must be diagnosed before continuous video is trusted.
+
 **Goal:** Decouple artifact persistence from the live runner so audio/video/capture artifacts can
 finalize even if the robot runner crashes or must be killed.
 **Why now:** The current recorder writes frames incrementally, but the live runner still owns the
@@ -348,3 +353,9 @@ machine-checkable reason.
   diagnosed two unwanted greet/goodbye sequences as vision-policy false positives caused by raw
   person-box peak/drop handling. Added #7a as the next improvement item; reproduce from the recorded
   capture before changing the tracker or spending another live run.
+- 2026-08-06 — #7a implementation and captured offline acceptance complete with the versioned
+  `door-v1-20260805` policy. Long run `official-live-20260806-114813` established idle door-detection
+  stability but observed no people, so controlled visitor live acceptance remains open.
+- 2026-08-06 — backend feature work paused at the deployed Hermes/GPT-5.6-Luna baseline. Production
+  readiness, operations hardening, recording integrity, privacy/retention, and remote control are now
+  the priority; see `production-readiness.md`.

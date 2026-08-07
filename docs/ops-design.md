@@ -5,6 +5,10 @@ acceptance record: `docs/archive/reviews/ops-test-todos.md`).
 Reframes the original "ops management tools" item around **operational domains** instead of an
 ad-hoc command list.
 
+Production hardening and the staged operations-service/remote-CLI/operator-UI roadmap are tracked in
+[`production-readiness.md`](production-readiness.md). The library + CLI remain the current source of
+truth; no remote service exists yet.
+
 ## Goal & scope
 
 Remove the ops confusion seen during live tests with a small, clear command set — shaped so it can
@@ -47,7 +51,8 @@ across runs; only restart it to change model/voice/config or when wedged.
   state only. It is **not** the product/controller repo and should not receive product code edits.
 - The product/controller repo owns backend lifecycle and launch flags:
   - local dev: `/Users/noel/projects/reachy_mini_receptionist_clean`
-  - m1max deploy: `/Users/leon/projects/reachy_mini_receptionist_deploy`
+  - m1max rollback checkout: `/Users/leon/projects/reachy_mini_receptionist_deploy`
+  - current clean release: `/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6`
   - setup/update: `scripts/m1max/setup_s2s_backend.sh`
   - launcher: `scripts/m1max/run_s2s_backend.sh`
 - The backend package is currently Hugging Face `speech-to-speech==0.2.10`, exposed locally as
