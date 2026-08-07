@@ -16,8 +16,12 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 ## Current Baseline
 
-- Product release: clean m1max checkout at commit `612ea43`, with the previous dirty deployment
-  preserved as a rollback copy.
+- Product candidate: local `main` at `729bb76` after documentation consolidation and removal of the
+  superseded reception-daemon stack. The pre-removal source is tagged `legacy-daemon-last` at
+  `260e2f2`.
+- Current m1max assisted release: clean checkout at commit `612ea43`, with the previous dirty
+  deployment preserved as a rollback copy. A new clean release for the current candidate is the
+  next non-live promotion step.
 - S2S backend: `speech-to-speech==0.2.10`, fork SHA `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`,
   listening only on `127.0.0.1:8765`.
 - Agent wrapper: production Hermes profile on `127.0.0.1:8642`; clinic context remains outside Git.
@@ -34,7 +38,7 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 | Area | Gate | Status | Evidence / remaining work |
 | --- | --- | --- | --- |
-| Release | Immutable product revision, reproducible venv, documented rollback | **Pass for assisted use** | Clean release and release-owned `.release-venv` exist; replace commit-named/manual activation with a stable production release mechanism before non-technical operation. |
+| Release | Immutable product revision, reproducible venv, documented rollback | **Candidate pending deployment** | The current m1max release at `612ea43` remains usable and preserved. Prepare and verify a new release from the post-cleanup candidate before controlled acceptance; replace commit-named/manual activation with a stable production release mechanism before non-technical operation. |
 | Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Backend setup script, runtime metadata, Hermes text/integration tests, and deterministic policy-TTS benchmark completed. Add wrapper/provider checks to aggregate health. |
 | Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Physical runner restart must remain operator-authorized. |
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Blocked** | Door policy passed captured offline evaluation. A controlled live door-entry, conversation, and exit sequence is still required. |
@@ -108,5 +112,6 @@ proxy.
 - No backend model, prompt, memory, STT, or TTS experiments.
 - No public Internet exposure of robot or backend services.
 - No automatic physical runner restart.
-- No deletion of legacy code, documents, artifacts, profiles, or database entries without separate
-  confirmation.
+- No further deletion of code, documents, artifacts, profiles, or database entries without separate
+  confirmation. The separately approved Batch C legacy-daemon removal is complete and recoverable
+  from `legacy-daemon-last`.
