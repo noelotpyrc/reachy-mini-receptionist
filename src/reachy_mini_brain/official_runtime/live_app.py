@@ -25,6 +25,7 @@ from .livekit_room_bridge import LiveKitRoomBridge
 from .live_detection import FramePacket, LiveDetectionManager, load_pipeline_config
 from .door_policy_live import LiveDoorPolicyCoordinator
 from .live_rerun import RERUN_MODES, LiveRerunPublisher
+from .liveness import HeartbeatWriter, RuntimeLiveness, pulse_event_loop
 from .moves import AntennaCueController, PlaybackMovementGate
 from .perception import PerceptionPipeline
 from .policies import PolicyEngine
@@ -79,6 +80,13 @@ def _instruction_provenance(instructions: str, *, source: str) -> dict[str, Any]
 @click.option("--run-id", default=None, help="Run id. Defaults to timestamped id.")
 @click.option("--artifact-root", type=click.Path(path_type=Path), default=DEFAULT_ARTIFACT_ROOT)
 @click.option("--duration", type=float, default=120.0, show_default=True, help="Maximum live run duration in seconds.")
+@click.option(
+    "--heartbeat-path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional source-liveness heartbeat file for the detached supervisor.",
+)
+@click.option("--heartbeat-interval-s", type=float, default=1.0, show_default=True)
 @click.option("--robot-host", envvar="REACHY_HOST", default=None, help="Robot host/IP. Also sets REACHY_HOST.")
 @click.option("--warmup-audio/--no-warmup-audio", default=True, show_default=True)
 @click.option("--warmup-video/--no-warmup-video", default=False, show_default=True)
@@ -210,6 +218,8 @@ async def _run_live(
     run_id: str,
     artifact_root: Path,
     duration: float,
+    heartbeat_path: Path | None,
+    heartbeat_interval_s: float,
     robot_host: str | None,
     warmup_audio: bool,
     warmup_video: bool,
@@ -350,6 +360,29 @@ async def _run_live(
         capture_detections=resolved_pipeline_config is not None,
         rerun_path=rerun_save_path,
     )
+    video_expected = bool(
+        perception
+        or record_video
+        or capture_vision
+        or resolved_pipeline_config is not None
+        or rerun_mode != "off"
+    )
+    liveness = RuntimeLiveness(
+        run_id=run_id,
+        audio_expected=scripted_playback_wav is None,
+        video_expected=video_expected,
+    )
+    heartbeat_writer = (
+        HeartbeatWriter(heartbeat_path, liveness, interval_s=heartbeat_interval_s)
+        if heartbeat_path is not None
+        else None
+    )
+    if heartbeat_writer is not None:
+        heartbeat_writer.start()
+    event_loop_pulse_task = asyncio.create_task(
+        pulse_event_loop(liveness),
+        name="official-runtime-event-loop-liveness",
+    )
     rerun_publisher: LiveRerunPublisher | None = None
     detection_manager: LiveDetectionManager | None = None
     door_policy_coordinator_holder: dict[str, LiveDoorPolicyCoordinator] = {}
@@ -387,11 +420,16 @@ async def _run_live(
             )
             detection_manager.start()
     except Exception:
+        liveness.set_fault("diagnosis_start_failed")
+        liveness.set_phase("failed")
         if detection_manager is not None:
             detection_manager.close()
         if rerun_publisher is not None:
             rerun_publisher.close()
         recorder.close()
+        event_loop_pulse_task.cancel()
+        if heartbeat_writer is not None:
+            heartbeat_writer.close()
         raise
     diagnosis_closed = False
 
@@ -426,11 +464,17 @@ async def _run_live(
     )
     try:
         mini = await asyncio.to_thread(robot_session.start)
-    except Exception:
+        liveness.set_phase("robot_connected")
+    except Exception as exc:
+        liveness.set_fault(repr(exc))
+        liveness.set_phase("failed")
         close_diagnosis()
         recorder.close()
+        event_loop_pulse_task.cancel()
+        if heartbeat_writer is not None:
+            heartbeat_writer.close()
         raise
-    camera_provider = ReachyCameraFrameProvider(mini)
+    camera_provider = ReachyCameraFrameProvider(mini, on_frame=liveness.video_frame)
 
     movement_gate = PlaybackMovementGate(on_change=lambda active, reason: recorder.realtime("movement_gate", active=active, reason=reason))
     policy_settings: dict[str, Any] = {"audio_gate_until_wave": audio_gate}
@@ -519,7 +563,12 @@ async def _run_live(
         door_policy_coordinator_holder["coordinator"] = door_policy_coordinator
 
     runtime_observer = CompositeRuntimeObserver(reception_policy, recorder, movement_gate)
-    audio_source = ReachyAudioSource(mini, max_duration_s=duration, stop_event=stop_event)
+    audio_source = ReachyAudioSource(
+        mini,
+        max_duration_s=duration,
+        stop_event=stop_event,
+        on_frame=liveness.audio_frame,
+    )
     audio_sink = ReachyAudioSink(mini)
     if scripted_playback_wav is not None:
         try:
@@ -532,6 +581,7 @@ async def _run_live(
                 post_roll_s=scripted_playback_post_roll_s,
             )
         finally:
+            liveness.set_phase("stopping")
             stop_event.set()
             try:
                 await audio_sink.close()
@@ -539,6 +589,10 @@ async def _run_live(
             finally:
                 close_diagnosis()
                 recorder.close()
+                liveness.set_phase("stopped")
+                event_loop_pulse_task.cancel()
+                if heartbeat_writer is not None:
+                    heartbeat_writer.close()
         click.echo(f"official runtime live artifacts: {recorder.manifest_path}")
         return
 
@@ -570,6 +624,7 @@ async def _run_live(
 
     async def on_runtime_ready() -> None:
         nonlocal ready_cue_task, scripted_flow_task
+        liveness.set_phase("ready")
         _record_milestone(recorder, run_id, "software_pipeline_initialized")
         if ready_cue:
             ready_cue_task = await _trigger_ready_cue(event_sink=event_sink, hold_s=ready_cue_hold)
@@ -602,6 +657,7 @@ async def _run_live(
     vision_task: asyncio.Task[None] | None = None
     vision_ready = asyncio.Event()
 
+    runtime_error: BaseException | None = None
     try:
         await policy_engine.start()
         if (
@@ -648,7 +704,14 @@ async def _run_live(
         await runtime.run()
         if scripted_flow_task is not None:
             await scripted_flow_task
+    except BaseException as exc:
+        runtime_error = exc
+        liveness.set_fault(repr(exc))
+        liveness.set_phase("failed")
+        raise
     finally:
+        if runtime_error is None:
+            liveness.set_phase("stopping")
         stop_event.set()
         runtime.stop()
         if scripted_flow_task is not None and not scripted_flow_task.done():
@@ -684,6 +747,15 @@ async def _run_live(
         finally:
             close_diagnosis()
             recorder.close()
+            if runtime_error is None:
+                liveness.set_phase("stopped")
+            event_loop_pulse_task.cancel()
+            try:
+                await event_loop_pulse_task
+            except asyncio.CancelledError:
+                pass
+            if heartbeat_writer is not None:
+                heartbeat_writer.close()
 
     click.echo(f"official runtime live artifacts: {recorder.manifest_path}")
 

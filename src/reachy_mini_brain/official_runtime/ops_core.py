@@ -27,8 +27,10 @@ from .visitor_trigger_profiles import DEFAULT_VISITOR_TRIGGER_PROFILE, resolve_v
 
 
 LIVE_PATTERN = "reachy_mini_brain.official_runtime.live_app"
+SUPERVISOR_PATTERN = "reachy_mini_brain.official_runtime.session_supervisor"
 BACKEND_PATTERN = "speech-to-speech --mode realtime"
 RUNNER_STOP_GRACE_S = 30.0
+SUPERVISOR_STOP_GRACE_S = 60.0
 DEFAULT_PREFLIGHT_WAV = (
     "audio-response-resp_db3304df3e804556b0aaa7ed7990048f-"
     "official-live-20260623-122844-01-pcm16.wav"
@@ -79,6 +81,11 @@ class OpsConfig:
     rerun_image_fps: float = 5.0
     rerun_jpeg_quality: int = 80
     rerun_queue_size: int = 3
+    media_heartbeat_interval_s: float = 1.0
+    media_startup_grace_s: float = 120.0
+    media_heartbeat_stale_s: float = 5.0
+    media_source_stale_s: float = 5.0
+    event_loop_stale_s: float = 5.0
 
     @classmethod
     def from_env(cls) -> "OpsConfig":
@@ -144,6 +151,11 @@ class OpsConfig:
             rerun_image_fps=float(os.environ.get("RECEPTION_RERUN_IMAGE_FPS", "5")),
             rerun_jpeg_quality=int(os.environ.get("RECEPTION_RERUN_JPEG_QUALITY", "80")),
             rerun_queue_size=int(os.environ.get("RECEPTION_RERUN_QUEUE_SIZE", "3")),
+            media_heartbeat_interval_s=float(os.environ.get("MEDIA_HEARTBEAT_INTERVAL_S", "1")),
+            media_startup_grace_s=float(os.environ.get("MEDIA_STARTUP_GRACE_S", "120")),
+            media_heartbeat_stale_s=float(os.environ.get("MEDIA_HEARTBEAT_STALE_S", "5")),
+            media_source_stale_s=float(os.environ.get("MEDIA_SOURCE_STALE_S", "5")),
+            event_loop_stale_s=float(os.environ.get("EVENT_LOOP_STALE_S", "5")),
         )
 
     @property
@@ -161,6 +173,18 @@ class OpsConfig:
     @property
     def artifact_root(self) -> Path:
         return self.repo_path / "artifacts" / "official-runtime-live"
+
+    @property
+    def supervisor_dir(self) -> Path:
+        return self.state_dir / "supervisors"
+
+    @property
+    def heartbeat_dir(self) -> Path:
+        return self.state_dir / "heartbeats"
+
+    @property
+    def terminal_status_dir(self) -> Path:
+        return self.state_dir / "runs"
 
 
 @dataclass(frozen=True)
@@ -221,6 +245,10 @@ class RunnerState:
     started_at: str
     requested_config: dict[str, Any]
     command: tuple[str, ...]
+    runner_pid: int | None = None
+    heartbeat_path: Path | None = None
+    terminal_status_path: Path | None = None
+    supervisor_spec_path: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -231,6 +259,14 @@ class RunnerState:
             "started_at": self.started_at,
             "requested_config": _jsonable(self.requested_config),
             "command": list(self.command),
+            "runner_pid": self.runner_pid,
+            "heartbeat_path": str(self.heartbeat_path) if self.heartbeat_path is not None else None,
+            "terminal_status_path": (
+                str(self.terminal_status_path) if self.terminal_status_path is not None else None
+            ),
+            "supervisor_spec_path": (
+                str(self.supervisor_spec_path) if self.supervisor_spec_path is not None else None
+            ),
         }
 
     @classmethod
@@ -243,6 +279,14 @@ class RunnerState:
             started_at=str(data["started_at"]),
             requested_config=dict(data.get("requested_config") or {}),
             command=tuple(str(item) for item in data.get("command") or ()),
+            runner_pid=(int(data["runner_pid"]) if data.get("runner_pid") is not None else None),
+            heartbeat_path=(Path(data["heartbeat_path"]) if data.get("heartbeat_path") else None),
+            terminal_status_path=(
+                Path(data["terminal_status_path"]) if data.get("terminal_status_path") else None
+            ),
+            supervisor_spec_path=(
+                Path(data["supervisor_spec_path"]) if data.get("supervisor_spec_path") else None
+            ),
         )
 
     @property
@@ -416,6 +460,82 @@ def sleep_robot(config: OpsConfig, *, authorized: bool, sleep_fn=time.sleep) -> 
     )
 
 
+def finalize_robot_after_run(
+    config: OpsConfig,
+    *,
+    attempts: int = 2,
+    request_timeout_s: float = 2.0,
+    sleep_fn=time.sleep,
+) -> ActionResult:
+    """Best-effort, bounded robot cleanup owned by the session supervisor."""
+
+    attempts = max(1, attempts)
+    all_attempts: list[dict[str, Any]] = []
+    final_errors: list[str] = []
+    for attempt in range(1, attempts + 1):
+        errors: list[str] = []
+        stopped_moves: list[str] = []
+        try:
+            moves = _robot_get(config, "/api/move/running", timeout_s=request_timeout_s)
+        except OpsError as exc:
+            moves = []
+            errors.append(f"running_moves: {exc}")
+        for move in moves if isinstance(moves, list) else []:
+            uuid = move.get("uuid") if isinstance(move, dict) else None
+            if not uuid:
+                continue
+            try:
+                _robot_post(
+                    config,
+                    "/api/move/stop",
+                    json_body={"uuid": uuid},
+                    timeout_s=request_timeout_s,
+                )
+                stopped_moves.append(uuid)
+            except OpsError as exc:
+                errors.append(f"stop_move:{uuid}: {exc}")
+        goto_sleep_requested = False
+        for label, path in (
+            ("media_release", "/api/media/release"),
+            ("goto_sleep", "/api/move/play/goto_sleep"),
+        ):
+            try:
+                _robot_post(config, path, timeout_s=request_timeout_s)
+                if label == "goto_sleep":
+                    goto_sleep_requested = True
+            except OpsError as exc:
+                errors.append(f"{label}: {exc}")
+        if goto_sleep_requested:
+            sleep_fn(3.0)
+        try:
+            _robot_post(config, "/api/motors/set_mode/disabled", timeout_s=request_timeout_s)
+        except OpsError as exc:
+            errors.append(f"motors_disable: {exc}")
+        all_attempts.append(
+            {"attempt": attempt, "stopped_moves": stopped_moves, "errors": errors}
+        )
+        if not errors:
+            final_errors = []
+            break
+        final_errors = errors
+        if attempt < attempts:
+            sleep_fn(float(attempt))
+    status = "ok" if not final_errors else "degraded"
+    return ActionResult(
+        action="robot.finalize_after_run",
+        status=status,
+        safety="physical",
+        authorization_required=False,
+        authorized=True,
+        changed=True,
+        machine_verification=(
+            Verification("cleanup_requests", status, {"attempts": all_attempts}),
+        ),
+        data={"attempts": all_attempts},
+        errors=tuple(final_errors),
+    )
+
+
 def stop_running_moves(config: OpsConfig) -> ActionResult:
     try:
         moves = _robot_get(config, "/api/move/running")
@@ -444,7 +564,13 @@ def stop_running_moves(config: OpsConfig) -> ActionResult:
 def runner_status(config: OpsConfig) -> ActionResult:
     state = load_runner_state(config)
     live_pids = _find_pids(LIVE_PATTERN)
-    data: dict[str, Any] = {"live_pids": live_pids, "state_file": config.runner_state_path}
+    supervisor_pids = _find_pids(SUPERVISOR_PATTERN)
+    latest = load_latest_run(config)
+    data: dict[str, Any] = {
+        "live_pids": live_pids,
+        "supervisor_pids": supervisor_pids,
+        "state_file": config.runner_state_path,
+    }
     checks: list[Verification] = [Verification("process_scan", "ok" if live_pids else "not_found", {"pids": live_pids})]
     status = "stopped"
     errors: list[str] = []
@@ -454,16 +580,37 @@ def runner_status(config: OpsConfig) -> ActionResult:
         data["state"] = state.to_dict()
         data["pid_alive"] = alive
         data["manifest_exists"] = manifest_exists
+        heartbeat: dict[str, Any] | None = None
+        if state.heartbeat_path is not None:
+            heartbeat = _load_json_file(state.heartbeat_path)
+            data["heartbeat"] = heartbeat
+        if state.terminal_status_path is not None:
+            data["terminal_status"] = _load_json_file(state.terminal_status_path)
         checks.append(Verification("runner_state_pid", "ok" if alive else "stale", {"pid": state.pid}))
         checks.append(Verification("run_manifest", "ok" if manifest_exists else "missing", {"path": state.manifest_path}))
         if alive:
-            status = "running"
+            health_fault = _active_runner_health_fault(config, state, heartbeat)
+            if health_fault is None:
+                status = "running"
+            else:
+                status = "faulting"
+                data["health_fault"] = health_fault
+                errors.append(f"runner media health fault: {health_fault}")
         else:
             status = "stale_state"
             errors.append("runner state file points to a non-running PID")
     elif live_pids:
         status = "unmanaged_running"
         errors.append("live runner process exists without an ops state file")
+    elif latest is not None and latest.get("terminal_status_path"):
+        terminal_status = _load_json_file(Path(latest["terminal_status_path"]))
+        data["terminal_status"] = terminal_status
+        if terminal_status is not None and terminal_status.get("status") != "complete":
+            status = "stopped_faulted"
+            errors.append(
+                "latest run ended with terminal status "
+                f"{terminal_status.get('status')}: {terminal_status.get('reason')}"
+            )
     return ActionResult(
         action="runner.status",
         status=status,
@@ -494,7 +641,7 @@ def start_runner(
 ) -> ActionResult:
     _require_physical_authorization("runner.start", authorized)
     existing = runner_status(config)
-    if existing.status == "running":
+    if existing.status in {"running", "faulting"}:
         return ActionResult(
             action="runner.start",
             status="failed",
@@ -523,6 +670,10 @@ def start_runner(
         )
     actual_run_id = run_id or f"official-live-{_timestamp()}"
     logfile = config.log_dir / f"{actual_run_id}.log"
+    heartbeat_path = config.heartbeat_dir / f"{actual_run_id}.json"
+    terminal_status_path = config.terminal_status_dir / f"{actual_run_id}.json"
+    supervisor_spec_path = config.supervisor_dir / f"{actual_run_id}.json"
+    started_at = datetime.now().isoformat(timespec="seconds")
     command, env = build_live_command(
         config,
         run_id=actual_run_id,
@@ -539,14 +690,54 @@ def start_runner(
         vision_pipelines_config=resolved_vision_config,
         rerun_mode=resolved_rerun_mode,
         scripted_policy_flow="none",
+        heartbeat_path=heartbeat_path,
+        heartbeat_interval_s=config.media_heartbeat_interval_s,
     )
-    proc, caffeinate_pid = _launch_background(command, cwd=config.repo_path, env=env, logfile=logfile, keep_awake=config.keep_awake)
+    supervisor_spec = {
+        "schema_version": 1,
+        "run_id": actual_run_id,
+        "started_at": started_at,
+        "command": command,
+        "cwd": str(config.repo_path),
+        "log_path": str(logfile),
+        "state_path": str(config.runner_state_path),
+        "heartbeat_path": str(heartbeat_path),
+        "terminal_status_path": str(terminal_status_path),
+        "manifest_path": str(config.artifact_root / "runs" / f"run-{actual_run_id}.json"),
+        "robot_host": config.robot_host,
+        "robot_port": config.robot_port,
+        "runner_stop_grace_s": RUNNER_STOP_GRACE_S,
+        "poll_interval_s": 1.0,
+        "cleanup_attempts": 2,
+        "cleanup_request_timeout_s": 2.0,
+        "thresholds": {
+            "startup_grace_s": config.media_startup_grace_s,
+            "heartbeat_stale_s": config.media_heartbeat_stale_s,
+            "source_stale_s": config.media_source_stale_s,
+            "event_loop_stale_s": config.event_loop_stale_s,
+        },
+    }
+    _atomic_write_json(supervisor_spec_path, supervisor_spec)
+    supervisor_command = [
+        str(config.python_bin),
+        "-m",
+        "reachy_mini_brain.official_runtime.session_supervisor",
+        "--spec",
+        str(supervisor_spec_path),
+    ]
+    proc, caffeinate_pid = _launch_background(
+        supervisor_command,
+        cwd=config.repo_path,
+        env=env,
+        logfile=logfile,
+        keep_awake=config.keep_awake,
+    )
     state = RunnerState(
         pid=proc.pid,
         run_id=actual_run_id,
         log_path=logfile,
         artifact_root=config.artifact_root,
-        started_at=datetime.now().isoformat(timespec="seconds"),
+        started_at=started_at,
         requested_config={
             "duration_s": duration_s or config.live_duration_s,
             "perception": perception,
@@ -571,6 +762,9 @@ def start_runner(
             "caffeinate_pid": caffeinate_pid,
         },
         command=tuple(command),
+        heartbeat_path=heartbeat_path,
+        terminal_status_path=terminal_status_path,
+        supervisor_spec_path=supervisor_spec_path,
     )
     save_runner_state(config, state)
     save_latest_run(config, state)
@@ -581,7 +775,13 @@ def start_runner(
         authorization_required=True,
         authorized=True,
         changed=True,
-        machine_verification=(Verification("process_started", "ok", {"pid": proc.pid, "caffeinate_pid": caffeinate_pid}),),
+        machine_verification=(
+            Verification(
+                "supervisor_started",
+                "ok",
+                {"pid": proc.pid, "caffeinate_pid": caffeinate_pid},
+            ),
+        ),
         data={**state.to_dict(), "caffeinate_pid": caffeinate_pid},
     )
 
@@ -592,11 +792,23 @@ def stop_runner(config: OpsConfig, *, authorized: bool, include_unmanaged: bool 
     pids: list[int] = []
     if state is not None and _pid_alive(state.pid):
         pids.append(state.pid)
-    if include_unmanaged:
+    supervised = state is not None and state.supervisor_spec_path is not None
+    if include_unmanaged and not supervised:
         for pid in _find_pids(LIVE_PATTERN):
             if pid not in pids:
                 pids.append(pid)
-    stopped = _terminate_pids(pids, grace_s=RUNNER_STOP_GRACE_S)
+    stop_grace_s = SUPERVISOR_STOP_GRACE_S if supervised else RUNNER_STOP_GRACE_S
+    stopped = _terminate_pids(pids, grace_s=stop_grace_s)
+    terminal_status = (
+        _load_json_file(state.terminal_status_path)
+        if state is not None and state.terminal_status_path is not None
+        else None
+    )
+    supervised_cleanup = bool(
+        supervised
+        and terminal_status is not None
+        and isinstance(terminal_status.get("cleanup"), dict)
+    )
     if config.runner_state_path.exists() and (state is None or not _pid_alive(state.pid)):
         config.runner_state_path.unlink()
     return ActionResult(
@@ -607,16 +819,21 @@ def stop_runner(config: OpsConfig, *, authorized: bool, include_unmanaged: bool 
         authorized=True,
         changed=bool(stopped),
         machine_verification=(Verification("process_terminated", "ok", {"pids": stopped}),),
-        data={"requested_pids": pids, "stopped_pids": stopped},
+        data={
+            "requested_pids": pids,
+            "stopped_pids": stopped,
+            "supervised_cleanup": supervised_cleanup,
+            "terminal_status": terminal_status,
+        },
     )
 
 
 def shutdown(config: OpsConfig, *, authorized: bool) -> list[ActionResult]:
     _require_physical_authorization("shutdown", authorized)
-    return [
-        stop_runner(config, authorized=True, include_unmanaged=True),
-        sleep_robot(config, authorized=True),
-    ]
+    stopped = stop_runner(config, authorized=True, include_unmanaged=True)
+    if stopped.data.get("supervised_cleanup"):
+        return [stopped]
+    return [stopped, sleep_robot(config, authorized=True)]
 
 
 def preflight_backend_health(config: OpsConfig) -> ActionResult:
@@ -810,10 +1027,10 @@ def start_session_with_options(
 
 def stop_session(config: OpsConfig, *, authorized: bool) -> list[ActionResult]:
     _require_physical_authorization("session.stop", authorized)
-    return [
-        stop_runner(config, authorized=True, include_unmanaged=True),
-        sleep_robot(config, authorized=True),
-    ]
+    stopped = stop_runner(config, authorized=True, include_unmanaged=True)
+    if stopped.data.get("supervised_cleanup"):
+        return [stopped]
+    return [stopped, sleep_robot(config, authorized=True)]
 
 
 def aggregate_status(config: OpsConfig, *, include_robot: bool = False) -> ActionResult:
@@ -903,6 +1120,8 @@ def build_live_command(
     scripted_policy_greeting: str | None = None,
     vision_pipelines_config: Path | None = None,
     rerun_mode: str | None = None,
+    heartbeat_path: Path | None = None,
+    heartbeat_interval_s: float = 1.0,
 ) -> tuple[list[str], dict[str, str]]:
     env = _base_env(config)
     env.update(
@@ -950,6 +1169,15 @@ def build_live_command(
         "--rerun-queue-size",
         str(config.rerun_queue_size),
     ]
+    if heartbeat_path is not None:
+        command.extend(
+            [
+                "--heartbeat-path",
+                str(heartbeat_path),
+                "--heartbeat-interval-s",
+                str(heartbeat_interval_s),
+            ]
+        )
     resolved_vision_config = vision_pipelines_config or config.vision_pipelines_config
     if resolved_vision_config is not None:
         command.extend(["--vision-pipelines-config", str(resolved_vision_config)])
@@ -967,8 +1195,7 @@ def build_live_command(
 
 
 def save_runner_state(config: OpsConfig, state: RunnerState) -> None:
-    config.state_dir.mkdir(parents=True, exist_ok=True)
-    config.runner_state_path.write_text(json.dumps(state.to_dict(), indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(config.runner_state_path, state.to_dict())
 
 
 def load_runner_state(config: OpsConfig) -> RunnerState | None:
@@ -987,9 +1214,12 @@ def save_latest_run(config: OpsConfig, state: RunnerState) -> None:
         "artifact_root": str(state.artifact_root),
         "manifest_path": str(state.manifest_path),
         "log_path": str(state.log_path),
+        "terminal_status_path": (
+            str(state.terminal_status_path) if state.terminal_status_path is not None else None
+        ),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
-    config.latest_run_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(config.latest_run_path, payload)
 
 
 def load_latest_run(config: OpsConfig) -> dict[str, Any] | None:
@@ -999,6 +1229,50 @@ def load_latest_run(config: OpsConfig) -> dict[str, Any] | None:
         return json.loads(config.latest_run_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise OpsError(f"invalid latest-run file {config.latest_run_path}: {exc}") from exc
+
+
+def _load_json_file(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(_jsonable(payload), indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _active_runner_health_fault(
+    config: OpsConfig,
+    state: RunnerState,
+    heartbeat: dict[str, Any] | None,
+) -> str | None:
+    from .session_supervisor import HealthThresholds, evaluate_heartbeat
+
+    now_monotonic = time.monotonic()
+    if heartbeat is not None and isinstance(heartbeat.get("started_monotonic"), (int, float)):
+        started_monotonic = float(heartbeat["started_monotonic"])
+    else:
+        try:
+            started_wall = datetime.fromisoformat(state.started_at).timestamp()
+        except ValueError:
+            started_wall = time.time()
+        started_monotonic = now_monotonic - max(0.0, time.time() - started_wall)
+    return evaluate_heartbeat(
+        heartbeat,
+        now_monotonic=now_monotonic,
+        supervisor_started_monotonic=started_monotonic,
+        thresholds=HealthThresholds(
+            startup_grace_s=config.media_startup_grace_s,
+            heartbeat_stale_s=config.media_heartbeat_stale_s,
+            source_stale_s=config.media_source_stale_s,
+            event_loop_stale_s=config.event_loop_stale_s,
+        ),
+    )
 
 
 def _launch_background(
@@ -1122,8 +1396,8 @@ def _default_python_bin(*, repo_path: Path, official_app_repo: Path) -> Path:
     return Path(sys.executable)
 
 
-def _robot_get(config: OpsConfig, path: str) -> Any:
-    return _robot_request(config, "GET", path)
+def _robot_get(config: OpsConfig, path: str, *, timeout_s: float = 8.0) -> Any:
+    return _robot_request(config, "GET", path, timeout_s=timeout_s)
 
 
 def _robot_post(
@@ -1132,22 +1406,30 @@ def _robot_post(
     *,
     json_body: dict[str, Any] | None = None,
     tolerate_errors: bool = False,
+    timeout_s: float = 8.0,
 ) -> Any:
     try:
-        return _robot_request(config, "POST", path, json_body=json_body)
+        return _robot_request(config, "POST", path, json_body=json_body, timeout_s=timeout_s)
     except OpsError:
         if tolerate_errors:
             return None
         raise
 
 
-def _robot_request(config: OpsConfig, method: str, path: str, *, json_body: dict[str, Any] | None = None) -> Any:
+def _robot_request(
+    config: OpsConfig,
+    method: str,
+    path: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+    timeout_s: float = 8.0,
+) -> Any:
     data = json.dumps(json_body).encode("utf-8") if json_body is not None else None
     request = Request(f"{config.robot_api}{path}", data=data, method=method)
     if data is not None:
         request.add_header("Content-Type", "application/json")
     try:
-        with urlopen(request, timeout=8) as response:
+        with urlopen(request, timeout=timeout_s) as response:
             body = response.read()
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""

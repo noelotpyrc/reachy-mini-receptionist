@@ -138,6 +138,7 @@ class ReachyAudioSource:
         max_duration_s: float | None = None,
         stop_event: asyncio.Event | None = None,
         clock: Callable[[], float] = time.monotonic,
+        on_frame: Callable[[], None] | None = None,
     ) -> None:
         self.mini = mini
         self.sample_rate = sample_rate
@@ -145,6 +146,7 @@ class ReachyAudioSource:
         self.max_duration_s = max_duration_s
         self.stop_event = stop_event
         self.clock = clock
+        self.on_frame = on_frame
         self._started_at: float | None = None
 
     async def read(self) -> AudioFrame | None:
@@ -158,6 +160,8 @@ class ReachyAudioSource:
 
             sample = self.mini.media.get_audio_sample()
             if sample is not None:
+                if self.on_frame is not None:
+                    self.on_frame()
                 audio = _as_int16_mono(sample)
                 await asyncio.sleep(0)
                 return self.sample_rate, audio
@@ -216,14 +220,17 @@ class ReachyAudioSink:
 class ReachyCameraFrameProvider:
     """Camera frame provider backed by ``mini.media.get_frame()``."""
 
-    def __init__(self, mini: Any) -> None:
+    def __init__(self, mini: Any, *, on_frame: Callable[[], None] | None = None) -> None:
         self.mini = mini
+        self.on_frame = on_frame
         self._head_tracking_enabled = False
 
     def get_latest_frame(self) -> NDArray[np.uint8] | None:
         frame = self.mini.media.get_frame()
         if frame is None:
             return None
+        if self.on_frame is not None:
+            self.on_frame()
         return np.asarray(frame).copy()
 
     def set_head_tracking_enabled(self, enabled: bool) -> None:

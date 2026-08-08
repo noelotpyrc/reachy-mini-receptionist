@@ -933,10 +933,17 @@ def test_live_app_loads_backend_instruction_provenance(tmp_path):
 
 
 def test_reachy_audio_source_reads_fake_robot_audio_as_int16():
+    observed = []
+
     async def run():
         sample = np.array([[0.5, -0.5], [0.25, -0.25]], dtype=np.float32)
         mini = _FakeMini(_FakeMedia(audio_samples=[sample]))
-        source = ReachyAudioSource(mini, poll_interval_s=0.0, max_duration_s=1.0)
+        source = ReachyAudioSource(
+            mini,
+            poll_interval_s=0.0,
+            max_duration_s=1.0,
+            on_frame=lambda: observed.append("audio"),
+        )
         return await source.read()
 
     frame = asyncio.run(run())
@@ -946,6 +953,7 @@ def test_reachy_audio_source_reads_fake_robot_audio_as_int16():
     assert sample_rate == 16_000
     assert audio.dtype == np.int16
     assert audio.shape == (2,)
+    assert observed == ["audio"]
 
 
 def test_robot_ensure_ready_starts_stopped_daemon(monkeypatch):
@@ -1156,13 +1164,18 @@ def test_reachy_audio_sink_uses_first_channel_like_official_app():
 
 def test_reachy_camera_frame_provider_gets_frame_and_tracks_toggle():
     frame = np.ones((3, 4, 3), dtype=np.uint8)
-    provider = ReachyCameraFrameProvider(_FakeMini(_FakeMedia(frame=frame)))
+    observed = []
+    provider = ReachyCameraFrameProvider(
+        _FakeMini(_FakeMedia(frame=frame)),
+        on_frame=lambda: observed.append("video"),
+    )
 
     got = provider.get_latest_frame()
     provider.set_head_tracking_enabled(True)
 
     assert np.array_equal(got, frame)
     assert provider.head_tracking_enabled is True
+    assert observed == ["video"]
 
 
 class _FiniteAudioSource:

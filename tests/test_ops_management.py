@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -63,6 +64,40 @@ def test_physical_actions_require_authorization_before_robot_calls(tmp_path, mon
     assert calls == []
 
 
+def test_supervisor_robot_cleanup_is_bounded_and_disables_motors(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    calls: list[tuple[str, str, float]] = []
+
+    monkeypatch.setattr(
+        ops_core,
+        "_robot_get",
+        lambda config, path, *, timeout_s=8.0: calls.append(("GET", path, timeout_s)) or [],
+    )
+    monkeypatch.setattr(
+        ops_core,
+        "_robot_post",
+        lambda config, path, **kwargs: calls.append(
+            ("POST", path, kwargs.get("timeout_s", 8.0))
+        )
+        or {},
+    )
+
+    result = ops_core.finalize_robot_after_run(
+        config,
+        attempts=2,
+        request_timeout_s=0.25,
+        sleep_fn=lambda _: None,
+    )
+
+    assert result.status == "ok"
+    assert calls == [
+        ("GET", "/api/move/running", 0.25),
+        ("POST", "/api/media/release", 0.25),
+        ("POST", "/api/move/play/goto_sleep", 0.25),
+        ("POST", "/api/motors/set_mode/disabled", 0.25),
+    ]
+
+
 def test_runner_state_status_reports_stale_state(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     state = ops_core.RunnerState(
@@ -83,6 +118,45 @@ def test_runner_state_status_reports_stale_state(tmp_path, monkeypatch):
     assert result.status == "stale_state"
     assert result.data["state"]["run_id"] == "official-live-test"
     assert result.errors == ("runner state file points to a non-running PID",)
+
+
+def test_runner_status_reports_faulting_for_stale_audio(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    heartbeat_path = config.heartbeat_dir / "official-live-test.json"
+    heartbeat_path.parent.mkdir(parents=True)
+    heartbeat_path.write_text(
+        json.dumps(
+            {
+                "started_monotonic": 10.0,
+                "updated_monotonic": 100.0,
+                "phase": "ready",
+                "ready_monotonic": 20.0,
+                "event_loop_age_s": 0.1,
+                "audio": {"expected": True, "sequence": 5, "age_s": 6.0},
+                "video": {"expected": False, "sequence": 0, "age_s": None},
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = ops_core.RunnerState(
+        pid=123,
+        run_id="official-live-test",
+        log_path=config.log_dir / "official-live-test.log",
+        artifact_root=config.artifact_root,
+        started_at="2026-08-07T12:00:00",
+        requested_config={},
+        command=("python",),
+        heartbeat_path=heartbeat_path,
+    )
+    ops_core.save_runner_state(config, state)
+    monkeypatch.setattr(ops_core, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(ops_core, "_find_pids", lambda pattern: [123])
+    monkeypatch.setattr(ops_core.time, "monotonic", lambda: 100.0)
+
+    result = ops_core.runner_status(config)
+
+    assert result.status == "faulting"
+    assert result.data["health_fault"] == "audio_stale"
 
 
 def test_build_live_command_includes_official_runtime_defaults(tmp_path):
@@ -403,7 +477,7 @@ def test_official_runtime_playback_probe_uses_session_and_audio_sink(tmp_path):
     assert np.array_equal(written, audio)
 
 
-def test_start_runner_saves_actual_runner_pid_and_caffeinate_pid(tmp_path, monkeypatch):
+def test_start_runner_saves_supervisor_pid_and_child_command(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     calls: list[list[str]] = []
 
@@ -423,10 +497,23 @@ def test_start_runner_saves_actual_runner_pid_and_caffeinate_pid(tmp_path, monke
     assert result.status == "ok"
     assert result.data["pid"] == 4321
     assert result.data["caffeinate_pid"] == 9876
-    assert calls[0][0:3] == ["/usr/bin/python3", "-m", "reachy_mini_brain.official_runtime.live_app"]
+    assert calls[0][0:3] == [
+        "/usr/bin/python3",
+        "-m",
+        "reachy_mini_brain.official_runtime.session_supervisor",
+    ]
     state = ops_core.load_runner_state(config)
     assert state is not None
     assert state.pid == 4321
+    assert state.command[0:3] == (
+        "/usr/bin/python3",
+        "-m",
+        "reachy_mini_brain.official_runtime.live_app",
+    )
+    assert state.heartbeat_path is not None
+    assert "--heartbeat-path" in state.command
+    assert state.supervisor_spec_path is not None
+    assert state.supervisor_spec_path.exists()
     assert state.requested_config["caffeinate_pid"] == 9876
     assert state.requested_config["record_audio"] is True
     assert state.requested_config["record_video"] is False
@@ -446,10 +533,10 @@ def test_start_runner_can_enable_raw_video_recording(tmp_path, monkeypatch):
     result = ops_core.start_runner(config, authorized=True, run_id="official-live-video", record_video=True)
 
     assert result.status == "ok"
-    assert "--record-video" in calls[0]
-    assert "--record-audio" in calls[0]
     state = ops_core.load_runner_state(config)
     assert state is not None
+    assert "--record-video" in state.command
+    assert "--record-audio" in state.command
     assert state.requested_config["record_video"] is True
     assert state.requested_config["record_audio"] is True
 
