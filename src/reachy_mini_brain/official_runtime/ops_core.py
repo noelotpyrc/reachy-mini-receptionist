@@ -84,8 +84,8 @@ class OpsConfig:
     media_heartbeat_interval_s: float = 1.0
     media_startup_grace_s: float = 120.0
     media_heartbeat_stale_s: float = 5.0
-    media_source_stale_s: float = 5.0
-    event_loop_stale_s: float = 5.0
+    media_source_stale_s: float = 8.0
+    event_loop_stale_s: float = 8.0
 
     @classmethod
     def from_env(cls) -> "OpsConfig":
@@ -154,8 +154,8 @@ class OpsConfig:
             media_heartbeat_interval_s=float(os.environ.get("MEDIA_HEARTBEAT_INTERVAL_S", "1")),
             media_startup_grace_s=float(os.environ.get("MEDIA_STARTUP_GRACE_S", "120")),
             media_heartbeat_stale_s=float(os.environ.get("MEDIA_HEARTBEAT_STALE_S", "5")),
-            media_source_stale_s=float(os.environ.get("MEDIA_SOURCE_STALE_S", "5")),
-            event_loop_stale_s=float(os.environ.get("EVENT_LOOP_STALE_S", "5")),
+            media_source_stale_s=float(os.environ.get("MEDIA_SOURCE_STALE_S", "8")),
+            event_loop_stale_s=float(os.environ.get("EVENT_LOOP_STALE_S", "8")),
         )
 
     @property

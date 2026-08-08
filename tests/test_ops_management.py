@@ -132,7 +132,7 @@ def test_runner_status_reports_faulting_for_stale_audio(tmp_path, monkeypatch):
                 "phase": "ready",
                 "ready_monotonic": 20.0,
                 "event_loop_age_s": 0.1,
-                "audio": {"expected": True, "sequence": 5, "age_s": 6.0},
+                "audio": {"expected": True, "sequence": 5, "age_s": 9.0},
                 "video": {"expected": False, "sequence": 0, "age_s": None},
             }
         ),
@@ -232,6 +232,18 @@ def test_ops_config_loads_versioned_visitor_trigger_profile(monkeypatch):
     config = ops_core.OpsConfig.from_env()
 
     assert config.visitor_trigger_profile == "visitor-v1-20260802"
+
+
+def test_ops_config_uses_baselined_media_liveness_thresholds(monkeypatch):
+    monkeypatch.delenv("MEDIA_HEARTBEAT_STALE_S", raising=False)
+    monkeypatch.delenv("MEDIA_SOURCE_STALE_S", raising=False)
+    monkeypatch.delenv("EVENT_LOOP_STALE_S", raising=False)
+
+    config = ops_core.OpsConfig.from_env()
+
+    assert config.media_heartbeat_stale_s == 5.0
+    assert config.media_source_stale_s == 8.0
+    assert config.event_loop_stale_s == 8.0
 
 
 def test_ops_config_rejects_unknown_visitor_trigger_profile(monkeypatch):

@@ -18,8 +18,8 @@ from typing import Any
 class HealthThresholds:
     startup_grace_s: float = 120.0
     heartbeat_stale_s: float = 5.0
-    source_stale_s: float = 5.0
-    event_loop_stale_s: float = 5.0
+    source_stale_s: float = 8.0
+    event_loop_stale_s: float = 8.0
 
 
 def evaluate_heartbeat(
