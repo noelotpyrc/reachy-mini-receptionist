@@ -159,12 +159,14 @@ def cli(
                     detection_frame_indices=detection_frame_indices,
                     detection_rows=detection_rows,
                 )
+                frame_people = people.nearest(frame_ts)
                 observation = observer.update(
                     frame_index=frame_index,
                     frame_ts=frame_ts,
                     frame_bgr=frame,
                     door_detections=list(row.detections) if row is not None else None,
-                    people=people.nearest(frame_ts),
+                    people=frame_people,
+                    occluders=frame_people,
                     semantic_completed_ts=row.completed_ts if row is not None else None,
                     semantic_inference_latency_ms=(
                         row.inference_latency_ms if row is not None else None

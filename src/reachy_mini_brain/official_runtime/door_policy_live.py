@@ -27,6 +27,7 @@ DoorPolicyHealthCallback = Callable[[str, dict[str, object]], None]
 class _BufferedFrame:
     packet: FramePacket
     people: tuple[PersonBoxInput, ...]
+    occluders: tuple[PersonBoxInput, ...]
 
 
 class LiveDoorPolicyCoordinator:
@@ -57,8 +58,16 @@ class LiveDoorPolicyCoordinator:
             PersonBoxInput(track_id=track.logical_track_id, box=track.box)
             for track in (people.tracks if people is not None else ())
         )
+        raw_person_inputs = tuple(
+            PersonBoxInput(track_id=f"raw-{item.detection_index}", box=item.box)
+            for item in (getattr(people, "detections", ()) if people is not None else ())
+        )
         with self._lock:
-            self._frames[packet.frame_index] = _BufferedFrame(packet=packet, people=person_inputs)
+            self._frames[packet.frame_index] = _BufferedFrame(
+                packet=packet,
+                people=person_inputs,
+                occluders=raw_person_inputs or person_inputs,
+            )
             while len(self._frames) > self.max_buffered_frames:
                 frame_index, _ = self._frames.popitem(last=False)
                 self._health("source_frame_dropped", frame_index=frame_index, reason="buffer_limit")
@@ -100,6 +109,7 @@ class LiveDoorPolicyCoordinator:
                         else None
                     ),
                     people=list(buffered.people),
+                    occluders=list(buffered.occluders),
                     semantic_completed_ts=detection.completed_ts if semantic else None,
                     semantic_inference_latency_ms=(
                         detection.inference_latency_ms if semantic else None

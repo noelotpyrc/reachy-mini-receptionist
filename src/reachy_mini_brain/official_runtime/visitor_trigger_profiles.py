@@ -6,17 +6,20 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from .visitor_triggers import HeightSignalConfig, VisitorTriggerConfig
+from .door_observation import DoorObserverSettings
 from .door_policy import DoorPolicySettings
+from .visitor_triggers import HeightSignalConfig, VisitorTriggerConfig
 
 
 DEFAULT_VISITOR_TRIGGER_PROFILE = "legacy"
 VISITOR_V1_20260802 = "visitor-v1-20260802"
 DOOR_V1_20260805 = "door-v1-20260805"
+DOOR_V2_20260809 = "door-v2-20260809"
 VISITOR_TRIGGER_PROFILE_NAMES = (
     DEFAULT_VISITOR_TRIGGER_PROFILE,
     VISITOR_V1_20260802,
     DOOR_V1_20260805,
+    DOOR_V2_20260809,
 )
 
 
@@ -85,6 +88,22 @@ _PROFILES = {
         implementation="door_policy_v1",
         parameters={
             "person_observation": asdict(_VISITOR_V1_CONFIG),
+            "door_observer": DoorObserverSettings(
+                nested_candidate_guard_enabled=False,
+                close_person_guard_enabled=False,
+            ).to_dict(),
+            "door_policy": DoorPolicySettings(
+                interaction_eligibility_enabled=False,
+            ).to_dict(),
+        },
+        trigger_config=_VISITOR_V1_CONFIG,
+    ),
+    DOOR_V2_20260809: VisitorTriggerProfile(
+        name=DOOR_V2_20260809,
+        implementation="door_policy_v1",
+        parameters={
+            "person_observation": asdict(_VISITOR_V1_CONFIG),
+            "door_observer": DoorObserverSettings().to_dict(),
             "door_policy": DoorPolicySettings().to_dict(),
         },
         trigger_config=_VISITOR_V1_CONFIG,

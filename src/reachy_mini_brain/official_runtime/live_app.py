@@ -17,13 +17,15 @@ from .artifacts import ArtifactRecorder
 from .camera import register_camera_capabilities
 from .capabilities import CapabilityRegistry, RuntimeContext
 from .conversation_cues import ConversationCuePolicy
+from .door_observation import DoorObserverSettings
+from .door_policy import DoorPolicySettings
+from .door_policy_live import LiveDoorPolicyCoordinator
 from .env import PROJECT_ROOT, load_project_env
 from .events import CompositeEventSink, EventSink, RuntimeEvent
 from .hf_official import DEFAULT_OFFICIAL_APP_SRC, build_hf_official_handler
+from .live_detection import FramePacket, LiveDetectionManager, load_pipeline_config
 from .livekit_handler import LiveKitBackendConfig, LiveKitRealtimeHandler
 from .livekit_room_bridge import LiveKitRoomBridge
-from .live_detection import FramePacket, LiveDetectionManager, load_pipeline_config
-from .door_policy_live import LiveDoorPolicyCoordinator
 from .live_rerun import RERUN_MODES, LiveRerunPublisher
 from .liveness import HeartbeatWriter, RuntimeLiveness, pulse_event_loop
 from .moves import AntennaCueController, PlaybackMovementGate
@@ -558,6 +560,12 @@ async def _run_live(
             result_callback=door_policy_result,
             health_callback=lambda event, data: diagnosis_health(
                 f"door_policy.{event}", data
+            ),
+            observer_settings=DoorObserverSettings(
+                **resolved_visitor_profile.parameters["door_observer"]
+            ),
+            policy_settings=DoorPolicySettings(
+                **resolved_visitor_profile.parameters["door_policy"]
             ),
         )
         door_policy_coordinator_holder["coordinator"] = door_policy_coordinator

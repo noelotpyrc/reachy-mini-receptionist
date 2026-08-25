@@ -19,6 +19,9 @@ class DoorPolicySettings:
     person_retention_s: float = 0.75
     greet_candidate_timeout_s: float = 4.0
     goodbye_candidate_timeout_s: float = 4.0
+    interaction_eligibility_enabled: bool = True
+    interaction_person_max_area_ratio: float = 0.40
+    interaction_person_boundary_margin_ratio: float = 0.01
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.interaction_distance_enter < self.interaction_distance_exit:
@@ -29,6 +32,10 @@ class DoorPolicySettings:
             raise ValueError("person_retention_s must be non-negative")
         if self.greet_candidate_timeout_s <= 0.0 or self.goodbye_candidate_timeout_s <= 0.0:
             raise ValueError("candidate timeouts must be positive")
+        if not 0.0 < self.interaction_person_max_area_ratio <= 1.0:
+            raise ValueError("interaction person maximum area ratio must be in (0, 1]")
+        if not 0.0 <= self.interaction_person_boundary_margin_ratio <= 0.5:
+            raise ValueError("interaction person boundary margin ratio must be in [0, 0.5]")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -46,8 +53,12 @@ class DoorPolicyFrameObservation:
     retained_presence: str
     interaction_inside_track_ids: tuple[str, ...]
     interaction_crossing_track_ids: tuple[str, ...]
+    interaction_ineligible_track_ids: tuple[str, ...]
+    interaction_ineligible_reasons: dict[str, str]
     interaction_distance_enter: float
     interaction_overlap_enter: float
+    interaction_person_max_area_ratio: float
+    interaction_person_boundary_margin_ratio: float
     greet_candidate_armed: bool
     goodbye_candidate_armed: bool
     greet_candidate_since: float | None
@@ -93,7 +104,13 @@ class DoorPolicyTriggerEngine:
         if observed_present:
             self._last_person_ts = frame_ts
 
-        inside_ids, crossing_ids = self._update_interactions(observation.interactions)
+        eligible, ineligible_reasons = self._partition_interactions(observation.interactions)
+        inside_ids, crossing_ids = self._update_interactions(eligible)
+        if ineligible_reasons:
+            self._greet_candidate_since = None
+            if not inside_ids:
+                self._goodbye_candidate_since = None
+                self._goodbye_candidate_last_supported_ts = None
         self._update_goodbye_support(frame_ts, supported=bool(inside_ids))
 
         # A goodbye candidate must predate the confirming door movement. A distance
@@ -136,8 +153,14 @@ class DoorPolicyTriggerEngine:
             retained_presence="PRESENT" if retained_present else "ABSENT",
             interaction_inside_track_ids=tuple(inside_ids),
             interaction_crossing_track_ids=tuple(crossing_ids),
+            interaction_ineligible_track_ids=tuple(ineligible_reasons),
+            interaction_ineligible_reasons=ineligible_reasons,
             interaction_distance_enter=self.settings.interaction_distance_enter,
             interaction_overlap_enter=self.settings.interaction_overlap_enter,
+            interaction_person_max_area_ratio=self.settings.interaction_person_max_area_ratio,
+            interaction_person_boundary_margin_ratio=(
+                self.settings.interaction_person_boundary_margin_ratio
+            ),
             greet_candidate_armed=self._greet_candidate_since is not None,
             goodbye_candidate_armed=self._goodbye_candidate_since is not None,
             greet_candidate_since=self._greet_candidate_since,
@@ -199,6 +222,36 @@ class DoorPolicyTriggerEngine:
         # Keep a missing track's last classification through normal detection gaps.
         # Logical-track expiry is handled by candidate timeout and visit reset upstream.
         return inside_ids, crossing_ids
+
+    def _partition_interactions(
+        self,
+        interactions: tuple[DoorPersonInteraction, ...],
+    ) -> tuple[tuple[DoorPersonInteraction, ...], dict[str, str]]:
+        if not self.settings.interaction_eligibility_enabled:
+            return interactions, {}
+        eligible: list[DoorPersonInteraction] = []
+        ineligible: dict[str, str] = {}
+        for interaction in interactions:
+            reason = self._interaction_ineligibility_reason(interaction)
+            if reason is None:
+                eligible.append(interaction)
+                continue
+            ineligible[interaction.track_id] = reason
+            self._interaction_inside[interaction.track_id] = False
+        return tuple(eligible), ineligible
+
+    def _interaction_ineligibility_reason(
+        self,
+        interaction: DoorPersonInteraction,
+    ) -> str | None:
+        if interaction.person_area_ratio > self.settings.interaction_person_max_area_ratio:
+            return "person_box_oversized"
+        if (
+            interaction.person_boundary_clearance_ratio
+            <= self.settings.interaction_person_boundary_margin_ratio
+        ):
+            return "person_box_boundary_clipped"
+        return None
 
     def _classify_interaction(
         self,

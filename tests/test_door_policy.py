@@ -99,6 +99,63 @@ def test_person_and_door_first_seen_moving_on_same_frame_is_ambiguous() -> None:
     assert not result.events
 
 
+def test_boundary_clipped_person_cancels_armed_greet_without_hiding_presence() -> None:
+    engine = DoorPolicyTriggerEngine()
+
+    engine.update(_frame(0, 0.0, "STABLE"))
+    armed = engine.update(_frame(1, 0.2, "MOVING"))
+    blocked = engine.update(
+        _frame(
+            2,
+            0.4,
+            "MOVING",
+            distance=0.03,
+            person_area_ratio=0.35,
+            boundary_clearance_ratio=0.0,
+        )
+    )
+
+    assert armed.greet_candidate_armed
+    assert blocked.observed_presence == "PRESENT"
+    assert blocked.interaction_ineligible_reasons == {
+        "person-1": "person_box_boundary_clipped"
+    }
+    assert not blocked.greet_candidate_armed
+    assert not blocked.events
+
+
+def test_oversized_person_cannot_arm_or_sustain_goodbye() -> None:
+    engine = DoorPolicyTriggerEngine()
+
+    engine.update(_frame(0, 0.0, "STABLE", distance=0.12))
+    armed = engine.update(_frame(1, 0.2, "STABLE", distance=0.03))
+    blocked = engine.update(
+        _frame(
+            2,
+            0.4,
+            "STABLE",
+            distance=0.03,
+            person_area_ratio=0.65,
+        )
+    )
+    moving = engine.update(
+        _frame(
+            3,
+            0.6,
+            "MOVING",
+            distance=0.03,
+            person_area_ratio=0.65,
+        )
+    )
+
+    assert armed.goodbye_candidate_armed
+    assert blocked.interaction_ineligible_reasons == {
+        "person-1": "person_box_oversized"
+    }
+    assert not blocked.goodbye_candidate_armed
+    assert not moving.events
+
+
 def test_retained_person_presence_blocks_greet_arm_during_short_detection_gap() -> None:
     engine = DoorPolicyTriggerEngine(DoorPolicySettings(person_retention_s=0.75))
 
@@ -150,6 +207,8 @@ def _frame(
     *,
     distance: float | None = None,
     overlap: float = 0.0,
+    person_area_ratio: float = 0.10,
+    boundary_clearance_ratio: float = 0.10,
 ) -> DoorFrameObservation:
     people = ()
     interactions = ()
@@ -160,6 +219,8 @@ def _frame(
                 track_id="person-1",
                 overlap_ratio=overlap,
                 normalized_distance=distance,
+                person_area_ratio=person_area_ratio,
+                person_boundary_clearance_ratio=boundary_clearance_ratio,
             ),
         )
     return DoorFrameObservation(

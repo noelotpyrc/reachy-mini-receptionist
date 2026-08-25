@@ -31,6 +31,14 @@ class DoorObserverSettings:
     relative_motion_max_fb_error_px: float = 1.5
     relative_motion_ransac_threshold_px: float = 2.0
     relative_motion_person_padding_ratio: float = 0.10
+    nested_candidate_guard_enabled: bool = True
+    nested_candidate_containment_threshold: float = 0.97
+    nested_candidate_min_area_ratio: float = 0.85
+    nested_candidate_max_area_ratio: float = 2.0
+    close_person_guard_enabled: bool = True
+    occluding_person_area_ratio: float = 0.35
+    occluding_person_door_overlap_ratio: float = 0.0
+    occluding_person_boundary_margin_ratio: float = 0.01
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.motion_exit_threshold < self.motion_enter_threshold <= 1.0:
@@ -57,6 +65,18 @@ class DoorObserverSettings:
             raise ValueError("relative_motion_ransac_threshold_px must be positive")
         if self.relative_motion_person_padding_ratio < 0.0:
             raise ValueError("relative_motion_person_padding_ratio must be non-negative")
+        if not 0.0 <= self.nested_candidate_containment_threshold <= 1.0:
+            raise ValueError("nested candidate containment threshold must be in [0, 1]")
+        if not 0.0 < self.nested_candidate_min_area_ratio <= 1.0:
+            raise ValueError("nested candidate minimum area ratio must be in (0, 1]")
+        if self.nested_candidate_max_area_ratio < 1.0:
+            raise ValueError("nested candidate maximum area ratio must be at least 1")
+        if not 0.0 <= self.occluding_person_area_ratio <= 1.0:
+            raise ValueError("occluding person area ratio must be in [0, 1]")
+        if not 0.0 <= self.occluding_person_door_overlap_ratio <= 1.0:
+            raise ValueError("occluding person door overlap ratio must be in [0, 1]")
+        if not 0.0 <= self.occluding_person_boundary_margin_ratio <= 0.5:
+            raise ValueError("occluding person boundary margin ratio must be in [0, 0.5]")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -79,6 +99,8 @@ class DoorPersonInteraction:
     track_id: str
     overlap_ratio: float
     normalized_distance: float
+    person_area_ratio: float = 0.0
+    person_boundary_clearance_ratio: float = 1.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -113,6 +135,9 @@ class DoorFrameObservation:
     semantic_completed_ts: float | None = None
     semantic_inference_latency_ms: float | None = None
     semantic_source_age_s: float | None = None
+    semantic_accepted: bool = False
+    semantic_rejection_reason: str | None = None
+    door_occluded_by_person: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -167,14 +192,37 @@ class DoorMotionObserver:
         frame_bgr: NDArray[np.uint8],
         door_detections: list[DoorDetectionInput] | None,
         people: list[PersonBoxInput],
+        occluders: list[PersonBoxInput] | None = None,
         semantic_completed_ts: float | None = None,
         semantic_inference_latency_ms: float | None = None,
     ) -> DoorFrameObservation:
         height, width = frame_bgr.shape[:2]
         semantic_updated = door_detections is not None
         raw_detections = tuple(door_detections or ())
+        current_box = self._current_retained_box(frame_ts)
+        door_occluded = (
+            self.settings.close_person_guard_enabled
+            and _door_occluded_by_close_person(
+                current_box,
+                occluders if occluders is not None else people,
+                width=width,
+                height=height,
+                area_threshold=self.settings.occluding_person_area_ratio,
+                overlap_threshold=self.settings.occluding_person_door_overlap_ratio,
+                boundary_margin_ratio=self.settings.occluding_person_boundary_margin_ratio,
+            )
+        )
+        semantic_accepted = False
+        semantic_rejection_reason: str | None = None
         if semantic_updated:
-            self._update_semantic(frame_ts, list(raw_detections), width=width, height=height)
+            semantic_accepted, semantic_rejection_reason = self._update_semantic(
+                frame_ts,
+                list(raw_detections),
+                width=width,
+                height=height,
+                reject_reason="close_person_occlusion" if door_occluded else None,
+                reacquiring=current_box is None and self._last_observed_box is not None,
+            )
 
         retained_box = self._current_retained_box(frame_ts)
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
@@ -198,7 +246,7 @@ class DoorMotionObserver:
         self._previous_people = tuple(people)
         geometry_score = self._current_geometry_score(frame_ts)
         motion_score = min(1.0, max(geometry_score, relative_motion.score))
-        reliable = retained_box is not None
+        reliable = retained_box is not None and not door_occluded
         self._update_state(frame_ts, motion_score=motion_score, reliable=reliable)
 
         interactions = tuple(
@@ -241,6 +289,9 @@ class DoorMotionObserver:
                 if semantic_updated and semantic_completed_ts is not None
                 else None
             ),
+            semantic_accepted=semantic_accepted,
+            semantic_rejection_reason=semantic_rejection_reason,
+            door_occluded_by_person=door_occluded,
         )
 
     def _update_semantic(
@@ -250,12 +301,33 @@ class DoorMotionObserver:
         *,
         width: int,
         height: int,
-    ) -> None:
+        reject_reason: str | None = None,
+        reacquiring: bool = False,
+    ) -> tuple[bool, str | None]:
+        if reject_reason is not None:
+            return False, reject_reason
         valid = [item for item in detections if _valid_box(item.box, width=width, height=height)]
         if not valid:
-            return
-        observed = _associated_box(valid, self._retained_box)
-        if self._last_observed_box is not None:
+            return False, "no_valid_detection"
+        observed = _associated_box(valid, None if reacquiring else self._retained_box)
+        if observed is None:
+            return False, "association_failed"
+        outlier_reason = (
+            _nested_candidate_rejection_reason(
+                self._last_observed_box,
+                observed,
+                containment_threshold=self.settings.nested_candidate_containment_threshold,
+                min_area_ratio=self.settings.nested_candidate_min_area_ratio,
+                max_area_ratio=self.settings.nested_candidate_max_area_ratio,
+            )
+            if self.settings.nested_candidate_guard_enabled
+            and self._state != "MOVING"
+            and not reacquiring
+            else None
+        )
+        if outlier_reason is not None:
+            return False, outlier_reason
+        if self._last_observed_box is not None and not reacquiring:
             self._geometry_score = 1.0 - _box_iou(self._last_observed_box, observed)
             self._geometry_score_ts = frame_ts
         else:
@@ -264,10 +336,11 @@ class DoorMotionObserver:
         self._last_observed_box = observed
         self._retained_box = (
             observed
-            if self._retained_box is None
+            if self._retained_box is None or reacquiring
             else _blend_box(self._retained_box, observed, self.settings.retained_box_alpha)
         )
         self._last_semantic_ts = frame_ts
+        return True, None
 
     def _current_retained_box(self, frame_ts: float) -> Box | None:
         if self._retained_box is None or self._last_semantic_ts is None:
@@ -571,7 +644,7 @@ def _relative_transform_displacement(
     return float(np.median(displacement) / max(math.hypot(_box_width(door_box), _box_height(door_box)), 1.0))
 
 
-def _associated_box(detections: list[DoorDetectionInput], retained_box: Box | None) -> Box:
+def _associated_box(detections: list[DoorDetectionInput], retained_box: Box | None) -> Box | None:
     if retained_box is None:
         return max(detections, key=lambda item: item.confidence).box
     retained_center = _box_center(retained_box)
@@ -583,7 +656,7 @@ def _associated_box(detections: list[DoorDetectionInput], retained_box: Box | No
         or math.dist(_box_center(item.box), retained_center) <= retained_scale * 0.75
     ]
     if not associated:
-        return max(detections, key=lambda item: item.confidence).box
+        return None
 
     def association_score(item: DoorDetectionInput) -> float:
         overlap = _box_iou(item.box, retained_box)
@@ -591,6 +664,55 @@ def _associated_box(detections: list[DoorDetectionInput], retained_box: Box | No
         return item.confidence + 0.20 * overlap - 0.05 * normalized_distance
 
     return max(associated, key=association_score).box
+
+
+def _nested_candidate_rejection_reason(
+    previous: Box | None,
+    candidate: Box,
+    *,
+    containment_threshold: float,
+    min_area_ratio: float,
+    max_area_ratio: float,
+) -> str | None:
+    if previous is None:
+        return None
+    previous_area = max(_box_area(previous), 1.0)
+    candidate_area = max(_box_area(candidate), 1.0)
+    intersection = _intersection_area(previous, candidate)
+    area_ratio = candidate_area / previous_area
+    candidate_containment = intersection / candidate_area
+    previous_containment = intersection / previous_area
+    if candidate_containment >= containment_threshold and area_ratio < min_area_ratio:
+        return "nested_candidate_shrink"
+    if previous_containment >= containment_threshold and area_ratio > max_area_ratio:
+        return "nested_candidate_growth"
+    return None
+
+
+def _door_occluded_by_close_person(
+    door_box: Box | None,
+    people: list[PersonBoxInput],
+    *,
+    width: int,
+    height: int,
+    area_threshold: float,
+    overlap_threshold: float,
+    boundary_margin_ratio: float,
+) -> bool:
+    frame_area = max(float(width * height), 1.0)
+    for person in people:
+        area_ratio = _box_area(person.box) / frame_area
+        boundary_clearance = _boundary_clearance_ratio(person.box, width=width, height=height)
+        close = area_ratio >= area_threshold or boundary_clearance <= boundary_margin_ratio
+        if close and overlap_threshold <= 0.0:
+            return True
+        if door_box is None:
+            continue
+        door_area = max(_box_area(door_box), 1.0)
+        overlap = _intersection_area(person.box, door_box) / door_area
+        if close and overlap >= overlap_threshold:
+            return True
+    return False
 
 
 def _person_interaction(
@@ -602,12 +724,31 @@ def _person_interaction(
 ) -> DoorPersonInteraction:
     intersection = _intersection_area(person.box, door_box)
     person_area = max(_box_area(person.box), 1.0)
+    frame_area = max(float(width * height), 1.0)
     feet = ((_box_center(person.box)[0]), person.box[3])
     distance = _point_box_distance(feet, door_box) / max(math.hypot(width, height), 1.0)
     return DoorPersonInteraction(
         track_id=person.track_id,
         overlap_ratio=min(1.0, max(0.0, intersection / person_area)),
         normalized_distance=max(0.0, distance),
+        person_area_ratio=min(1.0, max(0.0, person_area / frame_area)),
+        person_boundary_clearance_ratio=_boundary_clearance_ratio(
+            person.box,
+            width=width,
+            height=height,
+        ),
+    )
+
+
+def _boundary_clearance_ratio(box: Box, *, width: int, height: int) -> float:
+    return max(
+        0.0,
+        min(
+            box[0] / max(float(width), 1.0),
+            box[1] / max(float(height), 1.0),
+            (float(width) - box[2]) / max(float(width), 1.0),
+            (float(height) - box[3]) / max(float(height), 1.0),
+        ),
     )
 
 

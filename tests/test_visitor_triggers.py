@@ -14,6 +14,8 @@ from reachy_mini_brain.official_runtime.perception import (
 )
 from reachy_mini_brain.official_runtime.visitor_trigger_profiles import (
     DEFAULT_VISITOR_TRIGGER_PROFILE,
+    DOOR_V1_20260805,
+    DOOR_V2_20260809,
     VISITOR_V1_20260802,
     resolve_visitor_trigger_profile,
 )
@@ -387,6 +389,8 @@ def test_approach_tracker_bridges_unambiguous_bytetrack_gaps(monkeypatch) -> Non
 def test_versioned_profile_metadata_contains_complete_evaluated_configuration() -> None:
     legacy = resolve_visitor_trigger_profile(DEFAULT_VISITOR_TRIGGER_PROFILE).metadata(smooth=2)
     visitor = resolve_visitor_trigger_profile(VISITOR_V1_20260802).metadata()
+    door_v1 = resolve_visitor_trigger_profile(DOOR_V1_20260805).metadata()
+    door_v2 = resolve_visitor_trigger_profile(DOOR_V2_20260809).metadata()
 
     assert legacy == {
         "name": "legacy",
@@ -418,6 +422,10 @@ def test_versioned_profile_metadata_contains_complete_evaluated_configuration() 
         "reset_gap_s": 1.5,
         "max_samples": 30,
     }
+    assert door_v1["parameters"]["door_observer"]["close_person_guard_enabled"] is False
+    assert door_v1["parameters"]["door_policy"]["interaction_eligibility_enabled"] is False
+    assert door_v2["parameters"]["door_observer"]["occluding_person_area_ratio"] == 0.35
+    assert door_v2["parameters"]["door_policy"]["interaction_person_max_area_ratio"] == 0.40
 
 
 def test_unknown_profile_is_rejected_before_detector_initialization() -> None:

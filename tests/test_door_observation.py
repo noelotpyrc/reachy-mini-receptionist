@@ -101,6 +101,163 @@ def test_multiple_associated_detections_select_one_continuity_aware_box() -> Non
     )
 
 
+def test_nested_partial_door_box_is_rejected_without_moving_edge() -> None:
+    observer = DoorMotionObserver(
+        DoorObserverSettings(stable_dwell_s=0.0, retained_box_alpha=1.0)
+    )
+    frame = np.zeros((100, 120, 3), dtype=np.uint8)
+    trusted = [DoorDetectionInput(0.9, (20.0, 5.0, 60.0, 95.0))]
+    observer.update(
+        frame_index=0,
+        frame_ts=0.0,
+        frame_bgr=frame,
+        door_detections=trusted,
+        people=[],
+    )
+
+    rejected = observer.update(
+        frame_index=1,
+        frame_ts=0.2,
+        frame_bgr=frame,
+        door_detections=[DoorDetectionInput(0.8, (20.0, 5.0, 55.0, 65.0))],
+        people=[],
+    )
+
+    assert not rejected.semantic_accepted
+    assert rejected.semantic_rejection_reason == "nested_candidate_shrink"
+    assert rejected.retained_box == trusted[0].box
+    assert rejected.state == "STABLE"
+    assert rejected.motion_score == 0.0
+
+
+def test_nested_geometry_updates_remain_accepted_after_motion_starts() -> None:
+    observer = DoorMotionObserver(
+        DoorObserverSettings(stable_dwell_s=0.0, retained_box_alpha=1.0)
+    )
+    frame = np.zeros((100, 120, 3), dtype=np.uint8)
+    observer.update(
+        frame_index=0,
+        frame_ts=0.0,
+        frame_bgr=frame,
+        door_detections=[DoorDetectionInput(0.9, (10.0, 5.0, 50.0, 95.0))],
+        people=[],
+    )
+    moving = observer.update(
+        frame_index=1,
+        frame_ts=0.2,
+        frame_bgr=frame,
+        door_detections=[DoorDetectionInput(0.9, (40.0, 5.0, 80.0, 95.0))],
+        people=[],
+    )
+    nested = observer.update(
+        frame_index=2,
+        frame_ts=0.4,
+        frame_bgr=frame,
+        door_detections=[DoorDetectionInput(0.9, (45.0, 10.0, 75.0, 75.0))],
+        people=[],
+    )
+
+    assert moving.state == "MOVING"
+    assert nested.semantic_accepted
+    assert nested.semantic_rejection_reason is None
+    assert nested.retained_box == (45.0, 10.0, 75.0, 75.0)
+
+
+def test_close_boundary_clipped_person_marks_door_observation_unknown() -> None:
+    observer = DoorMotionObserver(
+        DoorObserverSettings(stable_dwell_s=0.0, retained_box_alpha=1.0)
+    )
+    frame = np.zeros((100, 120, 3), dtype=np.uint8)
+    trusted = [DoorDetectionInput(0.9, (20.0, 5.0, 60.0, 95.0))]
+    observer.update(
+        frame_index=0,
+        frame_ts=0.0,
+        frame_bgr=frame,
+        door_detections=trusted,
+        people=[],
+    )
+    close_person = PersonBoxInput("track-1", (70.0, 0.0, 120.0, 100.0))
+
+    occluded = observer.update(
+        frame_index=1,
+        frame_ts=0.2,
+        frame_bgr=frame,
+        door_detections=[DoorDetectionInput(0.8, (0.0, 0.0, 120.0, 100.0))],
+        people=[close_person],
+        occluders=[close_person],
+    )
+
+    assert occluded.door_occluded_by_person
+    assert not occluded.semantic_accepted
+    assert occluded.semantic_rejection_reason == "close_person_occlusion"
+    assert occluded.retained_box == trusted[0].box
+    assert occluded.state == "UNKNOWN"
+
+
+def test_close_person_blocks_reacquisition_after_trusted_box_goes_stale() -> None:
+    observer = DoorMotionObserver(
+        DoorObserverSettings(
+            stable_dwell_s=0.0,
+            semantic_stale_s=0.5,
+            retained_box_alpha=1.0,
+        )
+    )
+    frame = np.zeros((100, 120, 3), dtype=np.uint8)
+    observer.update(
+        frame_index=0,
+        frame_ts=0.0,
+        frame_bgr=frame,
+        door_detections=[DoorDetectionInput(0.9, (20.0, 5.0, 60.0, 95.0))],
+        people=[],
+    )
+    close_person = PersonBoxInput("track-1", (70.0, 0.0, 120.0, 100.0))
+
+    reacquisition = observer.update(
+        frame_index=1,
+        frame_ts=1.0,
+        frame_bgr=frame,
+        door_detections=[DoorDetectionInput(0.9, (25.0, 10.0, 65.0, 95.0))],
+        people=[close_person],
+        occluders=[close_person],
+    )
+
+    assert reacquisition.door_occluded_by_person
+    assert reacquisition.semantic_rejection_reason == "close_person_occlusion"
+    assert reacquisition.retained_box is None
+    assert reacquisition.state == "UNKNOWN"
+
+
+def test_first_credible_box_after_staleness_rebases_without_motion() -> None:
+    observer = DoorMotionObserver(
+        DoorObserverSettings(
+            stable_dwell_s=0.0,
+            semantic_stale_s=0.5,
+            retained_box_alpha=1.0,
+        )
+    )
+    frame = np.zeros((100, 120, 3), dtype=np.uint8)
+    observer.update(
+        frame_index=0,
+        frame_ts=0.0,
+        frame_bgr=frame,
+        door_detections=[DoorDetectionInput(0.9, (20.0, 5.0, 60.0, 95.0))],
+        people=[],
+    )
+
+    reacquired = observer.update(
+        frame_index=1,
+        frame_ts=1.0,
+        frame_bgr=frame,
+        door_detections=[DoorDetectionInput(0.9, (60.0, 5.0, 100.0, 95.0))],
+        people=[],
+    )
+
+    assert reacquired.semantic_accepted
+    assert reacquired.retained_box == (60.0, 5.0, 100.0, 95.0)
+    assert reacquired.geometry_change_score == 0.0
+    assert reacquired.state == "STABLE"
+
+
 def test_person_interaction_reports_overlap_and_feet_distance() -> None:
     observer = DoorMotionObserver(DoorObserverSettings(retained_box_alpha=1.0))
     frame = np.zeros((100, 120, 3), dtype=np.uint8)
@@ -111,6 +268,7 @@ def test_person_interaction_reports_overlap_and_feet_distance() -> None:
         frame_bgr=frame,
         door_detections=[DoorDetectionInput(0.9, (20.0, 10.0, 60.0, 90.0))],
         people=[PersonBoxInput("track-1", (40.0, 50.0, 80.0, 100.0))],
+        occluders=[],
     )
 
     interaction = observation.interactions[0]
@@ -264,6 +422,7 @@ def test_door_review_renderer_logs_review_metrics() -> None:
         frame_bgr=frame,
         door_detections=[DoorDetectionInput(0.9, (20.0, 10.0, 60.0, 90.0))],
         people=[PersonBoxInput("track-1", (40.0, 50.0, 80.0, 100.0))],
+        occluders=[],
     )
 
     renderer.render(observation, frame)
@@ -284,6 +443,8 @@ def test_door_review_renderer_logs_review_metrics() -> None:
     assert "door_review/camera/retained_door_box" in entities
     assert "door_review/camera/people" in entities
     assert "door_review/state/door" in entities
+    assert "door_review/diagnostics/semantic_accepted" in entities
+    assert "door_review/diagnostics/close_person_occlusion" in entities
     assert "door_review/signals/motion/combined" in entities
     assert "door_review/signals/motion/geometry" in entities
     assert "door_review/signals/motion/relative_flow" in entities
@@ -331,6 +492,7 @@ def test_door_review_renderer_terminates_interaction_series_when_track_disappear
         frame_bgr=frame,
         door_detections=detection,
         people=[PersonBoxInput("track-1", (40.0, 50.0, 80.0, 100.0))],
+        occluders=[],
     )
     absent = observer.update(
         frame_index=1,

@@ -115,6 +115,19 @@ class DoorReviewRenderer:
         )
 
         rr.log("door_review/state/door", rr.Scalars(_STATE_CODES[observation.state]))
+        rr.log(
+            "door_review/diagnostics/semantic_accepted",
+            rr.Scalars(float(observation.semantic_accepted)),
+        )
+        rr.log(
+            "door_review/diagnostics/close_person_occlusion",
+            rr.Scalars(float(observation.door_occluded_by_person)),
+        )
+        if observation.semantic_rejection_reason is not None:
+            rr.log(
+                "door_review/diagnostics/semantic_rejections",
+                rr.TextLog(observation.semantic_rejection_reason),
+            )
         if self._last_state != observation.state:
             rr.log("door_review/state/changes", rr.TextLog(observation.state))
             self._last_state = observation.state
@@ -218,6 +231,15 @@ class DoorReviewRenderer:
         )
         rr.log("door_review/policy/candidate", rr.Scalars(_CANDIDATE_CODES[candidate]))
         rr.log("door_review/policy/trigger", rr.Scalars(_TRIGGER_CODES[trigger]))
+        rr.log(
+            "door_review/diagnostics/ineligible_interaction_count",
+            rr.Scalars(float(len(policy.interaction_ineligible_track_ids))),
+        )
+        for track_id, reason in policy.interaction_ineligible_reasons.items():
+            rr.log(
+                "door_review/diagnostics/ineligible_interactions",
+                rr.TextLog(f"{track_id}: {reason}"),
+            )
         rr.log("door_review/policy/decision_latency_s", rr.Scalars(policy.decision_latency_s))
         rr.log(
             "door_review/policy/interaction/distance_threshold",
