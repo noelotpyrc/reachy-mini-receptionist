@@ -1359,11 +1359,16 @@ def _base_env(config: OpsConfig) -> dict[str, str]:
     env = os.environ.copy()
     env.pop("GI_TYPELIB_PATH", None)
     env.pop("GST_PLUGIN_PATH", None)
+    env.pop("GST_PLUGIN_SCANNER", None)
     env.pop("GST_PLUGIN_SCANNER_1_0", None)
     python_paths = [str(config.repo_path / "src")]
     gi_path = _gstreamer_python_path_for_python(config.python_bin)
     if gi_path is not None:
         python_paths.append(str(gi_path))
+    plugin_scanner = _gstreamer_plugin_scanner_for_python(config.python_bin)
+    if plugin_scanner is not None:
+        env["GST_PLUGIN_SCANNER"] = str(plugin_scanner)
+        env["GST_PLUGIN_SCANNER_1_0"] = str(plugin_scanner)
     env["PYTHONPATH"] = ":".join(python_paths)
     env["REACHY_REPO"] = str(config.repo_path)
     env["ENV_FILE"] = str(config.repo_path / ".env")
@@ -1377,6 +1382,16 @@ def _gstreamer_python_path_for_python(python_bin: Path) -> Path | None:
 
 def _gstreamer_python_path_for_repo(repo_path: Path) -> Path | None:
     return _gstreamer_python_path_for_venv(repo_path.expanduser() / ".venv")
+
+
+def _gstreamer_plugin_scanner_for_python(python_bin: Path) -> Path | None:
+    venv_root = python_bin.expanduser().parent.parent
+    for candidate in venv_root.glob(
+        "lib/python*/site-packages/gstreamer_libs/libexec/gstreamer-1.0/gst-plugin-scanner"
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _gstreamer_python_path_for_venv(venv_root: Path) -> Path | None:
