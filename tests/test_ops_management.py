@@ -319,7 +319,7 @@ def test_build_audio_playback_command_uses_live_app_scripted_playback(tmp_path):
     assert env["REACHY_HOST"] == "192.0.2.10"
 
 
-def test_base_env_uses_selected_runtime_gstreamer_paths(tmp_path, monkeypatch):
+def test_base_env_resets_pythonpath_without_gstreamer_overrides(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     repo_python = config.repo_path / ".venv" / "bin" / "python"
     repo_python.parent.mkdir(parents=True)
@@ -337,19 +337,6 @@ def test_base_env_uses_selected_runtime_gstreamer_paths(tmp_path, monkeypatch):
         / "site-packages"
     )
     gi_python.mkdir(parents=True)
-    plugin_scanner = (
-        config.repo_path
-        / ".venv"
-        / "lib"
-        / "python3.12"
-        / "site-packages"
-        / "gstreamer_libs"
-        / "libexec"
-        / "gstreamer-1.0"
-        / "gst-plugin-scanner"
-    )
-    plugin_scanner.parent.mkdir(parents=True)
-    plugin_scanner.write_text("", encoding="utf-8")
     monkeypatch.setenv("PYTHONPATH", "/wrong/venv/site-packages")
     monkeypatch.setenv("GI_TYPELIB_PATH", "/wrong/venv/girepository")
     monkeypatch.setenv("GST_PLUGIN_SCANNER_1_0", "/wrong/plugin-scanner")
@@ -359,8 +346,7 @@ def test_base_env_uses_selected_runtime_gstreamer_paths(tmp_path, monkeypatch):
     assert env["PYTHONPATH"] == f"{config.repo_path / 'src'}:{gi_python}"
     assert "GI_TYPELIB_PATH" not in env
     assert "GST_PLUGIN_PATH" not in env
-    assert env["GST_PLUGIN_SCANNER"] == str(plugin_scanner)
-    assert env["GST_PLUGIN_SCANNER_1_0"] == str(plugin_scanner)
+    assert "GST_PLUGIN_SCANNER_1_0" not in env
     assert "OFFICIAL_APP_REPO" not in env
 
 
