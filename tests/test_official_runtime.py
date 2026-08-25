@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import types
 import wave
@@ -2340,6 +2341,27 @@ def test_load_project_env_reads_dotenv_without_overriding_shell_env(tmp_path, mo
     assert os.environ["LIVEKIT_API_SECRET"] == "quoted secret"
     assert os.environ["LIVEKIT_ROOM"] == "clinic-test"
     assert os.environ["LIVEKIT_AGENT_NAME"] == "reachy-mini-test"
+
+
+def test_project_root_honors_release_repo_environment(tmp_path):
+    env = {**os.environ, "REACHY_REPO": str(tmp_path)}
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from reachy_mini_brain.official_runtime.env import PROJECT_ROOT; "
+                "print(PROJECT_ROOT)"
+            ),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert Path(completed.stdout.strip()) == tmp_path.resolve()
 
 
 @pytest.mark.optional_livekit

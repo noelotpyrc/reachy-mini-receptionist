@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(
+    os.environ.get("REACHY_REPO", str(Path(__file__).resolve().parents[3]))
+).expanduser().resolve()
 DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 
 
