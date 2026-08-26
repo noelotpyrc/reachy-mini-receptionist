@@ -15,11 +15,13 @@ DEFAULT_VISITOR_TRIGGER_PROFILE = "legacy"
 VISITOR_V1_20260802 = "visitor-v1-20260802"
 DOOR_V1_20260805 = "door-v1-20260805"
 DOOR_V2_20260809 = "door-v2-20260809"
+DOOR_V3_20260825 = "door-v3-20260825"
 VISITOR_TRIGGER_PROFILE_NAMES = (
     DEFAULT_VISITOR_TRIGGER_PROFILE,
     VISITOR_V1_20260802,
     DOOR_V1_20260805,
     DOOR_V2_20260809,
+    DOOR_V3_20260825,
 )
 
 
@@ -104,6 +106,18 @@ _PROFILES = {
         parameters={
             "person_observation": asdict(_VISITOR_V1_CONFIG),
             "door_observer": DoorObserverSettings().to_dict(),
+            "door_policy": DoorPolicySettings().to_dict(),
+        },
+        trigger_config=_VISITOR_V1_CONFIG,
+    ),
+    DOOR_V3_20260825: VisitorTriggerProfile(
+        name=DOOR_V3_20260825,
+        implementation="door_policy_v1",
+        parameters={
+            "person_observation": asdict(_VISITOR_V1_CONFIG),
+            "door_observer": DoorObserverSettings(
+                sequential_change_enabled=True,
+            ).to_dict(),
             "door_policy": DoorPolicySettings().to_dict(),
         },
         trigger_config=_VISITOR_V1_CONFIG,

@@ -66,6 +66,11 @@ class DoorReviewRenderer:
             ("door_review/signals/motion/enter_threshold", "Enter threshold", [255, 69, 58]),
             ("door_review/signals/motion/exit_threshold", "Exit threshold", [255, 214, 10]),
             ("door_review/signals/person_overlap/max_observed", "Maximum overlap", [10, 132, 255]),
+            ("door_review/signals/change/baseline", "Learned baseline", [52, 199, 89]),
+            ("door_review/signals/change/noise_scale", "Robust noise", [100, 210, 255]),
+            ("door_review/signals/change/normalized", "Normalized score", [255, 159, 28]),
+            ("door_review/signals/change/accumulator", "CUSUM evidence", [191, 90, 242]),
+            ("door_review/signals/change/decision_limit", "Decision limit", [255, 69, 58]),
         ):
             self.rr.log(
                 entity,
@@ -148,6 +153,30 @@ class DoorReviewRenderer:
         rr.log(
             "door_review/signals/motion/exit_threshold",
             rr.Scalars(observation.motion_exit_threshold),
+        )
+        rr.log(
+            "door_review/signals/change/baseline",
+            rr.Scalars(observation.sequential_baseline),
+        )
+        rr.log(
+            "door_review/signals/change/noise_scale",
+            rr.Scalars(observation.sequential_noise_scale),
+        )
+        rr.log(
+            "door_review/signals/change/normalized",
+            rr.Scalars(observation.sequential_normalized_score),
+        )
+        rr.log(
+            "door_review/signals/change/accumulator",
+            rr.Scalars(observation.sequential_accumulator),
+        )
+        rr.log(
+            "door_review/signals/change/decision_limit",
+            rr.Scalars(observation.sequential_decision_limit),
+        )
+        rr.log(
+            "door_review/signals/change/ready",
+            rr.Scalars(float(observation.sequential_change_ready)),
         )
         rr.log(
             "door_review/signals/flow_quality/valid",
@@ -314,6 +343,12 @@ def _door_review_blueprint() -> Any | None:
             name="Relative door-leaf motion",
             axis_x=linked_x_axis,
             axis_y=score_y_axis,
+        ),
+        rrb.TimeSeriesView(
+            origin="/door_review/signals/change",
+            contents=["/door_review/signals/change/**"],
+            name="Sequential change evidence",
+            axis_x=linked_x_axis,
         ),
         rrb.TimeSeriesView(
             origin="/door_review/signals/flow_quality",

@@ -12,6 +12,7 @@ from reachy_mini_brain.official_runtime.door_observation import (
     DoorMotionObserver,
     DoorObserverSettings,
     PersonBoxInput,
+    SequentialDoorChangeDetector,
 )
 from reachy_mini_brain.official_runtime.door_review_rerun import DoorReviewRenderer
 
@@ -384,6 +385,98 @@ def test_relative_motion_is_disabled_by_default() -> None:
     assert observation.state == "STABLE"
 
 
+def test_sequential_change_rejects_one_isolated_spike() -> None:
+    settings = DoorObserverSettings(
+        sequential_change_enabled=True,
+        sequential_baseline_window=8,
+        sequential_min_baseline_samples=4,
+        sequential_drift_z=3.0,
+        sequential_decision_limit=4.0,
+        sequential_max_increment=2.0,
+    )
+    detector = SequentialDoorChangeDetector(settings)
+    for score in (0.010, 0.011, 0.009, 0.010):
+        detector.update(score, baseline_eligible=True)
+
+    spike = detector.update(0.20, baseline_eligible=True)
+    recovered = detector.update(0.010, baseline_eligible=True)
+
+    assert spike.evaluated
+    assert spike.accumulator == settings.sequential_max_increment
+    assert not spike.triggered
+    assert not recovered.triggered
+    assert recovered.accumulator == 0.0
+
+
+def test_sequential_change_detects_sustained_moderate_shift() -> None:
+    settings = DoorObserverSettings(
+        sequential_change_enabled=True,
+        sequential_baseline_window=8,
+        sequential_min_baseline_samples=4,
+        sequential_drift_z=3.0,
+        sequential_decision_limit=4.0,
+        sequential_max_increment=2.0,
+    )
+    detector = SequentialDoorChangeDetector(settings)
+    for score in (0.010, 0.011, 0.009, 0.010):
+        detector.update(score, baseline_eligible=True)
+
+    first = detector.update(0.030, baseline_eligible=False)
+    second = detector.update(0.032, baseline_eligible=False)
+
+    assert first.accumulator == settings.sequential_max_increment
+    assert not first.triggered
+    assert second.triggered
+    assert second.accumulator == settings.sequential_decision_limit
+    assert second.evidence_updates == 2
+
+
+def test_observer_sequential_entry_uses_accepted_semantic_updates_only() -> None:
+    observer = DoorMotionObserver(
+        DoorObserverSettings(
+            stable_dwell_s=0.0,
+            retained_box_alpha=1.0,
+            sequential_change_enabled=True,
+            sequential_baseline_window=4,
+            sequential_min_baseline_samples=2,
+            sequential_drift_z=1.0,
+            sequential_decision_limit=4.0,
+            sequential_max_increment=2.0,
+        )
+    )
+    frame = np.zeros((100, 120, 3), dtype=np.uint8)
+    boxes = [
+        (20.0, 5.0, 60.0, 95.0),
+        (20.5, 5.0, 60.5, 95.0),
+        (24.0, 5.0, 64.0, 95.0),
+        (28.0, 5.0, 68.0, 95.0),
+    ]
+    observations = []
+    for frame_index, box in enumerate(boxes):
+        observations.append(
+            observer.update(
+                frame_index=frame_index,
+                frame_ts=frame_index * 0.2,
+                frame_bgr=frame,
+                door_detections=[DoorDetectionInput(0.9, box)],
+                people=[],
+            )
+        )
+        if frame_index == 2:
+            held = observer.update(
+                frame_index=10,
+                frame_ts=0.5,
+                frame_bgr=frame,
+                door_detections=None,
+                people=[],
+            )
+            assert not held.sequential_change_evaluated
+            assert held.sequential_accumulator == observations[-1].sequential_accumulator
+
+    assert observations[-1].sequential_change_triggered
+    assert observations[-1].state == "MOVING"
+
+
 def test_door_review_renderer_logs_review_metrics() -> None:
     calls: list[tuple[str, object, object | None]] = []
 
@@ -448,6 +541,9 @@ def test_door_review_renderer_logs_review_metrics() -> None:
     assert "door_review/signals/motion/combined" in entities
     assert "door_review/signals/motion/geometry" in entities
     assert "door_review/signals/motion/relative_flow" in entities
+    assert "door_review/signals/change/baseline" in entities
+    assert "door_review/signals/change/accumulator" in entities
+    assert "door_review/signals/change/decision_limit" in entities
     assert "door_review/signals/flow_quality/valid" in entities
     assert "door_review/signals/flow_quality/door_coverage" in entities
     assert "door_review/signals/box/center_x" in entities

@@ -76,6 +76,12 @@ class PersonTimeline:
     show_default=True,
     help="Enable relative door-leaf motion as an additive fallback to geometry.",
 )
+@click.option(
+    "--sequential-change/--single-threshold",
+    default=False,
+    show_default=True,
+    help="Use a session-local robust sequential detector for MOVING entry.",
+)
 def cli(
     *,
     video: Path,
@@ -90,6 +96,7 @@ def cli(
     motion_enter_threshold: float,
     motion_exit_threshold: float,
     relative_motion: bool,
+    sequential_change: bool,
 ) -> None:
     """Create a focused Rerun artifact for one source-frame interval."""
 
@@ -103,6 +110,7 @@ def cli(
         motion_enter_threshold=motion_enter_threshold,
         motion_exit_threshold=motion_exit_threshold,
         relative_motion_enabled=relative_motion,
+        sequential_change_enabled=sequential_change,
     )
     frame_timestamps = _load_frame_timestamps(timestamp_sidecar)
     detection_rows = _load_detections(door_detections, pipeline_id=pipeline_id)

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import asdict, dataclass
+from statistics import median
 from typing import Any
 
 import cv2
@@ -39,6 +41,14 @@ class DoorObserverSettings:
     occluding_person_area_ratio: float = 0.35
     occluding_person_door_overlap_ratio: float = 0.0
     occluding_person_boundary_margin_ratio: float = 0.01
+    sequential_change_enabled: bool = False
+    sequential_baseline_window: int = 120
+    sequential_min_baseline_samples: int = 20
+    sequential_drift_z: float = 3.5
+    sequential_decision_limit: float = 4.0
+    sequential_max_increment: float = 2.0
+    sequential_min_evidence_updates: int = 2
+    sequential_baseline_update_max_z: float = 8.0
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.motion_exit_threshold < self.motion_enter_threshold <= 1.0:
@@ -77,6 +87,24 @@ class DoorObserverSettings:
             raise ValueError("occluding person door overlap ratio must be in [0, 1]")
         if not 0.0 <= self.occluding_person_boundary_margin_ratio <= 0.5:
             raise ValueError("occluding person boundary margin ratio must be in [0, 0.5]")
+        if self.sequential_baseline_window < 2:
+            raise ValueError("sequential_baseline_window must be at least 2")
+        if not 2 <= self.sequential_min_baseline_samples <= self.sequential_baseline_window:
+            raise ValueError(
+                "sequential_min_baseline_samples must be between 2 and the baseline window"
+            )
+        if self.sequential_drift_z < 0.0:
+            raise ValueError("sequential_drift_z must be non-negative")
+        if self.sequential_decision_limit <= 0.0:
+            raise ValueError("sequential_decision_limit must be positive")
+        if self.sequential_max_increment <= 0.0:
+            raise ValueError("sequential_max_increment must be positive")
+        if self.sequential_min_evidence_updates < 1:
+            raise ValueError("sequential_min_evidence_updates must be positive")
+        if self.sequential_baseline_update_max_z <= self.sequential_drift_z:
+            raise ValueError(
+                "sequential_baseline_update_max_z must exceed sequential_drift_z"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -138,6 +166,16 @@ class DoorFrameObservation:
     semantic_accepted: bool = False
     semantic_rejection_reason: str | None = None
     door_occluded_by_person: bool = False
+    sequential_change_enabled: bool = False
+    sequential_change_ready: bool = False
+    sequential_change_evaluated: bool = False
+    sequential_change_triggered: bool = False
+    sequential_baseline: float = 0.0
+    sequential_noise_scale: float = 0.0
+    sequential_normalized_score: float = 0.0
+    sequential_accumulator: float = 0.0
+    sequential_decision_limit: float = 0.0
+    sequential_evidence_updates: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -168,6 +206,118 @@ class _RelativeMotionEvidence:
         )
 
 
+@dataclass(frozen=True)
+class SequentialChangeEvidence:
+    """One robust one-sided sequential-change update."""
+
+    ready: bool
+    evaluated: bool
+    triggered: bool
+    baseline: float
+    noise_scale: float
+    normalized_score: float
+    accumulator: float
+    decision_limit: float
+    evidence_updates: int
+    baseline_samples: int
+
+
+class SequentialDoorChangeDetector:
+    """Detect a sustained upward shift relative to session-local door-box jitter."""
+
+    def __init__(self, settings: DoorObserverSettings | None = None) -> None:
+        self.settings = settings or DoorObserverSettings()
+        self._baseline_scores: deque[float] = deque(
+            maxlen=self.settings.sequential_baseline_window
+        )
+        self._accumulator = 0.0
+        self._evidence_updates = 0
+        self._evidence = self._snapshot()
+
+    @property
+    def evidence(self) -> SequentialChangeEvidence:
+        return self._evidence
+
+    def update(self, score: float, *, baseline_eligible: bool) -> SequentialChangeEvidence:
+        score = max(0.0, float(score))
+        if len(self._baseline_scores) < self.settings.sequential_min_baseline_samples:
+            if baseline_eligible:
+                self._baseline_scores.append(score)
+            self._evidence = self._snapshot()
+            return self._evidence
+
+        baseline, noise_scale = self._baseline_statistics()
+        normalized = (score - baseline) / noise_scale
+        contribution = min(
+            self.settings.sequential_max_increment,
+            normalized - self.settings.sequential_drift_z,
+        )
+        self._accumulator = max(0.0, self._accumulator + contribution)
+        if contribution > 0.0:
+            self._evidence_updates += 1
+        else:
+            self._evidence_updates = 0
+        triggered = (
+            self._accumulator >= self.settings.sequential_decision_limit
+            and self._evidence_updates >= self.settings.sequential_min_evidence_updates
+        )
+        if baseline_eligible and normalized <= self.settings.sequential_baseline_update_max_z:
+            self._baseline_scores.append(score)
+        self._evidence = SequentialChangeEvidence(
+            ready=True,
+            evaluated=True,
+            triggered=triggered,
+            baseline=baseline,
+            noise_scale=noise_scale,
+            normalized_score=normalized,
+            accumulator=self._accumulator,
+            decision_limit=self.settings.sequential_decision_limit,
+            evidence_updates=self._evidence_updates,
+            baseline_samples=len(self._baseline_scores),
+        )
+        return self._evidence
+
+    def interrupt(self) -> SequentialChangeEvidence:
+        """Break partial evidence without discarding the learned baseline."""
+
+        self._accumulator = 0.0
+        self._evidence_updates = 0
+        self._evidence = self._snapshot()
+        return self._evidence
+
+    def hold(self) -> SequentialChangeEvidence:
+        """Expose retained evidence without treating a held score as a new sample."""
+
+        self._evidence = self._snapshot()
+        return self._evidence
+
+    def _baseline_statistics(self) -> tuple[float, float]:
+        scores = tuple(self._baseline_scores)
+        center = float(median(scores))
+        mad = float(median(abs(value - center) for value in scores))
+        ordered = sorted(scores)
+        percentile_90 = ordered[int(0.9 * (len(ordered) - 1))]
+        upper_scale = max(0.0, percentile_90 - center) / 1.2816
+        noise_scale = max(1.4826 * mad, upper_scale, center * 0.25, 1e-4)
+        return center, noise_scale
+
+    def _snapshot(self) -> SequentialChangeEvidence:
+        ready = len(self._baseline_scores) >= self.settings.sequential_min_baseline_samples
+        baseline, noise_scale = self._baseline_statistics() if ready else (0.0, 0.0)
+        return SequentialChangeEvidence(
+            ready=ready,
+            evaluated=False,
+            triggered=False,
+            baseline=baseline,
+            noise_scale=noise_scale,
+            normalized_score=0.0,
+            accumulator=self._accumulator,
+            decision_limit=self.settings.sequential_decision_limit,
+            evidence_updates=self._evidence_updates,
+            baseline_samples=len(self._baseline_scores),
+        )
+
+
 class DoorMotionObserver:
     """Derive a retained door box and STABLE/MOVING/UNKNOWN state."""
 
@@ -183,6 +333,7 @@ class DoorMotionObserver:
         self._previous_retained_box: Box | None = None
         self._previous_people: tuple[PersonBoxInput, ...] = ()
         self._low_since: float | None = None
+        self._sequential_change = SequentialDoorChangeDetector(self.settings)
 
     def update(
         self,
@@ -247,7 +398,26 @@ class DoorMotionObserver:
         geometry_score = self._current_geometry_score(frame_ts)
         motion_score = min(1.0, max(geometry_score, relative_motion.score))
         reliable = retained_box is not None and not door_occluded
-        self._update_state(frame_ts, motion_score=motion_score, reliable=reliable)
+        sequential_evidence = self._sequential_change.evidence
+        if self.settings.sequential_change_enabled and semantic_updated:
+            if semantic_accepted and reliable and self._state != "MOVING":
+                sequential_evidence = self._sequential_change.update(
+                    motion_score,
+                    baseline_eligible=not people,
+                )
+            elif not semantic_accepted or not reliable:
+                sequential_evidence = self._sequential_change.interrupt()
+        elif self.settings.sequential_change_enabled:
+            sequential_evidence = self._sequential_change.hold()
+        previous_state = self._state
+        self._update_state(
+            frame_ts,
+            motion_score=motion_score,
+            reliable=reliable,
+            sequential_triggered=sequential_evidence.triggered,
+        )
+        if previous_state == "MOVING" and self._state == "STABLE":
+            sequential_evidence = self._sequential_change.interrupt()
 
         interactions = tuple(
             _person_interaction(person, retained_box, width=width, height=height)
@@ -292,6 +462,16 @@ class DoorMotionObserver:
             semantic_accepted=semantic_accepted,
             semantic_rejection_reason=semantic_rejection_reason,
             door_occluded_by_person=door_occluded,
+            sequential_change_enabled=self.settings.sequential_change_enabled,
+            sequential_change_ready=sequential_evidence.ready,
+            sequential_change_evaluated=sequential_evidence.evaluated,
+            sequential_change_triggered=sequential_evidence.triggered,
+            sequential_baseline=sequential_evidence.baseline,
+            sequential_noise_scale=sequential_evidence.noise_scale,
+            sequential_normalized_score=sequential_evidence.normalized_score,
+            sequential_accumulator=sequential_evidence.accumulator,
+            sequential_decision_limit=sequential_evidence.decision_limit,
+            sequential_evidence_updates=sequential_evidence.evidence_updates,
         )
 
     def _update_semantic(
@@ -442,12 +622,24 @@ class DoorMotionObserver:
             background_inlier_ratio=background_inlier_ratio,
         )
 
-    def _update_state(self, frame_ts: float, *, motion_score: float, reliable: bool) -> None:
+    def _update_state(
+        self,
+        frame_ts: float,
+        *,
+        motion_score: float,
+        reliable: bool,
+        sequential_triggered: bool,
+    ) -> None:
         if not reliable:
             self._state = "UNKNOWN"
             self._low_since = None
             return
-        if motion_score >= self.settings.motion_enter_threshold:
+        moving_entry = (
+            sequential_triggered
+            if self.settings.sequential_change_enabled
+            else motion_score >= self.settings.motion_enter_threshold
+        )
+        if moving_entry:
             self._low_since = None
             self._state = "MOVING"
             return

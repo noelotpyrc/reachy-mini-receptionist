@@ -74,6 +74,20 @@ not affect classification.
 Offline review generation defaults to `--geometry-only`. Pass `--relative-motion` to evaluate the
 fallback and populate its diagnostic lanes.
 
+An optional robust sequential-change mode replaces the absolute `MOVING` entry threshold with a
+session-local one-sided CUSUM. It learns the median and robust noise scale of accepted DINO motion
+scores over a rolling window, converts each new score to a normalized deviation, and accumulates
+only sustained upward evidence. Each update is capped and at least two accepted DINO updates are
+required, so a single detection spike cannot enter `MOVING`. Baseline updates are limited to
+unoccluded, no-person observations; person-present observations are evaluated against the frozen
+baseline. Held geometry values between DINO completions are not counted as new evidence. The
+existing absolute exit threshold and `0.8 s` dwell still control `MOVING -> STABLE`.
+
+Sequential mode is enabled in the `door-v3-20260825` live-test candidate. `door-v2-20260809`
+retains absolute-threshold entry as the immediate rollback. Offline review can enable sequential
+entry with `--sequential-change`; `--single-threshold` retains the earlier behavior. The recorded-
+trace evaluator is `scripts/evaluate_door_sequential_change.py`.
+
 For each logical person track, record the fraction of the person box intersecting the retained door
 box and the normalized distance from the person's feet anchor to the nearest door-box edge. The
 policy uses those measurements with hysteresis: an interaction enters when distance is at most
@@ -98,6 +112,32 @@ greet candidates expire after `4.0 s`. A goodbye candidate remains supported whi
 interaction stays inside the exit hysteresis (`distance <= 0.08` or `overlap >= 0.05`); its `4.0 s`
 expiry starts only after that support is lost. Goodbye does not require a prior greeting or
 conversation.
+
+### Close-Person Door Reliability and Interaction Eligibility
+
+Run `official-live-20260807-110807` added two labeled false-positive regressions while the door
+remained closed:
+
+- frame `155` / video `00:31.0`: false `vision.approach` and greet;
+- frame `195` / video `00:39.0`: false `vision.depart` and goodbye.
+
+The person was moving close to the camera and occluding the door during this sequence. The fix has
+two independent layers, with all thresholds captured in the versioned `door-v2-20260809` profile.
+The unchanged `door-v1-20260805` profile remains the immediate behavior rollback:
+
+1. **Door-observation reliability:** while a raw person detection is oversized or frame-clipped,
+   reject semantic door updates and report the door state as `UNKNOWN`. Also reject an almost fully
+   nested door candidate that abruptly shrinks or grows while the trusted door is stable. After the
+   retained box goes stale, the first credible door detection establishes a fresh baseline instead
+   of creating a false motion edge against stale geometry.
+2. **Policy interaction eligibility:** an oversized or frame-clipped logical person box still
+   establishes or retains `PRESENT`, but cannot arm or sustain goodbye or complete an armed greet.
+   Rejection reasons and track IDs remain in the frame trace and Rerun diagnostics.
+
+Offline acceptance on 2026-08-09 removed both false events from frames `130-220` of
+`official-live-20260807-110807`. The accepted real-door replay at frames `40-110` of
+`official-live-20260804-144621` retained depart at frame `63` and approach at frame `86`; frames
+`600-690` of `official-live-20260804-145713` retained departs at frames `619` and `670`.
 
 Grounding DINO runs continuously as an asynchronous policy-role pipeline at up to `2 Hz`; RF-DETR
 person perception remains on the camera path. DINO output is fused with the person observation and
@@ -132,23 +172,48 @@ artifact's intended panels and time ranges.
 3. **Combined Door Motion** shows the combined score and enter/exit hysteresis thresholds.
 4. **Door Geometry Score** shows detection-box geometry change independently.
 5. **Relative Door-Leaf Motion** shows background-relative feature motion independently.
-6. **Relative-Flow Quality** shows whether relative motion is valid plus door inlier ratio, door
+6. **Sequential Change Evidence** shows the learned baseline and noise scale, normalized current
+   score, accumulated CUSUM evidence, decision limit, and baseline-ready state.
+7. **Relative-Flow Quality** shows whether relative motion is valid plus door inlier ratio, door
    feature coverage, and background inlier ratio. Detailed point counts and normalized relative
    displacement remain available in `frames.jsonl`.
-7. **Door Box Geometry** shows normalized retained-box center X, center Y, width, and height. A gap
+8. **Door Box Geometry** shows normalized retained-box center X, center Y, width, and height. A gap
    means there is no valid retained box.
-8. **Person-Door Overlap** shows `intersection(person_box, door_box) / person_box_area` as one series
+9. **Person-Door Overlap** shows `intersection(person_box, door_box) / person_box_area` as one series
    per logical person track plus an always-present maximum-overlap series. The aggregate is zero
    when no person is observed; track-specific series end when that track disappears.
-9. **Person-Door Distance** shows feet-anchor distance to the nearest door-box edge, normalized by
+10. **Person-Door Distance** shows feet-anchor distance to the nearest door-box edge, normalized by
    frame diagonal, as one series per logical person track. The distance is zero when the anchor is
    inside the box.
-10. **Observed and Retained Presence** distinguishes current RF-DETR evidence from the short policy
+11. **Observed and Retained Presence** distinguishes current RF-DETR evidence from the short policy
     retention window.
-11. **Policy Candidate** records idle, greet-armed, or goodbye-armed state, and **Policy Trigger**
+12. **Policy Candidate** records idle, greet-armed, or goodbye-armed state, and **Policy Trigger**
     records `approach` and `depart` decisions.
-12. **DINO Latency** records inference latency and source-frame age. **Source-to-Decision Latency**
+13. **DINO Latency** records inference latency and source-frame age. **Source-to-Decision Latency**
     records when the asynchronous policy decision became available relative to its source frame.
+
+### Sequential-Change Regression Set
+
+The first full-trace regression on 2026-08-25 used the default experimental sequential settings:
+
+- `official-live-20260806-114813`: 8,361 accepted semantic updates and zero change entries;
+- `official-live-20260807-063649`: sequential entry detects the real door opening at frame `7159`
+  and arms greet. RF-DETR first reports the entering visitor after the last successful DINO result;
+  the historical DINO label-count failure then stops policy evaluation, so this recording validates
+  door-state detection but cannot validate the final greet event. Commit `21ad327` fixed that worker
+  failure before `door-v3-20260825` promotion;
+- `official-live-20260825-124601`: the missed-greet window enters `MOVING` at frame `14081`, before
+  first person presence at frame `14085` and before the old absolute threshold crossing at frame
+  `14089`; the existing policy emits one `approach` at frame `14085`.
+- `official-live-20260825-145234`: the clinic visit enters `MOVING` at frame `4829`, arms greet, and
+  emits `approach` when the visitor appears at frame `4831`. The departure interaction arms goodbye
+  before a second sequential `MOVING` edge emits `depart` at frame `5009`. The absolute-threshold
+  profile emitted neither event.
+
+The source trace hashes, parameters, and all detected change episodes are retained in
+`artifacts/door-sequential-eval/regression-report-v2.json`. This result accepts the method for
+promotion to the versioned `door-v3-20260825` live-test candidate; `door-v2-20260809` remains the
+rollback until controlled live acceptance.
 
 The first trigger acceptance set consists of two human-approved positive sequences and one negative:
 
