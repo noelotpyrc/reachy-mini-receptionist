@@ -25,6 +25,9 @@ research document disagree, follow the active specification.
   greet-goodbye policy and its remaining live acceptance.
 - [`hermes-s2s-fork-spec.md`](hermes-s2s-fork-spec.md) - deployed Hermes session integration and
   deterministic policy-speech contract. Backend feature development is currently frozen.
+- [`two-profile-architecture.md`](two-profile-architecture.md) - proposed owner assistant and
+  patient receptionist split, structured session store, and human-gated learning loop. Not
+  implemented.
 - [`legacy-cleanup-plan.md`](legacy-cleanup-plan.md) - non-destructive inventory and separately
   approved removal plan for the old daemon stack.
 
