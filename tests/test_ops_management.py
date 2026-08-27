@@ -366,15 +366,24 @@ def test_base_env_resets_pythonpath_without_gstreamer_overrides(tmp_path, monkey
     )
     gi_python.mkdir(parents=True)
     monkeypatch.setenv("PYTHONPATH", "/wrong/venv/site-packages")
-    monkeypatch.setenv("GI_TYPELIB_PATH", "/wrong/venv/girepository")
+    bundle_root = "/wrong/venv/site-packages/gstreamer_libs"
+    monkeypatch.setenv("PATH", f"{bundle_root}/bin:/usr/bin")
+    monkeypatch.setenv("GI_TYPELIB_PATH", f"{bundle_root}/lib/girepository-1.0")
+    monkeypatch.setenv("GST_PLUGIN_PATH_1_0", f"{bundle_root}/lib/gstreamer-1.0")
     monkeypatch.setenv("GST_PLUGIN_SCANNER_1_0", "/wrong/plugin-scanner")
+    monkeypatch.setenv("GST_REGISTRY_1_0", "/wrong/registry.bin:/older/registry.bin")
+    monkeypatch.setenv("GST_DEBUG", "webrtc*:4")
 
     _, env = ops_core.build_audio_playback_command(config, config.preflight_wav)
 
     assert env["PYTHONPATH"] == f"{config.repo_path / 'src'}:{gi_python}"
+    assert env["PATH"] == "/usr/bin"
     assert "GI_TYPELIB_PATH" not in env
     assert "GST_PLUGIN_PATH" not in env
+    assert "GST_PLUGIN_PATH_1_0" not in env
     assert "GST_PLUGIN_SCANNER_1_0" not in env
+    assert "GST_REGISTRY_1_0" not in env
+    assert env["GST_DEBUG"] == "webrtc*:4"
     assert "OFFICIAL_APP_REPO" not in env
 
 

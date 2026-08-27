@@ -132,6 +132,7 @@ class OfficialStyleStreamRuntime:
         event_sink: EventSink | None = None,
         runtime_observer: RuntimeObserver | None = None,
         on_ready: Callable[[], Awaitable[None]] | None = None,
+        on_input_done: Callable[[], Awaitable[None] | None] | None = None,
         emit_timeout: float = 0.05,
         drain_idle_polls: int = 3,
         playback_done_idle_polls: int = 5,
@@ -142,6 +143,7 @@ class OfficialStyleStreamRuntime:
         self.event_sink = event_sink or InMemoryEventSink()
         self.runtime_observer = runtime_observer
         self.on_ready = on_ready
+        self.on_input_done = on_input_done
         self.emit_timeout = emit_timeout
         self.drain_idle_polls = drain_idle_polls
         self.playback_done_idle_polls = max(1, playback_done_idle_polls)
@@ -168,6 +170,10 @@ class OfficialStyleStreamRuntime:
             self._emit("runtime.input_starting")
             output_task = asyncio.create_task(self._output_loop(), name="runtime-output")
             await self._input_loop()
+            if self.on_input_done is not None:
+                result = self.on_input_done()
+                if inspect.isawaitable(result):
+                    await result
             self._input_done.set()
             await output_task
             await self._drain_audio_sink()

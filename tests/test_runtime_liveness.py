@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from reachy_mini_brain.official_runtime import session_supervisor
 from reachy_mini_brain.official_runtime.liveness import HeartbeatWriter, RuntimeLiveness
 from reachy_mini_brain.official_runtime.session_supervisor import (
@@ -103,8 +105,14 @@ def test_supervisor_faults_when_event_loop_stalls() -> None:
     ) == "event_loop_stale"
 
 
-def test_supervisor_allows_terminal_heartbeat_phase() -> None:
-    heartbeat = {"updated_monotonic": 200.0, "phase": "stopped"}
+@pytest.mark.parametrize("phase", ["stopping", "stopped"])
+def test_supervisor_allows_terminal_heartbeat_phase(phase: str) -> None:
+    heartbeat = {
+        "updated_monotonic": 200.0,
+        "phase": phase,
+        "event_loop_age_s": 20.0,
+        "audio": {"expected": True, "sequence": 10, "age_s": 20.0},
+    }
 
     assert evaluate_heartbeat(
         heartbeat,
@@ -165,8 +173,17 @@ def test_supervisor_records_child_launch_failure_and_retires_active_state(
         encoding="utf-8",
     )
     def fail_launch(*args, **kwargs):
+        assert "GST_REGISTRY_1_0" not in kwargs["env"]
+        assert "GST_PLUGIN_PATH_1_0" not in kwargs["env"]
+        assert kwargs["env"]["GST_DEBUG"] == "webrtc*:4"
         raise OSError("launch failed")
 
+    monkeypatch.setenv("GST_REGISTRY_1_0", "/bad/registry:/older/registry")
+    monkeypatch.setenv(
+        "GST_PLUGIN_PATH_1_0",
+        "/tmp/venv/lib/python3.12/site-packages/gstreamer_plugins/lib/gstreamer-1.0",
+    )
+    monkeypatch.setenv("GST_DEBUG", "webrtc*:4")
     monkeypatch.setattr(session_supervisor.subprocess, "Popen", fail_launch)
     monkeypatch.setattr(
         session_supervisor,

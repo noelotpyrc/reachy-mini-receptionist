@@ -4,7 +4,7 @@
 
 **Current phase:** assisted production preparation
 
-**Updated:** 2026-08-25
+**Updated:** 2026-08-27
 
 This document is the promotion checklist for running the receptionist in the clinic for an extended
 period without a developer onsite. It owns pass/block status. Detailed implementation and operating
@@ -45,7 +45,7 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 | Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Physical runner restart must remain operator-authorized. |
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Blocked** | Door policy passed captured offline evaluation. A controlled live door-entry, conversation, and exit sequence is still required. |
 | Long-run behavior | Multi-hour run with conversations and no wedged subsystems | **Blocked** | `official-live-20260806-114813` ran for about 96 minutes but observed no people or conversations, so it tested idle stability only. |
-| Startup | Bounded, observable transition to ready | **Blocked** | Fresh release startup took roughly two minutes while DINO/RF-DETR and media initialized. The 2026-08-25 frozen release also exposed a GStreamer registry/bootstrap defect that can crash media initialization in a new uv environment. Expose progress, define a timeout/fault state, and replace the registry prewarm workaround described below. |
+| Startup | Bounded, observable transition to ready | **Partial / acceptance pending** | Progress and timeout/fault reporting are implemented. The GStreamer nested-environment fix is implemented and offline-tested locally; validate one normal start from a fresh m1max release with no pre-existing registry and no manual prewarm. |
 | Session duration | First-class run-until-stopped mode | **Blocked** | Current operation uses a very large numeric duration as an indefinite-run workaround. Implement explicit unlimited semantics. |
 | Recording integrity | Audio/video/capture finalize and retain diagnosable timing | **Accepted limitation** | Fixed-`5 FPS` MKVs play faster than wall time, but frame order is intact and JSONL sidecars retain the timing source of truth used by replay/Rerun. Use MKVs only for qualitative review; map a reported player position to frame index and then sidecar `ts`. |
 | Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Partial / acceptance pending** | The detached session supervisor now records whether the runner-owned manifest closed cleanly or remained interrupted, including open artifact paths. A recorder sidecar is still required if hard-kill finalization rather than explicit interruption is required. |
@@ -88,6 +88,14 @@ before starting the session. After that prewarm, `official-live-20260825-124601`
 with advancing microphone and camera heartbeats. This workaround is release-path-specific and must
 not be treated as a production fix.
 
+**Implementation status (2026-08-27):** OPS now removes GStreamer wheel-generated registry and
+plugin paths before launching the supervisor, and the supervisor repeats that cleanup immediately
+before launching the media child. Unrelated diagnostics such as `GST_DEBUG` remain available. This
+ensures the selected child interpreter applies its `.pth` environment exactly once. Focused OPS,
+supervisor, liveness, and runtime tests pass. A local venv with no registry cache successfully
+initialized GStreamer `1.28.3` and created one normal registry file without manual prewarming.
+Fresh-release m1max and robot-media acceptance remain pending.
+
 The permanent fix must give the live child a clean, deterministic GStreamer environment rather than
 passing interpreter-mutated values through each launcher layer. In particular, OPS should remove
 bundle-managed GStreamer variables from the supervisor environment, and the supervisor should
@@ -120,6 +128,12 @@ performs bounded robot cleanup, retains terminal status, and retires the active 
 initial `120 s` startup, `5 s` heartbeat-file, and `8 s` source/event-loop thresholds are
 configurable. Four retained healthy m1max runs had maximum audio and video gaps of `0.484 s` and
 `4.216 s`; a controlled live interruption remains required.
+
+**Normal-stop correction (2026-08-27):** when a timed input source ends, the live runtime now enters
+`stopping` before its bounded output-drain and artifact-finalization period. The supervisor continues
+to enforce stale-source thresholds while `ready`, but no longer misclassifies intentional microphone
+closure during normal shutdown as `audio_stale`. Offline lifecycle and supervisor tests pass; confirm
+the terminal status on the next timed robot run.
 
 The runtime must track monotonic last-seen timestamps independently for expected audio input and
 video input after `software_pipeline_initialized`. Normal frame gaps and startup are not faults;

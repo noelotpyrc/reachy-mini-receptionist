@@ -22,7 +22,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .env import PROJECT_ROOT, load_project_env
+from .env import PROJECT_ROOT, clean_gstreamer_environment, load_project_env
 from .visitor_trigger_profiles import DEFAULT_VISITOR_TRIGGER_PROFILE, resolve_visitor_trigger_profile
 
 
@@ -1397,10 +1397,7 @@ def _validate_python_path(config: OpsConfig) -> list[str]:
 
 
 def _base_env(config: OpsConfig) -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("GI_TYPELIB_PATH", None)
-    env.pop("GST_PLUGIN_PATH", None)
-    env.pop("GST_PLUGIN_SCANNER_1_0", None)
+    env = clean_gstreamer_environment()
     python_paths = [str(config.repo_path / "src")]
     gi_path = _gstreamer_python_path_for_python(config.python_bin)
     if gi_path is not None:

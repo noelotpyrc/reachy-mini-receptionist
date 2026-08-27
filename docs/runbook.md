@@ -195,7 +195,7 @@ final capture/consumer counters to `runtime_summaries.vision_broker` in the run 
 current run before changing modes; there is no mid-session fallback. See
 `vision-frame-broker-architecture.md` for queue semantics, acceptance, and rollback boundaries.
 
-### Known GStreamer startup defect
+### GStreamer startup acceptance
 
 A fresh uv-managed release can fail during `robot_sdk_connect_start` even when `uv lock --check`,
 `uv sync --frozen`, and `uv pip check` all pass. The characteristic log output is:
@@ -212,9 +212,15 @@ colon-containing registry filename at each process depth. On a fresh release, sc
 `libgstpython.dylib` whose `@rpath/libpython3.12.dylib` dependency is not available in the uv
 standalone-Python layout.
 
-Until the launcher is fixed, do not repeatedly restart after this signature. Confirm that OPS
-reported `child_failed`, cleanup disabled the motors and released media, then prewarm the exact
-runtime-depth registry once and retry. For a release rooted at `$RELEASE`:
+The 2026-08-27 launcher fix removes wheel-generated GStreamer paths before both the supervisor and
+media-child process boundaries. A new candidate release must therefore start from an empty registry
+without manual prewarming. Successful acceptance requires one ordinary OPS start to reach `ready`
+with advancing audio and video, followed by a second ordinary start from the same release.
+
+Do not prewarm a new candidate before this acceptance because doing so would hide a regression. If
+an older preserved release without the launcher fix must be used for rollback and shows this exact
+signature, first confirm that OPS reported `child_failed` and completed robot cleanup. Its historical
+release-specific workaround was:
 
 ```bash
 P="$RELEASE/.release-venv/.cache/gstreamer-1.0/registry-macosx-11.0-arm64.bin"
@@ -224,11 +230,11 @@ GST_REGISTRY_1_0="$P:$P" \
   'import gi; gi.require_version("Gst", "1.0"); from gi.repository import Gst; Gst.init(None); print(Gst.version_string())'
 ```
 
-The initial environment contains two copies because the warmup interpreter prepends the third. A
-scanner warning about `libgstpython.dylib` is currently expected; successful completion and a
-printed GStreamer version show that the registry was written. This workaround applies only to that
-immutable release path. It does not repair another release and is not an unattended-production
-procedure. The root-cause record and permanent acceptance criteria are in
+The initial environment in those older releases contains two copies because the warmup interpreter
+prepends the third. A scanner warning about `libgstpython.dylib` is expected there; successful
+completion and a printed GStreamer version show that the registry was written. This workaround
+applies only to the older immutable release path and is not an unattended-production procedure. The
+root-cause record and current acceptance criteria are in
 [Production Readiness](production-readiness.md#gstreamer-uv-startup-incident-2026-08-25).
 
 There is not yet a first-class unlimited duration. For the 2026-08-06 long run, OPS used a very

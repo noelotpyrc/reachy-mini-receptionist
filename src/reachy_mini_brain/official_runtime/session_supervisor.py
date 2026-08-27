@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .env import clean_gstreamer_environment
+
 
 @dataclass(frozen=True)
 class HealthThresholds:
@@ -94,7 +96,7 @@ def supervise(spec_path: Path) -> int:
             child = subprocess.Popen(
                 [str(item) for item in spec["command"]],
                 cwd=spec["cwd"],
-                env=os.environ.copy(),
+                env=clean_gstreamer_environment(),
                 stdout=output,
                 stderr=subprocess.STDOUT,
             )

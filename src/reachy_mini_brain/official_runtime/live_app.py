@@ -713,6 +713,9 @@ async def _run_live(
                 name="official-runtime-scripted-policy-flow",
             )
 
+    def on_runtime_input_done() -> None:
+        liveness.set_phase("stopping")
+
     runtime = OfficialStyleStreamRuntime(
         handler=handler,
         audio_source=audio_source,
@@ -720,6 +723,7 @@ async def _run_live(
         event_sink=event_sink,
         runtime_observer=runtime_observer,
         on_ready=on_runtime_ready,
+        on_input_done=on_runtime_input_done,
         emit_timeout=0.1,
         drain_idle_polls=200,
     )

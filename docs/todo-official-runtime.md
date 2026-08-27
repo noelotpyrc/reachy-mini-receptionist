@@ -190,8 +190,9 @@ typeâ†’behavior map. Refactoring `ReceptionPolicy` into per-behavior policies â€
 
 ### 6a. Media liveness and terminal WebRTC recovery  `[~]`
 **Status:** fail-stop implementation, offline tests, healthy-run threshold baselining, and frozen
-m1max deployment at `3449f8e` are complete. A controlled live interruption remains
-production-blocking; it could not run on 2026-08-07 because the robot API was unreachable.
+m1max deployment at `3449f8e` are complete. The 2026-08-27 normal-stop correction transitions
+liveness to `stopping` before output drain so timed shutdown cannot be mislabeled `audio_stale`.
+A controlled live interruption and normal timed-stop acceptance remain production-blocking.
 
 **Goal:** A live PID must not be reported healthy after audio/video input has stopped. A terminal
 WebRTC disruption must either complete a safe fail-stop or, under a separately approved unattended

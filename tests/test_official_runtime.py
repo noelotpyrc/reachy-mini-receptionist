@@ -1666,6 +1666,38 @@ def test_stream_runtime_stop_skips_long_post_input_drain():
     asyncio.run(run())
 
 
+def test_stream_runtime_reports_input_done_before_long_output_drain():
+    async def run():
+        events = InMemoryEventSink()
+        handler = _QueuedOutputHandler([])
+        sink = _CollectingAudioSink()
+        input_done = asyncio.Event()
+
+        def on_input_done():
+            input_done.set()
+
+        runtime = OfficialStyleStreamRuntime(
+            handler=handler,
+            audio_source=_FiniteAudioSource([]),
+            audio_sink=sink,
+            event_sink=events,
+            on_input_done=on_input_done,
+            emit_timeout=0.01,
+            drain_idle_polls=10_000,
+        )
+
+        task = asyncio.create_task(runtime.run())
+        await asyncio.wait_for(input_done.wait(), timeout=0.5)
+
+        assert task.done() is False
+        assert "audio.input_done" in events.kinds()
+
+        runtime.stop()
+        await asyncio.wait_for(task, timeout=0.5)
+
+    asyncio.run(run())
+
+
 def test_wav_source_chunks_pcm_wav(tmp_path):
     path = tmp_path / "input.wav"
     audio = np.arange(320, dtype=np.int16)
