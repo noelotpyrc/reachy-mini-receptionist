@@ -12,6 +12,8 @@ research document disagree, follow the active specification.
   rollback procedure.
 - [`ops-design.md`](ops-design.md) - Backend/Robot/Runner ownership, safety model, and the foundation
   for a future remote service and operator app.
+- [`reception-control-app.md`](reception-control-app.md) - proposed local-first extension of Reachy
+  Mini Control with administrative reception-run controls.
 - [`runtime-test-catalog.md`](runtime-test-catalog.md) - available offline, integration, production
   smoke, and physical test harnesses.
 - [`robot-runtime-debugging.md`](robot-runtime-debugging.md) - robot-side media and runtime diagnosis.
