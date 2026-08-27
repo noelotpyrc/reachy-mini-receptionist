@@ -8,6 +8,7 @@ import logging
 import warnings
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from .vision_observation import (
     VisionObservation,
     detection_observations,
 )
+from .wave_detection import HandMotionWaveDetector
 
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,18 @@ _GESTURE_MODEL_URL = (
     "gesture_recognizer/float16/1/gesture_recognizer.task"
 )
 _GESTURE_MODEL_PATH = Path.home() / ".cache" / "reachy_mini" / "gesture_recognizer.task"
+GESTURE_RUNNING_MODES = ("image", "video")
+WAVE_DETECTION_MODES = ("open_palm", "hand_motion")
+
+
+@dataclass(frozen=True)
+class GestureFrameObservation:
+    """Gesture classification and hand geometry from one MediaPipe inference."""
+
+    candidate: tuple[str, float] | None
+    hand_center_x: float | None
+    hand_center_y: float | None
+    hand_count: int
 
 
 class PersonDetector:
@@ -365,39 +379,113 @@ def build_approach_tracker(
 class GestureDetector:
     """MediaPipe gesture recognizer for wave/open-palm events."""
 
-    def __init__(self, gestures: tuple[str, ...] = ("Open_Palm",), threshold: float = 0.5) -> None:
+    def __init__(
+        self,
+        gestures: tuple[str, ...] = ("Open_Palm",),
+        threshold: float = 0.5,
+        running_mode: str = "image",
+    ) -> None:
         import mediapipe as mp
 
+        normalized_mode = running_mode.lower()
+        if normalized_mode not in GESTURE_RUNNING_MODES:
+            choices = ", ".join(GESTURE_RUNNING_MODES)
+            raise ValueError(f"unknown gesture running mode {running_mode!r}; choose one of: {choices}")
         self._mp = mp
         self.gestures = tuple(gestures)
         self._gesture_set = set(gestures)
         self.threshold = threshold
+        self.running_mode = normalized_mode
+        self._video_epoch_s: float | None = None
+        self._last_video_timestamp_ms = -1
+        self.classifier_score_floor = 0.0
         self.model_path = _ensure_gesture_model()
+        mediapipe_mode = (
+            mp.tasks.vision.RunningMode.VIDEO
+            if normalized_mode == "video"
+            else mp.tasks.vision.RunningMode.IMAGE
+        )
+        classifier_options = mp.tasks.components.processors.ClassifierOptions(
+            score_threshold=self.classifier_score_floor,
+            category_allowlist=list(self.gestures),
+        )
         opts = mp.tasks.vision.GestureRecognizerOptions(
             base_options=mp.tasks.BaseOptions(model_asset_path=self.model_path),
-            running_mode=mp.tasks.vision.RunningMode.IMAGE,
+            running_mode=mediapipe_mode,
+            canned_gesture_classifier_options=classifier_options,
         )
         self._recognizer = mp.tasks.vision.GestureRecognizer.create_from_options(opts)
 
-    def detect_candidate(self, frame_bgr: NDArray[np.uint8]) -> tuple[str, float] | None:
+    def observe(
+        self,
+        frame_bgr: NDArray[np.uint8],
+        *,
+        timestamp_s: float | None = None,
+    ) -> GestureFrameObservation:
         import cv2
 
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
-        result = self._recognizer.recognize(img)
-        if not result.gestures:
-            return None
-        top = result.gestures[0][0]
-        return top.category_name, float(top.score)
+        if self.running_mode == "video":
+            if timestamp_s is None:
+                raise ValueError("VIDEO gesture recognition requires a source timestamp")
+            result = self._recognizer.recognize_for_video(
+                img,
+                self._video_timestamp_ms(timestamp_s),
+            )
+        else:
+            result = self._recognizer.recognize(img)
+        candidate = None
+        if result.gestures and result.gestures[0]:
+            top = result.gestures[0][0]
+            candidate = (str(top.category_name), float(top.score))
 
-    def detect(self, frame_bgr: NDArray[np.uint8]) -> tuple[str, float] | None:
-        candidate = self.detect_candidate(frame_bgr)
+        hand_landmarks = list(getattr(result, "hand_landmarks", ()) or ())
+        if not hand_landmarks or len(hand_landmarks[0]) <= 9:
+            return GestureFrameObservation(
+                candidate=candidate,
+                hand_center_x=None,
+                hand_center_y=None,
+                hand_count=len(hand_landmarks),
+            )
+        wrist = hand_landmarks[0][0]
+        middle_mcp = hand_landmarks[0][9]
+        return GestureFrameObservation(
+            candidate=candidate,
+            hand_center_x=(float(wrist.x) + float(middle_mcp.x)) / 2.0,
+            hand_center_y=(float(wrist.y) + float(middle_mcp.y)) / 2.0,
+            hand_count=len(hand_landmarks),
+        )
+
+    def detect_candidate(
+        self,
+        frame_bgr: NDArray[np.uint8],
+        *,
+        timestamp_s: float | None = None,
+    ) -> tuple[str, float] | None:
+        return self.observe(frame_bgr, timestamp_s=timestamp_s).candidate
+
+    def detect(
+        self,
+        frame_bgr: NDArray[np.uint8],
+        *,
+        timestamp_s: float | None = None,
+    ) -> tuple[str, float] | None:
+        candidate = self.detect_candidate(frame_bgr, timestamp_s=timestamp_s)
         if candidate is None:
             return None
         name, score = candidate
         if name in self._gesture_set and score >= self.threshold:
             return name, score
         return None
+
+    def _video_timestamp_ms(self, timestamp_s: float) -> int:
+        if self._video_epoch_s is None:
+            self._video_epoch_s = timestamp_s
+        relative_ms = int(round((timestamp_s - self._video_epoch_s) * 1000.0))
+        resolved = max(self._last_video_timestamp_ms + 1, relative_ms, 0)
+        self._last_video_timestamp_ms = resolved
+        return resolved
 
 
 class PerceptionPipeline:
@@ -414,6 +502,8 @@ class PerceptionPipeline:
         detector: Any | None = None,
         tracker_factory: Callable[[tuple[int, int]], Any] | None = None,
         gesture_detector: Any | None = None,
+        gesture_running_mode: str = "image",
+        wave_detection_mode: str = "open_palm",
         event_sink: EventSink | None = None,
         clock: Callable[[], float] = time.time,
         visitor_trigger_profile: str = DEFAULT_VISITOR_TRIGGER_PROFILE,
@@ -421,15 +511,36 @@ class PerceptionPipeline:
         observation_run_id: str | None = None,
         track_trail_window_s: float = 3.0,
         doorway_zone: Any | None = None,
+        gesture_only: bool = False,
     ) -> None:
         self.visitor_trigger_profile = resolve_visitor_trigger_profile(visitor_trigger_profile)
-        self._detector = detector if detector is not None else PersonDetector(threshold=threshold)
+        self._gesture_only = bool(gesture_only)
+        self._detector = (
+            None
+            if self._gesture_only
+            else detector if detector is not None else PersonDetector(threshold=threshold)
+        )
         self._detector_threshold = float(threshold)
         self._smooth = smooth
         self._tracker_factory = tracker_factory
         self._approach: Any | None = None
         self._gestures = gestures
         self._gesture_detector: Any | None = gesture_detector
+        normalized_gesture_mode = gesture_running_mode.lower()
+        if normalized_gesture_mode not in GESTURE_RUNNING_MODES:
+            choices = ", ".join(GESTURE_RUNNING_MODES)
+            raise ValueError(
+                f"unknown gesture running mode {gesture_running_mode!r}; choose one of: {choices}"
+            )
+        self._gesture_running_mode = normalized_gesture_mode
+        normalized_wave_mode = wave_detection_mode.lower()
+        if normalized_wave_mode not in WAVE_DETECTION_MODES:
+            choices = ", ".join(WAVE_DETECTION_MODES)
+            raise ValueError(
+                f"unknown wave detection mode {wave_detection_mode!r}; choose one of: {choices}"
+            )
+        self._wave_detection_mode = normalized_wave_mode
+        self._hand_motion_wave = HandMotionWaveDetector()
         self._gesture_detector_ready_emitted = False
         self._gesture_cooldown = gesture_cooldown
         self._last_wave = 0.0
@@ -463,17 +574,21 @@ class PerceptionPipeline:
             "vision.gesture_detector_init_start",
             gestures=["Open_Palm"],
             threshold=0.5,
+            running_mode=self._gesture_running_mode,
+            wave_detection_mode=self._wave_detection_mode,
             model_path=str(_GESTURE_MODEL_PATH),
         )
         started = time.perf_counter()
         try:
-            self._gesture_detector = GestureDetector()
+            self._gesture_detector = GestureDetector(running_mode=self._gesture_running_mode)
         except Exception as exc:  # noqa: BLE001
             load_ms = round((time.perf_counter() - started) * 1000.0, 1)
             self._emit(
                 "vision.gesture_detector_failed",
                 gestures=["Open_Palm"],
                 threshold=0.5,
+                running_mode=self._gesture_running_mode,
+                wave_detection_mode=self._wave_detection_mode,
                 model_path=str(_GESTURE_MODEL_PATH),
                 load_ms=load_ms,
                 error=repr(exc),
@@ -494,6 +609,8 @@ class PerceptionPipeline:
         frame_index: int | None = None,
         timestamp_source: str | None = None,
     ) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
+        if self._gesture_only:
+            raise RuntimeError("gesture-only perception pipeline cannot process person observations")
         if self._approach is None:
             h, w = frame.shape[:2]
             if self._tracker_factory is not None:
@@ -505,15 +622,20 @@ class PerceptionPipeline:
                     smooth=self._smooth,
                 )
         frame_ts = float(ts if ts is not None else self._clock())
+        assert self._detector is not None
         persons = self._detector.detect(frame, bgr=bgr)
         events = self._approach.update(persons, ts=frame_ts)
         if self.visitor_trigger_profile.implementation == "door_policy_v1":
             events = [event for event in events if event.get("kind") not in {"approach", "depart"}]
+        observation_index = self._processed_frame_count if frame_index is None else int(frame_index)
         if self._gestures:
-            wave = self._detect_wave(frame)
+            wave = self._detect_wave(
+                frame,
+                frame_ts=frame_ts,
+                frame_index=observation_index,
+            )
             if wave is not None:
                 events.append(wave)
-        observation_index = self._processed_frame_count if frame_index is None else int(frame_index)
         self.last_observation = self._build_observation(
             frame,
             persons,
@@ -525,6 +647,29 @@ class PerceptionPipeline:
         self._processed_frame_count += 1
         self._write_events(events, ts=frame_ts)
         return events, len(persons), self._approach.frame_debug
+
+    def process_gesture(
+        self,
+        frame: NDArray[np.uint8],
+        *,
+        ts: float | None = None,
+        frame_index: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Run only the ordered gesture path for a canonical source frame."""
+
+        if not self._gestures:
+            return None
+        frame_ts = float(ts if ts is not None else self._clock())
+        observation_index = self._processed_frame_count if frame_index is None else int(frame_index)
+        event = self._detect_wave(
+            frame,
+            frame_ts=frame_ts,
+            frame_index=observation_index,
+        )
+        self._processed_frame_count += 1
+        if event is not None:
+            self._write_events([event], ts=frame_ts)
+        return event
 
     @property
     def debug_state(self) -> dict[str, Any]:
@@ -667,14 +812,33 @@ class PerceptionPipeline:
             self._logical_tracks.reset()
         return observation
 
-    def _detect_wave(self, frame: NDArray[np.uint8]) -> dict[str, Any] | None:
+    def _detect_wave(
+        self,
+        frame: NDArray[np.uint8],
+        *,
+        frame_ts: float,
+        frame_index: int,
+    ) -> dict[str, Any] | None:
         detector = self._gesture_detector
         if detector is None:
             self.ensure_gesture_detector()
             detector = self._gesture_detector
             if detector is None:
                 return None
-        hit = self._detect_gesture_candidate(detector, frame)
+        observation = self._observe_gesture_frame(
+            detector,
+            frame,
+            frame_ts=frame_ts,
+            running_mode=self._gesture_running_mode,
+        )
+        if self._wave_detection_mode == "hand_motion":
+            return self._detect_hand_motion_wave(
+                observation,
+                frame_ts=frame_ts,
+                frame_index=frame_index,
+            )
+
+        hit = observation.candidate
         if hit is None:
             return None
         name, score = hit
@@ -691,6 +855,10 @@ class PerceptionPipeline:
                 threshold=threshold,
                 accepted=False,
                 reason=reason,
+                running_mode=self._gesture_running_mode,
+                wave_detection_mode=self._wave_detection_mode,
+                source_frame_index=frame_index,
+                source_frame_ts=frame_ts,
             )
             return None
         self._emit(
@@ -699,8 +867,12 @@ class PerceptionPipeline:
             score=round(score, 3),
             threshold=threshold,
             accepted=True,
+            running_mode=self._gesture_running_mode,
+            wave_detection_mode=self._wave_detection_mode,
+            source_frame_index=frame_index,
+            source_frame_ts=frame_ts,
         )
-        now = self._clock()
+        now = frame_ts
         if now - self._last_wave < self._gesture_cooldown:
             remaining = self._gesture_cooldown - (now - self._last_wave)
             self._emit(
@@ -710,33 +882,157 @@ class PerceptionPipeline:
                 reason="cooldown",
                 cooldown_s=self._gesture_cooldown,
                 remaining_s=round(max(0.0, remaining), 3),
+                running_mode=self._gesture_running_mode,
+                wave_detection_mode=self._wave_detection_mode,
+                source_frame_index=frame_index,
+                source_frame_ts=frame_ts,
             )
             return None
         self._last_wave = now
         event = {"kind": "wave", "gesture": name, "score": round(score, 2)}
-        self._emit("vision.gesture_emitted", **event)
+        self._emit(
+            "vision.gesture_emitted",
+            **event,
+            running_mode=self._gesture_running_mode,
+            wave_detection_mode=self._wave_detection_mode,
+            source_frame_index=frame_index,
+            source_frame_ts=frame_ts,
+        )
+        return event
+
+    def _detect_hand_motion_wave(
+        self,
+        observation: GestureFrameObservation,
+        *,
+        frame_ts: float,
+        frame_index: int,
+    ) -> dict[str, Any] | None:
+        if observation.hand_center_x is None:
+            return None
+        status = self._hand_motion_wave.update(
+            timestamp_s=frame_ts,
+            center_x=observation.hand_center_x,
+        )
+        self._emit(
+            "vision.hand_motion_candidate",
+            accepted=status.detected,
+            reason=status.reason,
+            hand_count=observation.hand_count,
+            hand_center_x=round(status.center_x, 4),
+            hand_center_y=(
+                round(observation.hand_center_y, 4)
+                if observation.hand_center_y is not None
+                else None
+            ),
+            samples=status.samples,
+            direction_changes=status.direction_changes,
+            displacement=round(status.displacement, 4),
+            min_displacement=self._hand_motion_wave.min_displacement,
+            min_direction_changes=self._hand_motion_wave.min_cycles * 2,
+            timeout_s=self._hand_motion_wave.timeout_s,
+            running_mode=self._gesture_running_mode,
+            wave_detection_mode=self._wave_detection_mode,
+            source_frame_index=frame_index,
+            source_frame_ts=frame_ts,
+        )
+        if not status.detected:
+            return None
+
+        if frame_ts - self._last_wave < self._gesture_cooldown:
+            remaining = self._gesture_cooldown - (frame_ts - self._last_wave)
+            self._emit(
+                "vision.gesture_suppressed",
+                gesture="Hand_Motion",
+                score=round(status.displacement, 4),
+                score_kind="normalized_horizontal_displacement",
+                reason="cooldown",
+                cooldown_s=self._gesture_cooldown,
+                remaining_s=round(max(0.0, remaining), 3),
+                running_mode=self._gesture_running_mode,
+                wave_detection_mode=self._wave_detection_mode,
+                source_frame_index=frame_index,
+                source_frame_ts=frame_ts,
+            )
+            return None
+
+        self._last_wave = frame_ts
+        event = {
+            "kind": "wave",
+            "gesture": "Hand_Motion",
+            "score": round(status.displacement, 3),
+            "direction_changes": status.direction_changes,
+        }
+        self._emit(
+            "vision.gesture_emitted",
+            **event,
+            score_kind="normalized_horizontal_displacement",
+            running_mode=self._gesture_running_mode,
+            wave_detection_mode=self._wave_detection_mode,
+            source_frame_index=frame_index,
+            source_frame_ts=frame_ts,
+        )
         return event
 
     @staticmethod
-    def _detect_gesture_candidate(detector: Any, frame: NDArray[np.uint8]) -> tuple[str, float] | None:
+    def _observe_gesture_frame(
+        detector: Any,
+        frame: NDArray[np.uint8],
+        *,
+        frame_ts: float,
+        running_mode: str,
+    ) -> GestureFrameObservation:
+        observe = getattr(detector, "observe", None)
+        if callable(observe):
+            observation = (
+                observe(frame, timestamp_s=frame_ts)
+                if running_mode == "video"
+                else observe(frame)
+            )
+            if isinstance(observation, GestureFrameObservation):
+                return observation
+            return GestureFrameObservation(
+                candidate=getattr(observation, "candidate", None),
+                hand_center_x=getattr(observation, "hand_center_x", None),
+                hand_center_y=getattr(observation, "hand_center_y", None),
+                hand_count=int(getattr(observation, "hand_count", 0)),
+            )
+
         detect_candidate = getattr(detector, "detect_candidate", None)
         if callable(detect_candidate):
-            hit = detect_candidate(frame)
+            hit = (
+                detect_candidate(frame, timestamp_s=frame_ts)
+                if running_mode == "video"
+                else detect_candidate(frame)
+            )
         else:
-            hit = detector.detect(frame)
-        if hit is None:
-            return None
-        name, score = hit
-        return str(name), float(score)
+            hit = (
+                detector.detect(frame, timestamp_s=frame_ts)
+                if running_mode == "video"
+                else detector.detect(frame)
+            )
+        candidate = None
+        if hit is not None:
+            name, score = hit
+            candidate = (str(name), float(score))
+        return GestureFrameObservation(
+            candidate=candidate,
+            hand_center_x=getattr(detector, "hand_center_x", None),
+            hand_center_y=getattr(detector, "hand_center_y", None),
+            hand_count=int(getattr(detector, "hand_count", 0)),
+        )
 
-    @staticmethod
-    def _gesture_metadata(detector: Any) -> dict[str, Any]:
+    def _gesture_metadata(self, detector: Any) -> dict[str, Any]:
         gestures = tuple(getattr(detector, "gestures", ("Open_Palm",)))
         threshold = float(getattr(detector, "threshold", 0.5))
         model_path = str(getattr(detector, "model_path", _GESTURE_MODEL_PATH))
         return {
             "gestures": list(gestures),
             "threshold": threshold,
+            "classifier_score_floor": float(
+                getattr(detector, "classifier_score_floor", threshold)
+            ),
+            "running_mode": str(getattr(detector, "running_mode", self._gesture_running_mode)),
+            "wave_detection_mode": self._wave_detection_mode,
             "model_path": model_path,
         }
 

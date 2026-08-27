@@ -12,7 +12,23 @@ from typing import Any
 
 import click
 
+from .perception import GESTURE_RUNNING_MODES, WAVE_DETECTION_MODES
+from .events import JsonlEventSink
 from .visitor_trigger_profiles import DEFAULT_VISITOR_TRIGGER_PROFILE, VISITOR_TRIGGER_PROFILE_NAMES
+
+
+class _EmptyPersonDetector:
+    def detect(self, frame: Any, *, bgr: bool = False) -> list[Any]:
+        return []
+
+
+class _EmptyPersonTracker:
+    frame_debug: list[dict[str, Any]] = []
+    debug_state: dict[str, Any] = {}
+    last_track_boxes: list[Any] = []
+
+    def update(self, persons: Any, *, ts: float | None = None) -> list[dict[str, Any]]:
+        return []
 
 
 def handle_replay_command(args: Any) -> int:
@@ -43,8 +59,13 @@ def handle_replay_command(args: Any) -> int:
         getattr(args, "save_rrd", None),
         output_dir / "review.rrd" if output_dir is not None else None,
     )
+    gesture_diagnostics_path = (
+        output_dir / "gesture-diagnostics.jsonl"
+        if output_dir is not None and args.gestures
+        else None
+    )
     annotate_path = Path(args.annotate) if args.annotate else None
-    for path in (events_path, trace_path, save_rrd, annotate_path):
+    for path in (events_path, trace_path, save_rrd, gesture_diagnostics_path, annotate_path):
         if path is not None and path.exists():
             raise click.ClickException(f"refusing to overwrite existing output: {path}")
         if path is not None:
@@ -62,6 +83,15 @@ def handle_replay_command(args: Any) -> int:
         threshold=args.threshold,
         smooth=args.smooth,
         gestures=args.gestures,
+        gesture_running_mode=args.gesture_running_mode,
+        wave_detection_mode=args.wave_detection_mode,
+        detector=_EmptyPersonDetector() if args.gesture_only else None,
+        tracker_factory=(lambda frame_wh: _EmptyPersonTracker()) if args.gesture_only else None,
+        event_sink=(
+            JsonlEventSink(gesture_diagnostics_path)
+            if gesture_diagnostics_path is not None
+            else None
+        ),
         visitor_trigger_profile=args.visitor_trigger_profile,
         observation_mode="replay",
         observation_run_id=run_id,
@@ -71,19 +101,24 @@ def handle_replay_command(args: Any) -> int:
 
     cap = cv2.VideoCapture(str(video))
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+    reported_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    source_frame_count = reported_frame_count if reported_frame_count > 0 else 0
     indexed_frames = []
     source_index = 0
     while True:
+        if args.to_frame is not None and source_index > args.to_frame:
+            break
         ok, frame = cap.read()
         if not ok:
             break
-        indexed_frames.append((source_index, frame))
+        if source_index >= args.from_frame:
+            indexed_frames.append((source_index, frame))
         source_index += 1
     cap.release()
-    decoded_frames = len(indexed_frames)
-    if args.from_frame:
-        indexed_frames = [item for item in indexed_frames if item[0] >= args.from_frame]
+    decoded_frames = source_frame_count or source_index
     if args.reverse:
+        if args.gestures and args.gesture_running_mode == "video":
+            raise click.ClickException("VIDEO gesture mode does not support reverse replay")
         indexed_frames.reverse()
 
     frame_timestamps, timestamp_source = _load_replay_timestamps(args, video)
@@ -121,6 +156,11 @@ def handle_replay_command(args: Any) -> int:
             "events": str(events_path),
             "frames": str(trace_path) if trace_path is not None else None,
             "rrd": str(save_rrd) if save_rrd is not None else None,
+            "gesture_diagnostics": (
+                str(gesture_diagnostics_path)
+                if gesture_diagnostics_path is not None
+                else None
+            ),
             "annotated": str(annotate_path) if annotate_path is not None else None,
         },
         started_ts=started_ts,
@@ -249,9 +289,30 @@ def handle_replay_command(args: Any) -> int:
     help="Versioned greet/goodbye trigger implementation.",
 )
 @click.option("--gestures", is_flag=True, default=False, help="Enable wave detection.")
+@click.option(
+    "--gesture-only",
+    is_flag=True,
+    default=False,
+    help="Skip person inference and evaluate only the selected wave detector.",
+)
+@click.option(
+    "--gesture-running-mode",
+    type=click.Choice(GESTURE_RUNNING_MODES),
+    default="image",
+    show_default=True,
+    help="MediaPipe gesture recognizer running mode.",
+)
+@click.option(
+    "--wave-detection-mode",
+    type=click.Choice(WAVE_DETECTION_MODES),
+    default="open_palm",
+    show_default=True,
+    help="Wave decision applied to MediaPipe output.",
+)
 @click.option("--every", type=int, default=1, show_default=True, help="Process every Nth frame.")
 @click.option("--reverse", is_flag=True, default=False, help="Process frames in reverse.")
 @click.option("--from-frame", type=int, default=0, show_default=True, help="Skip frames before this index.")
+@click.option("--to-frame", type=int, default=None, help="Stop after this source frame index.")
 @click.option("--trace", is_flag=True, default=False, help="Print per-frame track stats.")
 @click.option("--annotate", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Output annotated debug video.")
 @click.option("--expect-approach", type=int, default=None, help="Assert approach count.")
@@ -348,9 +409,13 @@ def _initial_manifest(
             "tracker_smoothing_window": args.smooth,
             "visitor_profile": pipe.visitor_trigger_profile.metadata(smooth=args.smooth),
             "gestures": args.gestures,
+            "gesture_only": args.gesture_only,
+            "gesture_running_mode": args.gesture_running_mode,
+            "wave_detection_mode": args.wave_detection_mode,
             "every": args.every,
             "reverse": args.reverse,
             "from_frame": args.from_frame,
+            "to_frame": args.to_frame,
             "track_trail_window_s": args.track_trail_window_s,
             "rerun_jpeg_quality": args.rerun_jpeg_quality,
             "doorway_zone": zone_config,
