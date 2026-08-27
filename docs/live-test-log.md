@@ -10,6 +10,60 @@ Each entry uses three buckets:
 
 ---
 
+## 2026-08-07 - WebRTC reset left a live PID with no media
+
+**Run:** `official-live-20260807-110807`
+**Setup:** frozen release `21ad327`, `door-v1-20260805`, Grounding DINO at two FPS on MPS,
+raw audio/video and vision artifacts enabled, no Rerun streaming.
+
+### Good
+
+- Before the failure, Grounding DINO completed `3905 / 3905` submitted semantic frames with zero
+  scheduler drops. Two greet events and one goodbye event reached deterministic TTS and recorded
+  `assistant.audio.started` / `assistant.audio.done`.
+- The robot daemon, motor loop, and local S2S backend remained reachable after the media failure.
+
+### Bad and required remediation
+
+- The visitor's real wave around video `00:31` was not recognized. During the same physical
+  sequence, the door policy emitted two separate false positives even though the door stayed
+  closed:
+  - frame `155` / video `00:31.0` / source timestamp `1786126207.289`: `vision.approach` produced
+    `policy.greet`;
+  - frame `195` / video `00:39.0` / source timestamp `1786126220.025`: `vision.depart` produced
+    `policy.farewell`.
+- The door localization became unreliable while the person occluded the door and moved near the
+  camera. The retained door box first collapsed, disappeared at frame `193`, and then became a
+  small false box at the bottom-right of frame `195`. Treat both policy events as labeled
+  regressions, independent of the wave-recognition miss.
+- The two-layer close-person patch was implemented and accepted offline on 2026-08-09. It rejects
+  contaminated semantic door geometry and makes oversized or frame-clipped person interactions
+  policy-ineligible while retaining person presence. Replay removed both false events and
+  preserved four accepted events across two real-door clips; live acceptance remains pending.
+- The last video/capture frame was at `1786128695.679` and the last audio input frame was at
+  `1786128696.144` (`2026-08-07 14:51:36 EDT`). GStreamer then reported that the WebRTC signaling
+  connection to the robot had been reset by the remote peer (`os error 54`). Audio, video, person
+  perception, gesture detection, and door-policy evaluation all stopped together.
+- The live runner PID remained alive. OPS therefore continued to report `status: ok` even though
+  the run could no longer observe or respond to visitors. The SDK bus handler logs this terminal
+  error but does not reconnect the WebRTC pipeline or expose source liveness to the application.
+- m1max stayed associated with Wi-Fi, but its system counters recorded a coincident burst of
+  transmit failures/retries and an `en0` network-configuration event shortly afterward. This
+  supports a transient network/WebRTC-session failure. It does not prove whether the network event
+  or the robot-side signaling service initiated the reset because robot-side daemon logs were not
+  retained.
+- A later MKV rsync was not causal: it completed at `2026-08-07 15:40:10 EDT`, about 48 minutes
+  after the media failure.
+
+**Disposition:** production-blocking. Add application-level audio/video liveness timestamps and
+make OPS health reflect their age. On terminal media loss, the default recovery must fail-stop and
+finalize the run; an explicitly enabled unattended policy may perform a bounded full-session
+restart, then fail-stop if recovery does not hold. See `production-readiness.md` and
+`todo-official-runtime.md`. The two false door-policy events are covered by the offline-accepted
+close-person patch, which still requires controlled live acceptance.
+
+---
+
 ## 2026-08-07 - unattended run exposed terminal DINO frame failure
 
 **Run:** `official-live-20260807-063649`

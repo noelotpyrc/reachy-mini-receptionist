@@ -1,5 +1,9 @@
 # Rerun Vision Tracking Feature Plan
 
+> Runtime cadence and frame ownership for the planned canonical 15 FPS source are specified in
+> [`vision-frame-broker-architecture.md`](vision-frame-broker-architecture.md). Rerun remains a
+> downstream, non-blocking subscriber in that architecture.
+
 **Status:** Offline replay and configurable real-time tracking display implemented and exercised;
 live Rerun streaming remains optional and off for the first production acceptance run
 

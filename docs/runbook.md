@@ -29,7 +29,9 @@ Product/controller repo:
 
 - Local dev: `/Users/noel/projects/reachy_mini_receptionist_clean`
 - m1max rollback checkout: `/Users/leon/projects/reachy_mini_receptionist_deploy`
-- Current validated m1max release:
+- Current prepared m1max reliability release:
+  `/Users/leon/projects/reachy_mini_receptionist_release_3449f8e_frozen` at `3449f8e`
+- Previously live-validated assisted release:
   `/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen` at `749ee18`
 - Previous clean assisted release:
   `/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6` at `612ea43`
@@ -117,7 +119,7 @@ Run from m1max:
 
 ```bash
 ssh leon@100.127.86.67
-RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen
+RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_3449f8e_frozen
 cd "$RELEASE"
 export REACHY_REPO="$RELEASE"
 export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"
@@ -155,7 +157,7 @@ RECEPTION_VISITOR_TRIGGER_PROFILE=visitor-v1-20260802
 
 # Door-ordered greet/goodbye candidate.
 RECEPTION_VISITOR_TRIGGER_PROFILE=door-v1-20260805
-RECEPTION_VISION_PIPELINES_CONFIG=/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen/config/vision/door-policy-v1.json
+RECEPTION_VISION_PIPELINES_CONFIG=/Users/leon/projects/reachy_mini_receptionist_release_3449f8e_frozen/config/vision/door-policy-v1.json
 RECEPTION_RERUN_MODE=off
 ```
 
@@ -171,6 +173,63 @@ complete resolved configuration.
 The door policy pipeline loads Grounding DINO when the runner starts. On the prepared m1max release,
 the first isolated model load took about 20 seconds; this is startup time before robot interaction,
 not per-frame inference latency.
+
+The frame-broker architecture is an opt-in evaluation path and is not yet the production default:
+
+```bash
+# Current production behavior and one-setting rollback.
+RECEPTION_VISION_RUNTIME=serial-v1
+
+# Broker evaluation settings. Apply only to a new run.
+RECEPTION_VISION_RUNTIME=broker-v1
+RECEPTION_BROKER_CAPTURE_FPS=15
+RECEPTION_BROKER_RECORDER_QUEUE_SIZE=30
+RECEPTION_BROKER_GESTURE_QUEUE_SIZE=30
+RECEPTION_BROKER_POLICY_IDLE_S=0.1
+RECEPTION_GESTURE_RUNNING_MODE=image
+RECEPTION_WAVE_DETECTION_MODE=open_palm
+```
+
+`broker-v1` records canonical source frame IDs in the video and derived-capture sidecars and writes
+final capture/consumer counters to `runtime_summaries.vision_broker` in the run manifest. Stop the
+current run before changing modes; there is no mid-session fallback. See
+`vision-frame-broker-architecture.md` for queue semantics, acceptance, and rollback boundaries.
+
+### Known GStreamer startup defect
+
+A fresh uv-managed release can fail during `robot_sdk_connect_start` even when `uv lock --check`,
+`uv sync --frozen`, and `uv pip check` all pass. The characteristic log output is:
+
+```text
+External plugin loader failed
+Caught a segmentation fault while loading plugin file: .../libgstpython.dylib
+```
+
+This is a runtime environment/bootstrap defect, not ordinary dependency drift. The GStreamer
+package's `.pth` code prepends `GST_REGISTRY_1_0` every time Python starts, while OPS launches a
+Python supervisor that launches the Python live runtime. The resulting value is a different,
+colon-containing registry filename at each process depth. On a fresh release, scanning also finds a
+`libgstpython.dylib` whose `@rpath/libpython3.12.dylib` dependency is not available in the uv
+standalone-Python layout.
+
+Until the launcher is fixed, do not repeatedly restart after this signature. Confirm that OPS
+reported `child_failed`, cleanup disabled the motors and released media, then prewarm the exact
+runtime-depth registry once and retry. For a release rooted at `$RELEASE`:
+
+```bash
+P="$RELEASE/.release-venv/.cache/gstreamer-1.0/registry-macosx-11.0-arm64.bin"
+
+GST_REGISTRY_1_0="$P:$P" \
+  "$RELEASE/.release-venv/bin/python" -c \
+  'import gi; gi.require_version("Gst", "1.0"); from gi.repository import Gst; Gst.init(None); print(Gst.version_string())'
+```
+
+The initial environment contains two copies because the warmup interpreter prepends the third. A
+scanner warning about `libgstpython.dylib` is currently expected; successful completion and a
+printed GStreamer version show that the registry was written. This workaround applies only to that
+immutable release path. It does not repair another release and is not an unattended-production
+procedure. The root-cause record and permanent acceptance criteria are in
+[Production Readiness](production-readiness.md#gstreamer-uv-startup-incident-2026-08-25).
 
 There is not yet a first-class unlimited duration. For the 2026-08-06 long run, OPS used a very
 large `LIVE_DURATION` as a run-until-stopped workaround. This is acceptable only for assisted

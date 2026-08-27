@@ -188,6 +188,43 @@ type→behavior map. Refactoring `ReceptionPolicy` into per-behavior policies �
 - Optional run-on cluster annotation for speculative-turn transcript drops.
 - Additional listening controls such as A/B overlap, loop selected range, and keyboard shortcuts.
 
+### 6a. Media liveness and terminal WebRTC recovery  `[~]`
+**Status:** fail-stop implementation, offline tests, healthy-run threshold baselining, and frozen
+m1max deployment at `3449f8e` are complete. A controlled live interruption remains
+production-blocking; it could not run on 2026-08-07 because the robot API was unreachable.
+
+**Goal:** A live PID must not be reported healthy after audio/video input has stopped. A terminal
+WebRTC disruption must either complete a safe fail-stop or, under a separately approved unattended
+policy, perform one bounded full-session recovery sequence.
+
+**Evidence:** At `2026-08-07 14:51:36 EDT`, WebRTC signaling was reset by the remote peer. The last
+video/capture frame was `1786128695.679` and the last audio frame was `1786128696.144`. DINO had
+completed `3905 / 3905` frames with zero drops, but all media-driven processing stopped while OPS
+continued to report `ok` from PID existence. See `live-test-log.md` and
+`production-readiness.md`.
+
+**Implementation sequence:**
+1. **Implemented:** record source-level monotonic timestamps and sequences for expected microphone
+   samples and camera frames independently of recording, plus an asyncio event-loop pulse.
+2. **Partially complete:** configurable startup and stale-source thresholds are implemented. The
+   current `120 s` startup, `5 s` heartbeat-file, and `8 s` source/event-loop defaults are based on
+   four retained healthy m1max runs. Their maximum observed audio and video gaps were `0.484 s` and
+   `4.216 s`, respectively; controlled live interruption acceptance remains required.
+3. **Implemented:** expose heartbeat/source ages through runner and aggregate status; a stale source
+   changes active status to `faulting` before process teardown.
+4. **Implemented:** a detached per-run supervisor owns the live child, graceful stop/hard-stop
+   escalation, artifact close/interruption inspection, bounded robot cleanup, active-state
+   retirement, and retained terminal status. The backend remains warm.
+5. **Deferred by design:** keep bounded restart behind an explicit recovery policy. A restart must stop the old session,
+   use a new run ID linked to the failed run, cap attempts with backoff, and fail-stop on recurrence.
+6. **Offline complete:** tests cover startup grace, required/optional source starvation, event-loop
+   starvation, artifact close/interruption classification, bounded cleanup, and OPS fault status.
+   Run one controlled live WebRTC interruption test after user confirmation.
+
+**Done when:** status cannot remain `ok` beyond the configured liveness bound; fail-stop leaves no
+runner/media ownership leak and preserves diagnosable artifacts; any approved restart creates
+exactly one healthy replacement and never loops indefinitely.
+
 ---
 
 ## Phase 3 — Iterate UX & backend with the fast loop
@@ -220,10 +257,36 @@ door-person interaction metrics, ordered greet/goodbye candidates, live/offline 
 and a versioned rollback profile are covered by focused tests and accepted captured clips.
 
 **Remaining steps:**
+- Revisit wave-detection reliability; no replacement is accepted yet. A replay-only implementation
+  of the Reachy Mini Rock Paper Scissors temporal hand-center algorithm was evaluated against the
+  two known close-wave recordings without changing the live `Open_Palm` default:
+  - `official-live-20260807-110807`, frames `120-190`: `31 / 71` frames had a hand observation,
+    but no two-second window combined the required two direction changes with `0.08` normalized
+    displacement; both temporal and static detection emitted zero waves;
+  - `official-live-20260825-145234`, frames `4800-4920`: `36 / 121` frames had a hand observation;
+    frame `4853` reached two direction changes and `0.0743` displacement, below the algorithm's
+    `0.08` threshold; both temporal and static detection emitted zero waves;
+  - MediaPipe `VIDEO` mode reduced useful trajectory evidence on both windows. Lowering the
+    displacement threshold would recover only the second sample and is not accepted from this
+    two-positive set. The temporal path remains available for offline comparison only.
+  - **Offline implementation complete:** the versioned frame-broker runtime described in
+    [`vision-frame-broker-architecture.md`](vision-frame-broker-architecture.md) provides one
+    canonical 15 FPS stream to recording and MediaPipe while RF-DETR/DINO select frame-identified
+    lower-rate subsets. Fan-out, overflow, startup ordering, source provenance, policy-event
+    serialization, shutdown, manifest counters, and the OPS selector have deterministic tests.
+    `serial-v1` remains the rollback default. Next, deploy to m1max, benchmark zero-drop 15 FPS
+    recording/MediaPipe with RF-DETR and DINO active, then run controlled wave acceptance.
+- **Offline complete:** the two-layer close-person patch rejects contaminated door geometry and
+  makes oversized or frame-clipped person interactions policy-ineligible without hiding presence.
+  It removes the false greet at frame `155` and false goodbye at frame `195` in
+  `official-live-20260807-110807` while preserving four accepted events across the two real-door
+  replay clips. The patch is versioned as `door-v2-20260809`, with `door-v1-20260805` retained for
+  rollback. Controlled live acceptance remains required before promotion.
 - Run one controlled door entry, greet, wave-chat, and door exit with a person onsite.
 - Confirm trigger order, policy-speech latency, no duplicate greeting/farewell, and normal wave-chat.
 - Review the retained video, person/door observations, policy events, audio, and transcripts.
-- Promote `door-v1-20260805` or restore `legacy`; do not retune thresholds from an unlabelled run.
+- Promote `door-v2-20260809`, restore `door-v1-20260805`, or restore `legacy`; do not retune
+  thresholds from an unlabelled run.
 
 **Done when:** the two false sequences above produce no farewell, genuine walk-away
 still produces one farewell, and a live walk-in-and-wave produces one coherent opener

@@ -1,5 +1,9 @@
 # Vision Greet/Goodbye Trigger Proposal
 
+> The planned frame-broker runtime preserves the same-frame RF-DETR/DINO joins required by this
+> policy while allowing MediaPipe and recording to run at a higher cadence. See
+> [`vision-frame-broker-architecture.md`](vision-frame-broker-architecture.md).
+
 **Status:** Implemented and passed captured offline evaluation; live acceptance pending
 **Scope:** Vision-triggered greet and goodbye policy events
 **Related work:** [`todo-official-runtime.md`](todo-official-runtime.md), item 7a

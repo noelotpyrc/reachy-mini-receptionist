@@ -4,7 +4,7 @@
 
 **Current phase:** assisted production preparation
 
-**Updated:** 2026-08-06
+**Updated:** 2026-08-25
 
 This document is the promotion checklist for running the receptionist in the clinic for an extended
 period without a developer onsite. It owns pass/block status. Detailed implementation and operating
@@ -16,9 +16,12 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 ## Current Baseline
 
-- Validated m1max assisted release: clean checkout at `749ee18` in
-  `/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen`. Runtime code is unchanged
-  from cleanup commit `729bb76`; `749ee18` adds only the readiness review.
+- Prepared m1max reliability release: clean checkout at `3449f8e` in
+  `/Users/leon/projects/reachy_mini_receptionist_release_3449f8e_frozen`. Lock-enforced runtime and
+  validation environments, full pytest, and changed-file Ruff passed. Media-liveness live
+  acceptance is pending because the robot API was unreachable during deployment.
+- Previously live-validated assisted release: `749ee18` in
+  `/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen` remains the rollback target.
 - Recovery and rollback: pre-removal source is tagged `legacy-daemon-last` at `260e2f2`; the previous
   clean release at `612ea43` and the dirty deployment checkout remain intact.
 - S2S backend: `speech-to-speech==0.2.10`, fork SHA `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`,
@@ -37,22 +40,108 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 | Area | Gate | Status | Evidence / remaining work |
 | --- | --- | --- | --- |
-| Release | Immutable product revision, reproducible venv, documented rollback | **Pass for assisted use** | Release `749ee18` uses Python `3.12.13`, lock-enforced non-editable runtime/validation venvs, a generated release manifest/package inventory, and preserved rollback revisions. Replace commit-named/manual activation with a stable production release mechanism before non-technical operation. |
+| Release | Immutable product revision, reproducible venv, documented rollback | **Pass for assisted use** | Candidate `3449f8e` uses Python `3.12.13` and lock-enforced non-editable runtime/validation venvs; `749ee18` remains the live-validated rollback. Replace commit-named/manual activation with a stable production release mechanism before non-technical operation. |
 | Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Backend setup script, runtime metadata, Hermes text/integration tests, and deterministic policy-TTS benchmark completed. Add wrapper/provider checks to aggregate health. |
 | Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Physical runner restart must remain operator-authorized. |
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Blocked** | Door policy passed captured offline evaluation. A controlled live door-entry, conversation, and exit sequence is still required. |
 | Long-run behavior | Multi-hour run with conversations and no wedged subsystems | **Blocked** | `official-live-20260806-114813` ran for about 96 minutes but observed no people or conversations, so it tested idle stability only. |
-| Startup | Bounded, observable transition to ready | **Needs work** | Fresh release startup took roughly two minutes while DINO/RF-DETR and media initialized. Expose progress and define a timeout/fault state. |
+| Startup | Bounded, observable transition to ready | **Blocked** | Fresh release startup took roughly two minutes while DINO/RF-DETR and media initialized. The 2026-08-25 frozen release also exposed a GStreamer registry/bootstrap defect that can crash media initialization in a new uv environment. Expose progress, define a timeout/fault state, and replace the registry prewarm workaround described below. |
 | Session duration | First-class run-until-stopped mode | **Blocked** | Current operation uses a very large numeric duration as an indefinite-run workaround. Implement explicit unlimited semantics. |
-| Recording integrity | Audio/video/capture finalize and align for a long run | **Blocked** | The latest input loop covered about `5740 s`, while the finalized MKV reports about `3311 s`. Diagnose frame timestamps/container duration before relying on continuous video. |
-| Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Blocked** | Recorder remains runner-owned. Implement or consciously defer TODO #10's recorder sidecar with a documented production fallback. |
+| Recording integrity | Audio/video/capture finalize and retain diagnosable timing | **Accepted limitation** | Fixed-`5 FPS` MKVs play faster than wall time, but frame order is intact and JSONL sidecars retain the timing source of truth used by replay/Rerun. Use MKVs only for qualitative review; map a reported player position to frame index and then sidecar `ts`. |
+| Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Partial / acceptance pending** | The detached session supervisor now records whether the runner-owned manifest closed cleanly or remained interrupted, including open artifact paths. A recorder sidecar is still required if hard-kill finalization rather than explicit interruption is required. |
 | Privacy | Approved raw-data policy, access boundaries, and retention | **Decision required** | Continuous audio plus video is about `0.4 GB/hour` in the latest run and may contain sensitive clinic information. Decide production defaults and retention before unattended recording. |
-| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Blocked** | Current aggregate status covers backend port/process, runner, and optional robot state. It does not yet prove wrapper/provider health or active media/artifact progress. |
-| Supervision | Services recover safely after machine/process failure | **Blocked** | Backend and wrapper need managed service definitions. A physical runner must not auto-restart without an explicit safety policy. |
+| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Partial / acceptance pending** | Source-level audio/video ages, event-loop age, and retained terminal faults are implemented locally. Validate thresholds and fail-stop on m1max. Wrapper/provider health and disk headroom remain missing. |
+| Supervision | Services recover safely after machine/process or media failure | **Partial / acceptance pending** | A detached session supervisor now performs fail-stop, bounded robot cleanup, terminal recording, and active-state retirement while leaving the backend warm. Controlled live fault acceptance remains; automatic physical restart stays disabled. Backend and wrapper still need managed service definitions. |
 | Remote access | Authenticated, auditable, least-privilege control | **Blocked for non-technical users** | SSH/Tailscale plus OPS is acceptable for assisted production. No remote operations API or operator UI exists yet. |
 | Emergency handling | Idempotent remote stop and documented local fallback | **Partial** | `stop-session` and `shutdown` exist. Define an operator-visible emergency stop, timeout behavior, and recovery instructions. |
 
 ## Latest Long-Run Evidence
+
+### GStreamer uv startup incident (2026-08-25)
+
+Fresh `.release-venv` environments built by `uv sync --frozen` could pass package validation and
+still crash when the official runtime initialized SDK media. The failing run
+`official-live-20260825-124253` stopped in `phase=starting` with return code `255`; its log showed
+the external GStreamer plugin loader failing and an in-process segmentation fault while scanning
+`gstreamer_python/lib/gstreamer-1.0/libgstpython.dylib`.
+
+This is not evidence that uv selected inconsistent dependency versions. The failed release and the
+previously working release used the same uv-managed CPython `3.12.13`, GStreamer `1.28.3`,
+`gstreamer-python 1.28.3`, Reachy Mini SDK `1.8.0`, package inventory, and relevant binary hashes.
+The defect is in runtime bootstrap and binary loading:
+
+- `libgstpython.dylib` links to `@rpath/libpython3.12.dylib`, which is not present in the expected
+  locations in the uv standalone-Python environment. The external scanner therefore cannot load
+  that optional plugin.
+- The installed GStreamer `.pth` bootstrap prepends its `GST_REGISTRY_1_0` value at every Python
+  interpreter startup.
+- A physical run starts three nested interpreters: OPS CLI, detached supervisor, and live runtime.
+  The inherited registry filename is therefore expanded once per layer. Because
+  `GST_REGISTRY_1_0` is one filename rather than a path-list variable, each depth addresses a
+  different colon-containing cache filename.
+- An older release happened to have the required registry cache from prior starts. A fresh release
+  did not, so its live process rescanned the incompatible plugin and could crash before media became
+  ready.
+
+The temporary recovery was to initialize GStreamer once with the exact three-layer registry value
+before starting the session. After that prewarm, `official-live-20260825-124601` reached `ready`,
+with advancing microphone and camera heartbeats. This workaround is release-path-specific and must
+not be treated as a production fix.
+
+The permanent fix must give the live child a clean, deterministic GStreamer environment rather than
+passing interpreter-mutated values through each launcher layer. In particular, OPS should remove
+bundle-managed GStreamer variables from the supervisor environment, and the supervisor should
+launch the child from the clean environment stored in its launch specification rather than from
+its own post-`.pth` `os.environ`. Acceptance requires a newly built frozen environment with no
+pre-existing registry: one normal OPS start must reach `ready`, audio/video sequences must advance,
+and a second start must do the same without manual cache preparation. The plugin linkage warning
+must either be removed by a compatible package/runtime layout or explicitly proven harmless after
+the optional Python-plugin directory is excluded from scanning.
+
+Run `official-live-20260807-110807` exposed a media-liveness failure that process-only health cannot
+detect:
+
+- At `2026-08-07 14:51:36 EDT`, the robot WebRTC signaling connection was reset by the remote peer.
+  Audio input, camera frames, vision capture, DINO input, gesture recognition, and door-policy
+  evaluation all stopped.
+- DINO itself was healthy at the boundary (`3905 / 3905`, zero dropped); the runner PID, robot
+  daemon, motors, and local backend remained alive.
+- OPS continued returning `ok` because it checked the runner PID but not source-frame age.
+- m1max recorded transient Wi-Fi transmit failures/retries at the same second, but retained evidence
+  cannot distinguish a network-initiated failure from a robot-side signaling reset. Treat the
+  immediate cause as terminal WebRTC-session loss and keep the deeper initiator unresolved.
+
+### Media-liveness recovery requirement
+
+**Implementation status (2026-08-07):** the required fail-stop path is implemented locally. The
+live child publishes microphone, camera, and event-loop heartbeats independent of recording. A
+detached supervisor monitors those signals, terminates a stale child, inspects artifact closure,
+performs bounded robot cleanup, retains terminal status, and retires the active state pointer. The
+initial `120 s` startup, `5 s` heartbeat-file, and `8 s` source/event-loop thresholds are
+configurable. Four retained healthy m1max runs had maximum audio and video gaps of `0.484 s` and
+`4.216 s`; a controlled live interruption remains required.
+
+The runtime must track monotonic last-seen timestamps independently for expected audio input and
+video input after `software_pipeline_initialized`. Normal frame gaps and startup are not faults;
+source age beyond a validated, configurable threshold is. Loss of either source marks the run
+degraded, and loss of both marks the WebRTC session terminal. OPS status must surface source age,
+the fault reason, and the selected recovery action rather than inferring health from PID existence.
+
+Recovery has two policy modes:
+
+1. **Fail-stop (required default):** emit a structured media-liveness fault, stop the runner through
+   the normal lifecycle, finalize or explicitly mark all artifacts interrupted, release media,
+   sleep the robot, and leave backend services warm. The fault remains visible through latest-run
+   status.
+2. **Bounded restart (optional, explicit):** only when the shift was started with an approved
+   unattended-recovery policy, stop the failed session completely and start a new run ID with a
+   parent/recovery link. Limit attempts and use backoff. Any repeated liveness failure must fall
+   back to fail-stop; parallel runners and in-place partial media reconstruction are forbidden.
+
+Acceptance requires offline starvation tests plus one controlled live WebRTC interruption. Status
+must fault within the configured bound; fail-stop must leave no live runner and finalize artifacts;
+restart mode must create one healthy replacement run with separate artifacts and no duplicate
+policy speech caused by stale state.
 
 Run `official-live-20260806-114813` used the clean release with raw audio, video, vision capture,
 Grounding DINO door observations, and Rerun streaming disabled.
@@ -66,8 +155,8 @@ Grounding DINO door observations, and Rerun streaming disabled.
 - Graceful OPS shutdown stopped the runner, slept the robot, disabled motors, released media, and
   finalized the artifacts.
 - The input loop reported about `5740 s`, but `ffprobe` reports approximately `3311 s` for the MKV.
-  This confirms the open frame-timestamp/container-duration issue recorded in
-  `docs/archive/reviews/rerun-review-issues-20260626.md`.
+  This is the accepted fixed-FPS playback limitation: the MKV remains useful for qualitative review,
+  while its sidecar timestamps are required for timing and cross-artifact alignment.
 
 ## Latest Release Evidence
 
@@ -94,14 +183,16 @@ Complete these in order. Stop and diagnose when a gate fails.
 
 1. Correct active documentation and establish this checklist as the promotion source of truth.
    **Complete.**
-2. Diagnose and fix or explicitly bound the long-run video duration/alignment problem.
+2. Accept and document the fixed-FPS MKV limitation; require sidecar timestamps for timing-sensitive
+   diagnosis. **Complete.**
 3. Implement explicit unlimited session duration and startup progress/fault reporting.
 4. Define the production configuration outside Git: release, visitor profile, recording mode,
    retention, provider, voice, and rollback target.
 5. Add authenticated health checks for Hermes and the external provider plus media/artifact growth
-   checks for an active run.
-6. Add service supervision for non-physical persistent services. Keep physical runner recovery
-   manual unless a separate safety review approves automatic restart.
+   checks for an active run. Media-liveness fault and fail-stop are implemented locally; deploy,
+   baseline thresholds, and complete controlled live acceptance.
+6. Add service supervision for non-physical persistent services. Keep automatic physical runner
+   restart disabled unless the bounded-restart policy above receives a separate safety approval.
 7. Run one controlled visitor acceptance: door entry, greet, wave-chat, ordinary questions,
    goodbye, and door exit, with artifacts retained for review.
 8. Run one assisted clinic shift with remote status checks and a tested emergency stop procedure.
@@ -130,7 +221,8 @@ proxy.
 
 - No backend model, prompt, memory, STT, or TTS experiments.
 - No public Internet exposure of robot or backend services.
-- No automatic physical runner restart.
+- No automatic physical runner restart unless the bounded media-recovery policy is explicitly
+  reviewed and approved; fail-stop remains mandatory and the default.
 - No further deletion of code, documents, artifacts, profiles, or database entries without separate
   confirmation. The separately approved Batch C legacy-daemon removal is complete and recoverable
   from `legacy-daemon-last`.

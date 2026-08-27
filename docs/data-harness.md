@@ -73,7 +73,9 @@ Cat-1, never trust as truth.** Worth recording only to see *what the model decid
   — offline ASR over the robot's own per-response WAVs, used only when backend assistant transcript
   events are missing. This is fallible model output and must stay visually/provenance-separated from
   backend-emitted assistant transcript.
-- **Wave `score`** — MediaPipe Open_Palm probability.
+- **Wave `score`** — MediaPipe `Open_Palm` probability for the live/default detector. Experimental
+  offline `Hand_Motion` events use normalized horizontal displacement and identify that meaning as
+  `score_kind=normalized_horizontal_displacement` in gesture diagnostics.
 - **Assistant response text** — Hermes/direct-provider LLM generation, conditional on model,
   profile-owned context, tools, and session state.
 
@@ -87,10 +89,16 @@ Re-derivable; inherits Cat-2's errors. Convenient for monitoring / debugging log
 - **The runner-log narrative** — a human-readable rendering of model and runtime decisions.
 
 ## Gaps (debugging/tuning blind spots)
-1. **Long-run MKV duration does not match runner-observed time.** Run
-   `official-live-20260806-114813` reported about `5740 s` of input-loop activity while `ffprobe`
-   reports about `3311 s` for the MKV. Compare video sidecar timestamps, decoded frame count, capture
-   timestamps, and writer FPS before changing playback or policy code.
+1. **MKV playback time is not wall time.** The fixed-`5 FPS` writer compresses recordings when the
+   vision loop produces frames more slowly. All 14 retained live MKVs showed this behavior; encoded
+   duration was `43-63%` of the sidecar frame span. This is an accepted limitation for qualitative
+   review, not a production blocker, because replay/Rerun timing uses recorded sidecar timestamps.
+   When reporting an issue found by eyeballing an MKV, provide the run id and player position as
+   `position / total duration` (and optionally the normalized percentage). Convert that position to
+   the corresponding decoded frame index, then use that frame's video-sidecar `ts` to anchor logs,
+   audio, detections, and policy events. Do not linearly interpolate between the first and last wall
+   timestamps because frame cadence varies during a run. This mapping assumes the MKV was not
+   trimmed/transcoded and its decoded frame count still matches the sidecar.
 2. **Raw audio is separate from video.** The review tools align channels from sidecars; there is no
    single audiovisual recording container.
 3. **Recording lifecycle is still runner-coupled.** WAV/video/capture files are streamed during
@@ -113,6 +121,7 @@ Re-derivable; inherits Cat-2's errors. Convenient for monitoring / debugging log
 - **Cat-1 is the reusable asset; Cat-2/3 are disposable** (re-derivable from Cat-1 + a model).
 - **Vision already has its Cat-1** (raw video) → replayable + tunable offline. That's why vision tuning works.
 - **Audio and video have Cat-1**, and both have offline review/replay consumers.
-- **Priority order for production:** diagnose video duration/alignment, define recording privacy and
-  retention, make finalization failure explicit/crash-resilient, and add active media/artifact health
-  checks. See [`production-readiness.md`](production-readiness.md).
+- **Priority order for production:** define recording privacy and retention, make finalization
+  failure explicit/crash-resilient, and add active media/artifact health checks. Treat MKV playback
+  as qualitative and use the video sidecar for timing. See
+  [`production-readiness.md`](production-readiness.md).
