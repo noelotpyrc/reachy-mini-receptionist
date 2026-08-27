@@ -86,6 +86,13 @@ class OpsConfig:
     media_heartbeat_stale_s: float = 5.0
     media_source_stale_s: float = 8.0
     event_loop_stale_s: float = 8.0
+    vision_runtime: str = "serial-v1"
+    broker_capture_fps: float = 15.0
+    broker_recorder_queue_size: int = 30
+    broker_gesture_queue_size: int = 30
+    broker_policy_idle_s: float = 0.1
+    gesture_running_mode: str = "image"
+    wave_detection_mode: str = "open_palm"
 
     @classmethod
     def from_env(cls) -> "OpsConfig":
@@ -156,6 +163,19 @@ class OpsConfig:
             media_heartbeat_stale_s=float(os.environ.get("MEDIA_HEARTBEAT_STALE_S", "5")),
             media_source_stale_s=float(os.environ.get("MEDIA_SOURCE_STALE_S", "8")),
             event_loop_stale_s=float(os.environ.get("EVENT_LOOP_STALE_S", "8")),
+            vision_runtime=os.environ.get("RECEPTION_VISION_RUNTIME", "serial-v1"),
+            broker_capture_fps=float(os.environ.get("RECEPTION_BROKER_CAPTURE_FPS", "15")),
+            broker_recorder_queue_size=int(
+                os.environ.get("RECEPTION_BROKER_RECORDER_QUEUE_SIZE", "30")
+            ),
+            broker_gesture_queue_size=int(
+                os.environ.get("RECEPTION_BROKER_GESTURE_QUEUE_SIZE", "30")
+            ),
+            broker_policy_idle_s=float(
+                os.environ.get("RECEPTION_BROKER_POLICY_IDLE_S", "0.1")
+            ),
+            gesture_running_mode=os.environ.get("RECEPTION_GESTURE_RUNNING_MODE", "image"),
+            wave_detection_mode=os.environ.get("RECEPTION_WAVE_DETECTION_MODE", "open_palm"),
         )
 
     @property
@@ -758,6 +778,13 @@ def start_runner(
             "rerun_image_fps": config.rerun_image_fps,
             "rerun_jpeg_quality": config.rerun_jpeg_quality,
             "rerun_queue_size": config.rerun_queue_size,
+            "vision_runtime": config.vision_runtime,
+            "broker_capture_fps": config.broker_capture_fps,
+            "broker_recorder_queue_size": config.broker_recorder_queue_size,
+            "broker_gesture_queue_size": config.broker_gesture_queue_size,
+            "broker_policy_idle_s": config.broker_policy_idle_s,
+            "gesture_running_mode": config.gesture_running_mode,
+            "wave_detection_mode": config.wave_detection_mode,
             "keep_awake": config.keep_awake,
             "caffeinate_pid": caffeinate_pid,
         },
@@ -1158,6 +1185,20 @@ def build_live_command(
         "--capture-vision" if capture_vision else "--no-capture-vision",
         "--visitor-trigger-profile",
         config.visitor_trigger_profile,
+        "--vision-runtime",
+        config.vision_runtime,
+        "--broker-capture-fps",
+        str(config.broker_capture_fps),
+        "--broker-recorder-queue-size",
+        str(config.broker_recorder_queue_size),
+        "--broker-gesture-queue-size",
+        str(config.broker_gesture_queue_size),
+        "--broker-policy-idle-s",
+        str(config.broker_policy_idle_s),
+        "--gesture-running-mode",
+        config.gesture_running_mode,
+        "--wave-detection-mode",
+        config.wave_detection_mode,
         "--rerun-mode",
         rerun_mode or config.rerun_mode,
         "--rerun-grpc-url",

@@ -41,6 +41,7 @@ class ArtifactRecorder:
         self.capture_detections_enabled = capture_detections
 
         self._lock = threading.RLock()
+        self._video_lock = threading.RLock()
         self._closed = False
         self._counts: dict[str, int] = {}
 
@@ -147,7 +148,7 @@ class ArtifactRecorder:
             self.realtime(event.kind, source=event.source, event_ts=round(event.ts, 3), **data)
 
     def close(self) -> None:
-        with self._lock:
+        with self._video_lock, self._lock:
             if self._closed:
                 return
             self._closed = True
@@ -212,6 +213,17 @@ class ArtifactRecorder:
     def record_session_snapshot(self, snapshot: Mapping[str, Any]) -> None:
         self.session_snapshot(**dict(snapshot))
 
+    def runtime_summary(self, name: str, payload: Mapping[str, Any]) -> None:
+        """Store a final structured runtime summary in the run manifest."""
+
+        with self._lock:
+            summaries = self._manifest.setdefault("runtime_summaries", {})
+            if not isinstance(summaries, dict):
+                summaries = {}
+                self._manifest["runtime_summaries"] = summaries
+            summaries[name] = _jsonable(dict(payload))
+            self._write_manifest()
+
     def response_metadata(self, response_id: str | None, **data: Any) -> None:
         if not response_id:
             return
@@ -260,19 +272,59 @@ class ArtifactRecorder:
         ts: float | None = None,
     ) -> None:
         frame_ts = round(float(ts if ts is not None else time.time()), 3)
+        self.capture_vision_frame(
+            people=people,
+            tracks=tracks,
+            events=events,
+            ts=frame_ts,
+        )
+        self.record_video_frame(frame, fps=fps, ts=frame_ts)
+
+    def capture_vision_frame(
+        self,
+        *,
+        people: int,
+        tracks: list[dict[str, Any]],
+        events: list[dict[str, Any]],
+        ts: float | None = None,
+        source_frame_id: int | None = None,
+    ) -> None:
+        """Persist derived vision output without coupling it to raw video writing."""
+
+        frame_ts = round(float(ts if ts is not None else time.time()), 3)
         if self.capture_vision_enabled:
+            payload: dict[str, Any] = {
+                "type": "vision_frame",
+                "people": people,
+                "tracks": tracks,
+                "events": events,
+            }
+            if source_frame_id is not None:
+                payload["source_frame_id"] = int(source_frame_id)
             self._write_jsonl(
                 self._capture_path,
-                {
-                    "type": "vision_frame",
-                    "people": people,
-                    "tracks": tracks,
-                    "events": events,
-                },
+                payload,
                 ts=frame_ts,
             )
+
+    def record_video_frame(
+        self,
+        frame: NDArray[np.uint8],
+        *,
+        fps: float,
+        ts: float | None = None,
+        source_frame_id: int | None = None,
+    ) -> None:
+        """Persist one canonical video frame and its source identity."""
+
+        frame_ts = round(float(ts if ts is not None else time.time()), 3)
         if self.record_video_enabled:
-            self._write_video_frame(frame, fps=fps, ts=frame_ts)
+            self._write_video_frame(
+                frame,
+                fps=fps,
+                ts=frame_ts,
+                source_frame_id=source_frame_id,
+            )
 
     def input_audio_frame(self, sample_rate: int, audio: NDArray[Any], *, forwarded: bool) -> None:
         if self.record_audio_enabled:
@@ -354,7 +406,14 @@ class ArtifactRecorder:
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(payload, sort_keys=True) + "\n")
 
-    def _write_video_frame(self, frame: NDArray[np.uint8], *, fps: float, ts: float) -> None:
+    def _write_video_frame(
+        self,
+        frame: NDArray[np.uint8],
+        *,
+        fps: float,
+        ts: float,
+        source_frame_id: int | None = None,
+    ) -> None:
         try:
             import cv2
         except ImportError:
@@ -362,42 +421,45 @@ class ArtifactRecorder:
             self.record_video_enabled = False
             return
 
-        with self._lock:
+        with self._video_lock:
+            if self._closed:
+                return
             if self._video_writer is None:
-                self._video_fps = max(1.0, float(fps))
-                self._video_path = self._artifact_path("video", ".mkv", subdir="video")
-                self._video_meta_path = self._video_path.with_suffix(".jsonl")
-                self._video_meta_file = self._video_meta_path.open("w", encoding="utf-8")
-                h, w = frame.shape[:2]
-                self._video_writer = cv2.VideoWriter(
-                    str(self._video_path),
-                    cv2.VideoWriter_fourcc(*"mp4v"),
-                    self._video_fps,
-                    (w, h),
-                )
-                self._manifest["artifacts"]["video"].append(
-                    {
-                        "path": str(self._video_path),
-                        "metadata": str(self._video_meta_path),
-                        "status": "open",
-                        "fps": round(self._video_fps, 2),
-                        "started_ts": round(float(ts), 3),
-                    }
-                )
-                self._write_manifest()
+                with self._lock:
+                    self._video_fps = max(1.0, float(fps))
+                    self._video_path = self._artifact_path("video", ".mkv", subdir="video")
+                    self._video_meta_path = self._video_path.with_suffix(".jsonl")
+                    self._video_meta_file = self._video_meta_path.open("w", encoding="utf-8")
+                    h, w = frame.shape[:2]
+                    self._video_writer = cv2.VideoWriter(
+                        str(self._video_path),
+                        cv2.VideoWriter_fourcc(*"mp4v"),
+                        self._video_fps,
+                        (w, h),
+                    )
+                    self._manifest["artifacts"]["video"].append(
+                        {
+                            "path": str(self._video_path),
+                            "metadata": str(self._video_meta_path),
+                            "status": "open",
+                            "fps": round(self._video_fps, 2),
+                            "started_ts": round(float(ts), 3),
+                        }
+                    )
+                    self._write_manifest()
             self._video_writer.write(frame)
             if self._video_meta_file is not None:
+                metadata = {
+                    "run_id": self.run_id,
+                    "ts": round(float(ts), 3),
+                    "type": "frame",
+                    "frame_index": self._video_frames,
+                    "fps": round(self._video_fps, 2),
+                }
+                if source_frame_id is not None:
+                    metadata["source_frame_id"] = int(source_frame_id)
                 self._video_meta_file.write(
-                    json.dumps(
-                        {
-                            "run_id": self.run_id,
-                            "ts": round(float(ts), 3),
-                            "type": "frame",
-                            "frame_index": self._video_frames,
-                            "fps": round(self._video_fps, 2),
-                        },
-                        sort_keys=True,
-                    )
+                    json.dumps(metadata, sort_keys=True)
                     + "\n"
                 )
                 self._video_meta_file.flush()

@@ -29,7 +29,11 @@ from .livekit_room_bridge import LiveKitRoomBridge
 from .live_rerun import RERUN_MODES, LiveRerunPublisher
 from .liveness import HeartbeatWriter, RuntimeLiveness, pulse_event_loop
 from .moves import AntennaCueController, PlaybackMovementGate
-from .perception import PerceptionPipeline
+from .perception import (
+    GESTURE_RUNNING_MODES,
+    WAVE_DETECTION_MODES,
+    PerceptionPipeline,
+)
 from .policies import PolicyEngine
 from .policy_audio_cache import PolicyAudioCache, load_policy_audio_frame
 from .reception import ReceptionPolicy, ReceptionPolicySettings
@@ -41,6 +45,7 @@ from .visitor_trigger_profiles import (
     VISITOR_TRIGGER_PROFILE_NAMES,
     resolve_visitor_trigger_profile,
 )
+from .vision_broker_runtime import BrokerVisionRuntime, VisionConsumerSpec
 
 
 load_project_env()
@@ -49,6 +54,7 @@ DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "artifacts" / "official-runtime-live"
 DEFAULT_PROFILE_INSTRUCTIONS = PROJECT_ROOT / "profiles" / "clinic_receptionist" / "instructions.txt"
 DEFAULT_POLICY_AUDIO_CACHE_DIR = PROJECT_ROOT / "artifacts" / "policy-audio-cache" / "sohee"
 DEFAULT_DOOR_POLICY_PIPELINES = PROJECT_ROOT / "config" / "vision" / "door-policy-v1.json"
+VISION_RUNTIME_MODES = ("serial-v1", "broker-v1")
 
 
 def _load_backend_instructions(
@@ -114,6 +120,44 @@ def _instruction_provenance(instructions: str, *, source: str) -> dict[str, Any]
     help="Versioned greet/goodbye trigger implementation.",
 )
 @click.option("--vision-interval", type=float, default=0.2, show_default=True)
+@click.option(
+    "--vision-runtime",
+    envvar="RECEPTION_VISION_RUNTIME",
+    type=click.Choice(VISION_RUNTIME_MODES),
+    default="serial-v1",
+    show_default=True,
+)
+@click.option("--broker-capture-fps", type=click.FloatRange(min=0.1), default=15.0, show_default=True)
+@click.option(
+    "--broker-recorder-queue-size",
+    type=click.IntRange(min=1),
+    default=30,
+    show_default=True,
+)
+@click.option(
+    "--broker-gesture-queue-size",
+    type=click.IntRange(min=1),
+    default=30,
+    show_default=True,
+)
+@click.option(
+    "--broker-policy-idle-s",
+    type=click.FloatRange(min=0.0),
+    default=0.1,
+    show_default=True,
+)
+@click.option(
+    "--gesture-running-mode",
+    type=click.Choice(GESTURE_RUNNING_MODES),
+    default="image",
+    show_default=True,
+)
+@click.option(
+    "--wave-detection-mode",
+    type=click.Choice(WAVE_DETECTION_MODES),
+    default="open_palm",
+    show_default=True,
+)
 @click.option(
     "--vision-pipelines-config",
     envvar="RECEPTION_VISION_PIPELINES_CONFIG",
@@ -240,6 +284,13 @@ async def _run_live(
     perception_smooth: int,
     visitor_trigger_profile: str,
     vision_interval: float,
+    vision_runtime: str,
+    broker_capture_fps: float,
+    broker_recorder_queue_size: int,
+    broker_gesture_queue_size: int,
+    broker_policy_idle_s: float,
+    gesture_running_mode: str,
+    wave_detection_mode: str,
     vision_pipelines_config: Path | None,
     rerun_mode: str,
     rerun_grpc_url: str,
@@ -322,6 +373,15 @@ async def _run_live(
             "perception_threshold": perception_threshold,
             "perception_smooth": perception_smooth,
             "vision_interval": vision_interval,
+            "vision_runtime": vision_runtime,
+            "broker": {
+                "capture_fps": broker_capture_fps,
+                "recorder_queue_size": broker_recorder_queue_size,
+                "gesture_queue_size": broker_gesture_queue_size,
+                "policy_idle_s": broker_policy_idle_s,
+            },
+            "gesture_running_mode": gesture_running_mode,
+            "wave_detection_mode": wave_detection_mode,
             "vision_pipelines": (
                 resolved_pipeline_config.to_dict()
                 if resolved_pipeline_config is not None
@@ -364,6 +424,7 @@ async def _run_live(
     )
     video_expected = bool(
         perception
+        or (vision_runtime == "broker-v1" and gestures)
         or record_video
         or capture_vision
         or resolved_pipeline_config is not None
@@ -458,6 +519,7 @@ async def _run_live(
         warmup_video=(
             warmup_video
             or perception
+            or (vision_runtime == "broker-v1" and gestures)
             or record_video
             or resolved_pipeline_config is not None
             or rerun_mode != "off"
@@ -670,30 +732,46 @@ async def _run_live(
         await policy_engine.start()
         if (
             perception
+            or (vision_runtime == "broker-v1" and gestures)
             or record_video
             or capture_vision
             or detection_manager is not None
             or rerun_publisher is not None
         ):
-            vision_task = asyncio.create_task(
-                _vision_loop(
-                    camera_provider=camera_provider,
+            vision_loop = _vision_loop if vision_runtime == "serial-v1" else _broker_vision_loop
+            vision_kwargs: dict[str, Any] = {
+                "camera_provider": camera_provider,
+                "recorder": recorder,
+                "diagnostic_sink": vision_diagnostic_sink,
+                "stop_event": stop_event,
+                "ready_event": vision_ready,
+                "perception_enabled": perception,
+                "threshold": perception_threshold,
+                "smooth": perception_smooth,
+                "gestures": gestures,
+                "visitor_trigger_profile": resolved_visitor_profile.name,
+                "run_id": run_id,
+                "detection_manager": detection_manager,
+                "rerun_publisher": rerun_publisher,
+                "door_policy_coordinator": door_policy_coordinator,
+            }
+            if vision_runtime == "serial-v1":
+                vision_kwargs.update(
                     policy_engine=policy_engine,
-                    recorder=recorder,
-                    diagnostic_sink=vision_diagnostic_sink,
-                    stop_event=stop_event,
-                    ready_event=vision_ready,
                     interval_s=vision_interval,
-                    perception_enabled=perception,
-                    threshold=perception_threshold,
-                    smooth=perception_smooth,
-                    gestures=gestures,
-                    visitor_trigger_profile=resolved_visitor_profile.name,
-                    run_id=run_id,
-                    detection_manager=detection_manager,
-                    rerun_publisher=rerun_publisher,
-                    door_policy_coordinator=door_policy_coordinator,
-                ),
+                )
+            else:
+                vision_kwargs.update(
+                    policy_event_sink=policy_sink,
+                    capture_fps=broker_capture_fps,
+                    recorder_queue_size=broker_recorder_queue_size,
+                    gesture_queue_size=broker_gesture_queue_size,
+                    policy_idle_s=broker_policy_idle_s,
+                    gesture_running_mode=gesture_running_mode,
+                    wave_detection_mode=wave_detection_mode,
+                )
+            vision_task = asyncio.create_task(
+                vision_loop(**vision_kwargs),
                 name="official-runtime-vision",
             )
             ready_waiter = asyncio.create_task(vision_ready.wait(), name="official-runtime-vision-ready")
@@ -748,8 +826,10 @@ async def _run_live(
                 await task
             except asyncio.CancelledError:
                 pass
+        await policy_sink.flush()
         await policy_engine.stop()
         await policy_sink.drain()
+        recorder.runtime_summary("policy_event_sink", policy_sink.snapshot())
         try:
             await asyncio.to_thread(robot_session.stop)
         finally:
@@ -1467,27 +1547,267 @@ async def _vision_loop(
         await asyncio.sleep(max(0.01, interval_s))
 
 
+async def _broker_vision_loop(
+    *,
+    camera_provider: ReachyCameraFrameProvider,
+    policy_event_sink: EventSink,
+    recorder: ArtifactRecorder,
+    diagnostic_sink: EventSink,
+    stop_event: asyncio.Event,
+    ready_event: asyncio.Event | None,
+    capture_fps: float,
+    recorder_queue_size: int,
+    gesture_queue_size: int,
+    policy_idle_s: float,
+    perception_enabled: bool,
+    threshold: float,
+    smooth: int,
+    gestures: bool,
+    gesture_running_mode: str,
+    wave_detection_mode: str,
+    visitor_trigger_profile: str,
+    run_id: str,
+    detection_manager: LiveDetectionManager | None = None,
+    rerun_publisher: LiveRerunPublisher | None = None,
+    door_policy_coordinator: LiveDoorPolicyCoordinator | None = None,
+) -> None:
+    policy_pipeline: dict[str, PerceptionPipeline] = {}
+    gesture_pipeline: dict[str, PerceptionPipeline] = {}
+
+    def start_policy() -> None:
+        if perception_enabled:
+            policy_pipeline["pipeline"] = PerceptionPipeline(
+                threshold=threshold,
+                smooth=smooth,
+                gestures=False,
+                event_sink=diagnostic_sink,
+                visitor_trigger_profile=visitor_trigger_profile,
+                observation_mode="live",
+                observation_run_id=run_id,
+            )
+
+    def process_policy(packet: FramePacket) -> None:
+        pipeline = policy_pipeline.get("pipeline")
+        events: list[dict[str, Any]] = []
+        people = 0
+        tracks: list[dict[str, Any]] = []
+        if pipeline is not None:
+            events, people, tracks = pipeline.process(
+                packet.frame_bgr,
+                bgr=True,
+                ts=packet.frame_ts,
+                frame_index=packet.frame_index,
+                timestamp_source="live_camera_broker",
+            )
+        observation = pipeline.last_observation if pipeline is not None else None
+        recorder.capture_vision_frame(
+            people=people,
+            tracks=tracks,
+            events=events,
+            ts=packet.frame_ts,
+            source_frame_id=packet.frame_index,
+        )
+        if rerun_publisher is not None and observation is not None:
+            rerun_publisher.submit_visitor_observation(observation)
+        if detection_manager is not None:
+            if door_policy_coordinator is not None:
+                door_policy_coordinator.submit_frame(packet, observation)
+            detection_manager.submit(packet)
+        for event in events:
+            policy_event_sink.emit(
+                RuntimeEvent(
+                    kind=f"vision.{event['kind']}",
+                    source="official_runtime.vision_broker.policy",
+                    data={
+                        **event,
+                        "source_frame_id": packet.frame_index,
+                        "source_frame_ts": packet.frame_ts,
+                    },
+                    ts=packet.frame_ts,
+                )
+            )
+
+    def start_gesture() -> None:
+        pipeline = PerceptionPipeline(
+            gestures=True,
+            gesture_running_mode=gesture_running_mode,
+            wave_detection_mode=wave_detection_mode,
+            event_sink=diagnostic_sink,
+            visitor_trigger_profile=visitor_trigger_profile,
+            observation_mode="live",
+            observation_run_id=run_id,
+            gesture_only=True,
+        )
+        pipeline.ensure_gesture_detector()
+        gesture_pipeline["pipeline"] = pipeline
+
+    def process_gesture(packet: FramePacket) -> None:
+        event = gesture_pipeline["pipeline"].process_gesture(
+            packet.frame_bgr,
+            ts=packet.frame_ts,
+            frame_index=packet.frame_index,
+        )
+        if event is None:
+            return
+        policy_event_sink.emit(
+            RuntimeEvent(
+                kind=f"vision.{event['kind']}",
+                source="official_runtime.vision_broker.gesture",
+                data={
+                    **event,
+                    "source_frame_id": packet.frame_index,
+                    "source_frame_ts": packet.frame_ts,
+                },
+                ts=packet.frame_ts,
+            )
+        )
+
+    consumers: list[VisionConsumerSpec] = []
+    if recorder.record_video_enabled:
+        consumers.append(
+            VisionConsumerSpec(
+                name="recorder",
+                callback=lambda packet: recorder.record_video_frame(
+                    packet.frame_bgr,
+                    fps=capture_fps,
+                    ts=packet.frame_ts,
+                    source_frame_id=packet.frame_index,
+                ),
+                mode="fifo",
+                capacity=recorder_queue_size,
+            )
+        )
+    if gestures:
+        consumers.append(
+            VisionConsumerSpec(
+                name="gesture",
+                callback=process_gesture,
+                mode="fifo",
+                capacity=gesture_queue_size,
+                start_callback=start_gesture,
+            )
+        )
+    if perception_enabled or recorder.capture_vision_enabled or detection_manager is not None:
+        consumers.append(
+            VisionConsumerSpec(
+                name="policy",
+                callback=process_policy,
+                mode="latest",
+                capacity=1,
+                idle_after_s=policy_idle_s,
+                start_callback=start_policy,
+            )
+        )
+    if rerun_publisher is not None:
+        consumers.append(
+            VisionConsumerSpec(
+                name="rerun",
+                callback=rerun_publisher.submit_frame,
+                mode="latest",
+                capacity=1,
+            )
+        )
+    if not consumers:
+        raise RuntimeError("broker vision runtime has no enabled consumers")
+
+    def broker_health(event: str, data: Any) -> None:
+        recorder.realtime("vision.broker", event=event, **dict(data))
+
+    runtime = BrokerVisionRuntime(
+        frame_source=camera_provider.get_latest_frame,
+        capture_fps=capture_fps,
+        consumers=tuple(consumers),
+        health_callback=broker_health,
+    )
+    try:
+        await asyncio.to_thread(runtime.start)
+        if ready_event is not None:
+            ready_event.set()
+        while not stop_event.is_set():
+            if runtime.failure is not None:
+                raise RuntimeError("broker vision worker failed") from runtime.failure
+            await asyncio.sleep(0.1)
+    finally:
+        snapshot = await asyncio.to_thread(runtime.close)
+        recorder.runtime_summary("vision_broker", snapshot)
+        recorder.realtime("vision.broker.final", snapshot=snapshot)
+
+
 class _AsyncPolicyEventSink:
     def __init__(self) -> None:
         self.engine: PolicyEngine | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
-        self.tasks: set[asyncio.Task[None]] = set()
+        self.queue: asyncio.Queue[RuntimeEvent | None] | None = None
+        self.worker: asyncio.Task[None] | None = None
+        self.errors: list[BaseException] = []
+        self._closed = False
+        self._submitted_events = 0
+        self._handled_events = 0
+        self._dropped_events = 0
 
     def bind(self, engine: PolicyEngine, loop: asyncio.AbstractEventLoop) -> None:
         self.engine = engine
         self.loop = loop
+        self.queue = asyncio.Queue(maxsize=256)
+        self.worker = loop.create_task(
+            self._run(),
+            name="official-runtime-policy-events",
+        )
 
     def emit(self, event: RuntimeEvent) -> None:
-        if self.engine is None or self.loop is None:
+        if self.engine is None or self.loop is None or self._closed:
             return
-        task = self.loop.create_task(self.engine.handle_event(event))
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
+        self.loop.call_soon_threadsafe(self._enqueue, event)
+
+    def _enqueue(self, event: RuntimeEvent) -> None:
+        if self.queue is None or self._closed:
+            return
+        try:
+            self.queue.put_nowait(event)
+            self._submitted_events += 1
+        except asyncio.QueueFull:
+            self._dropped_events += 1
+            self.errors.append(RuntimeError("policy event queue overflow"))
+
+    async def _run(self) -> None:
+        assert self.queue is not None
+        assert self.engine is not None
+        while True:
+            event = await self.queue.get()
+            try:
+                if event is None:
+                    return
+                await self.engine.handle_event(event)
+                self._handled_events += 1
+            except BaseException as exc:  # noqa: BLE001
+                self.errors.append(exc)
+            finally:
+                self.queue.task_done()
+
+    async def flush(self) -> None:
+        if self.queue is None:
+            return
+        await asyncio.sleep(0)
+        await self.queue.join()
 
     async def drain(self) -> None:
-        if not self.tasks:
+        if self.queue is None or self.worker is None or self._closed:
             return
-        await asyncio.gather(*list(self.tasks), return_exceptions=True)
+        await self.flush()
+        self._closed = True
+        self.queue.put_nowait(None)
+        await self.worker
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "submitted_events": self._submitted_events,
+            "handled_events": self._handled_events,
+            "dropped_events": self._dropped_events,
+            "queue_capacity": self.queue.maxsize if self.queue is not None else 0,
+            "queue_depth": self.queue.qsize() if self.queue is not None else 0,
+            "errors": [repr(error) for error in self.errors],
+            "closed": self._closed,
+        }
 
 
 def _install_signal_handlers(

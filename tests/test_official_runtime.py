@@ -20,6 +20,7 @@ from reachy_mini_brain.official_runtime import (
     CompositeRuntimeObserver,
     ConversationCuePolicy,
     ConversationCuePolicySettings,
+    GestureDetector,
     InMemoryEventSink,
     JsonlEventSink,
     LiveKitRealtimeHandler,
@@ -52,6 +53,8 @@ from reachy_mini_brain.official_runtime.replay_vision import cli as vision_repla
 from reachy_mini_brain.official_runtime import live_app as live_app_module
 from reachy_mini_brain.official_runtime.live_app import cli as live_app_cli
 from reachy_mini_brain.official_runtime.live_app import (
+    _AsyncPolicyEventSink,
+    _broker_vision_loop,
     _load_backend_instructions,
     _play_cached_policy_speech,
     _register_handler_conversation_session,
@@ -60,6 +63,7 @@ from reachy_mini_brain.official_runtime.live_app import (
 )
 from reachy_mini_brain.official_runtime.benchmark_backends import _summarize_run
 from reachy_mini_brain.official_runtime.policy_audio_cache import PolicyAudioCache
+from reachy_mini_brain.official_runtime.perception import GestureFrameObservation
 from reachy_mini_brain import robot
 
 
@@ -822,6 +826,21 @@ def test_perception_pipeline_applies_wave_cooldown_with_injected_gesture_detecto
     assert third == [{"kind": "wave", "gesture": "Open_Palm", "score": 0.92}]
 
 
+def test_perception_pipeline_gesture_only_path_does_not_initialize_person_detector():
+    frame = np.zeros((10, 20, 3), dtype=np.uint8)
+    pipeline = PerceptionPipeline(
+        gestures=True,
+        gesture_detector=_FakeGestureDetector(),
+        gesture_only=True,
+    )
+
+    event = pipeline.process_gesture(frame, ts=123.456, frame_index=17)
+
+    assert event == {"kind": "wave", "gesture": "Open_Palm", "score": 0.92}
+    with pytest.raises(RuntimeError, match="gesture-only"):
+        pipeline.process(frame)
+
+
 def test_perception_pipeline_emits_gesture_diagnostics_for_candidate_and_cooldown():
     clock = _Clock()
     diagnostics = InMemoryEventSink()
@@ -874,12 +893,143 @@ def test_perception_pipeline_emits_below_threshold_gesture_candidate():
     assert candidate.data["reason"] == "below_threshold"
 
 
+def test_perception_pipeline_passes_source_timestamps_to_video_gesture_detector():
+    diagnostics = InMemoryEventSink()
+    detector = _FakeGestureDetector(running_mode="video")
+    frame = np.zeros((10, 20, 3), dtype=np.uint8)
+    pipeline = PerceptionPipeline(
+        detector=_FakeDetector([]),
+        tracker_factory=lambda frame_wh: _FakeTracker(),
+        gestures=True,
+        gesture_detector=detector,
+        gesture_running_mode="video",
+        event_sink=diagnostics,
+    )
+
+    events, _, _ = pipeline.process(frame, ts=123.456, frame_index=17)
+
+    assert events == [{"kind": "wave", "gesture": "Open_Palm", "score": 0.92}]
+    assert detector.timestamps == [123.456]
+    candidate = next(event for event in diagnostics.events if event.kind == "vision.gesture_candidate")
+    assert candidate.data["running_mode"] == "video"
+    assert candidate.data["source_frame_index"] == 17
+    assert candidate.data["source_frame_ts"] == 123.456
+
+
+def test_perception_pipeline_detects_temporal_hand_motion_wave():
+    diagnostics = InMemoryEventSink()
+    centers = iter([0.30, 0.30, 0.30, 0.50, 0.70, 0.50, 0.30, 0.50, 0.70])
+
+    class FakeHandMotionDetector:
+        gestures = ("Open_Palm",)
+        threshold = 0.5
+        running_mode = "image"
+        model_path = "/tmp/fake-gesture.task"
+
+        def observe(self, frame):
+            return GestureFrameObservation(
+                candidate=None,
+                hand_center_x=next(centers),
+                hand_center_y=0.4,
+                hand_count=1,
+            )
+
+    frame = np.zeros((10, 20, 3), dtype=np.uint8)
+    pipeline = PerceptionPipeline(
+        detector=_FakeDetector([]),
+        tracker_factory=lambda frame_wh: _FakeTracker(),
+        gestures=True,
+        gesture_detector=FakeHandMotionDetector(),
+        wave_detection_mode="hand_motion",
+        event_sink=diagnostics,
+    )
+
+    emitted = []
+    for index in range(9):
+        events, _, _ = pipeline.process(frame, ts=10.0 + index * 0.2, frame_index=index)
+        emitted.extend(events)
+
+    assert len(emitted) == 1
+    assert emitted[0]["gesture"] == "Hand_Motion"
+    assert emitted[0]["direction_changes"] >= 2
+    candidates = [
+        event for event in diagnostics.events if event.kind == "vision.hand_motion_candidate"
+    ]
+    assert candidates[-1].data["accepted"] is True
+    assert candidates[-1].data["displacement"] >= 0.08
+
+
+def test_gesture_detector_video_mode_uses_strictly_increasing_relative_timestamps(monkeypatch):
+    calls: list[tuple[str, int | None]] = []
+    created_options = []
+
+    class FakeRecognizer:
+        def recognize(self, image):
+            calls.append(("image", None))
+            return types.SimpleNamespace(
+                gestures=[[types.SimpleNamespace(category_name="Open_Palm", score=0.9)]]
+            )
+
+        def recognize_for_video(self, image, timestamp_ms):
+            calls.append(("video", timestamp_ms))
+            return types.SimpleNamespace(
+                gestures=[[types.SimpleNamespace(category_name="Open_Palm", score=0.9)]]
+            )
+
+    recognizer = FakeRecognizer()
+
+    def classifier_options(**kwargs):
+        return types.SimpleNamespace(**kwargs)
+
+    def gesture_recognizer_options(**kwargs):
+        options = types.SimpleNamespace(**kwargs)
+        created_options.append(options)
+        return options
+
+    fake_mp = types.SimpleNamespace(
+        Image=lambda **kwargs: kwargs,
+        ImageFormat=types.SimpleNamespace(SRGB="SRGB"),
+        tasks=types.SimpleNamespace(
+            BaseOptions=lambda **kwargs: kwargs,
+            components=types.SimpleNamespace(
+                processors=types.SimpleNamespace(ClassifierOptions=classifier_options)
+            ),
+            vision=types.SimpleNamespace(
+                RunningMode=types.SimpleNamespace(IMAGE="IMAGE", VIDEO="VIDEO"),
+                GestureRecognizerOptions=gesture_recognizer_options,
+                GestureRecognizer=types.SimpleNamespace(
+                    create_from_options=lambda options: recognizer
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "mediapipe", fake_mp)
+    monkeypatch.setattr(
+        "reachy_mini_brain.official_runtime.perception._ensure_gesture_model",
+        lambda: "/tmp/gesture.task",
+    )
+    detector = GestureDetector(running_mode="video")
+    frame = np.zeros((10, 20, 3), dtype=np.uint8)
+
+    detector.detect_candidate(frame, timestamp_s=1000.0)
+    detector.detect_candidate(frame, timestamp_s=1000.0)
+    detector.detect_candidate(frame, timestamp_s=1000.125)
+
+    assert calls == [("video", 0), ("video", 1), ("video", 125)]
+    classifier = created_options[0].canned_gesture_classifier_options
+    assert classifier.score_threshold == 0.0
+    assert classifier.category_allowlist == ["Open_Palm"]
+
+
 def test_vision_replay_cli_help_loads_without_detector_dependencies():
     result = CliRunner().invoke(vision_replay_cli, ["--help"])
 
     assert result.exit_code == 0
     assert "Replay recorded video" in result.output
     assert "--visitor-trigger-profile" in result.output
+    assert "--gesture-running-mode" in result.output
+    assert "--wave-detection-mode" in result.output
+    assert "--to-frame" in result.output
 
 
 def test_official_runtime_live_cli_help_loads_without_robot_dependencies():
@@ -892,6 +1042,10 @@ def test_official_runtime_live_cli_help_loads_without_robot_dependencies():
     assert "--ready-cue" in result.output
     assert "--scripted-playback-wav" in result.output
     assert "--visitor-trigger-profile" in result.output
+    assert "--vision-runtime" in result.output
+    assert "--broker-capture-fps" in result.output
+    assert "--gesture-running-mode" in result.output
+    assert "--wave-detection-mode" in result.output
 
 
 def test_live_cli_rejects_unknown_visitor_trigger_profile():
@@ -1293,13 +1447,22 @@ class _FakeTracker:
 
 
 class _FakeGestureDetector:
-    def __init__(self, result=("Open_Palm", 0.92), gestures=("Open_Palm",), threshold=0.5):
+    def __init__(
+        self,
+        result=("Open_Palm", 0.92),
+        gestures=("Open_Palm",),
+        threshold=0.5,
+        running_mode="image",
+    ):
         self.result = result
         self.gestures = gestures
         self.threshold = threshold
+        self.running_mode = running_mode
         self.model_path = "/tmp/fake-gesture.task"
+        self.timestamps = []
 
-    def detect_candidate(self, frame):
+    def detect_candidate(self, frame, *, timestamp_s=None):
+        self.timestamps.append(timestamp_s)
         return self.result
 
     def detect(self, frame):
@@ -2135,11 +2298,13 @@ def test_artifact_recorder_writes_manifest_and_runtime_jsonl(tmp_path):
     recorder.emit(RuntimeEvent(kind="runtime.started", source="test", data={"value": 1}, ts=123.0))
     recorder.emit(RuntimeEvent(kind="policy.greet", source="reception", data={"text": "hello"}, ts=124.0))
     recorder.emit(RuntimeEvent(kind="livekit.output.event", source="backend", data={"role": "assistant"}, ts=125.0))
+    recorder.runtime_summary("vision_broker", {"capture": {"published_frames": 10}})
     recorder.close()
 
     manifest = json.loads(recorder.manifest_path.read_text(encoding="utf-8"))
     assert manifest["run_id"] == "artifact-test"
     assert manifest["config"]["mode"] == "test"
+    assert manifest["runtime_summaries"]["vision_broker"]["capture"]["published_frames"] == 10
     assert manifest["ended_ts"] >= manifest["started_ts"]
 
     events_path = tmp_path / "events" / "events-artifact-test-01.jsonl"
@@ -2214,6 +2379,154 @@ def test_artifact_recorder_writes_video_timestamp_sidecar(monkeypatch, tmp_path)
     ]
     assert capture_rows[0]["ts"] == 123.457
     assert capture_rows[0]["events"] == [{"kind": "wave"}]
+
+
+def test_artifact_recorder_links_broker_video_and_capture_to_source_frame(monkeypatch, tmp_path):
+    class FakeVideoWriter:
+        def __init__(self, path, fourcc, fps, size):
+            self.path = Path(path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_bytes(b"fake-video")
+
+        def write(self, frame):
+            return None
+
+        def release(self):
+            return None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "cv2",
+        types.SimpleNamespace(VideoWriter=FakeVideoWriter, VideoWriter_fourcc=lambda *args: 0),
+    )
+    recorder = ArtifactRecorder(
+        tmp_path,
+        run_id="broker-source-test",
+        record_video=True,
+        capture_vision=True,
+    )
+    frame = np.zeros((2, 3, 3), dtype=np.uint8)
+
+    recorder.record_video_frame(frame, fps=15.0, ts=200.25, source_frame_id=37)
+    recorder.capture_vision_frame(
+        people=1,
+        tracks=[{"id": 1}],
+        events=[],
+        ts=200.25,
+        source_frame_id=37,
+    )
+    recorder.close()
+
+    manifest = json.loads(recorder.manifest_path.read_text(encoding="utf-8"))
+    video_path = Path(manifest["artifacts"]["video"][0]["metadata"])
+    capture_path = tmp_path / "capture" / "capture-broker-source-test-01.jsonl"
+    video_row = json.loads(video_path.read_text(encoding="utf-8").splitlines()[0])
+    capture_row = json.loads(capture_path.read_text(encoding="utf-8").splitlines()[0])
+    assert video_row["source_frame_id"] == 37
+    assert capture_row["source_frame_id"] == 37
+    assert video_row["ts"] == capture_row["ts"] == 200.25
+
+
+def test_async_policy_event_sink_serializes_events_emitted_from_worker_thread():
+    async def run():
+        handled = []
+
+        class FakeEngine:
+            async def handle_event(self, event):
+                await asyncio.sleep(0)
+                handled.append(event.data["sequence"])
+
+        sink = _AsyncPolicyEventSink()
+        sink.bind(FakeEngine(), asyncio.get_running_loop())
+
+        import threading
+
+        thread = threading.Thread(
+            target=lambda: [
+                sink.emit(
+                    RuntimeEvent(
+                        kind="vision.test",
+                        source="worker",
+                        data={"sequence": index},
+                    )
+                )
+                for index in range(5)
+            ]
+        )
+        thread.start()
+        thread.join()
+        await sink.flush()
+        await sink.drain()
+
+        assert handled == [0, 1, 2, 3, 4]
+        assert sink.errors == []
+        assert sink.snapshot() == {
+            "submitted_events": 5,
+            "handled_events": 5,
+            "dropped_events": 0,
+            "queue_capacity": 256,
+            "queue_depth": 0,
+            "errors": [],
+            "closed": True,
+        }
+
+    asyncio.run(run())
+
+
+def test_broker_vision_loop_records_canonical_source_provenance(tmp_path):
+    async def run():
+        class FakeCamera:
+            def get_latest_frame(self):
+                return np.zeros((4, 6, 3), dtype=np.uint8)
+
+        recorder = ArtifactRecorder(
+            tmp_path,
+            run_id="broker-loop-test",
+            capture_vision=True,
+        )
+        stop_event = asyncio.Event()
+        ready_event = asyncio.Event()
+        task = asyncio.create_task(
+            _broker_vision_loop(
+                camera_provider=FakeCamera(),
+                policy_event_sink=InMemoryEventSink(),
+                recorder=recorder,
+                diagnostic_sink=InMemoryEventSink(),
+                stop_event=stop_event,
+                ready_event=ready_event,
+                capture_fps=30.0,
+                recorder_queue_size=4,
+                gesture_queue_size=4,
+                policy_idle_s=0.0,
+                perception_enabled=False,
+                threshold=0.5,
+                smooth=0,
+                gestures=False,
+                gesture_running_mode="image",
+                wave_detection_mode="open_palm",
+                visitor_trigger_profile="legacy",
+                run_id="broker-loop-test",
+            )
+        )
+        await asyncio.wait_for(ready_event.wait(), timeout=1.0)
+        await asyncio.sleep(0.08)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        recorder.close()
+
+    asyncio.run(run())
+
+    capture_path = tmp_path / "capture" / "capture-broker-loop-test-01.jsonl"
+    rows = [json.loads(line) for line in capture_path.read_text(encoding="utf-8").splitlines()]
+    assert rows
+    assert [row["source_frame_id"] for row in rows] == sorted(
+        row["source_frame_id"] for row in rows
+    )
+    manifest_path = tmp_path / "runs" / "run-broker-loop-test.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    summary = manifest["runtime_summaries"]["vision_broker"]
+    assert summary["capture"]["published_frames"] >= len(rows)
+    assert summary["consumers"]["policy"]["completed_frames"] == len(rows)
 
 
 def test_artifact_recorder_sanitizes_reserved_runtime_payload_keys(tmp_path):

@@ -104,6 +104,14 @@ class FramePacket:
     frame_ts: float
     frame_bgr: NDArray[np.uint8]
 
+    @property
+    def source_frame_id(self) -> int:
+        return self.frame_index
+
+    @property
+    def source_frame_ts(self) -> float:
+        return self.frame_ts
+
 
 class LayerDetector(Protocol):
     def detect(self, frame_bgr: NDArray[np.uint8]) -> list[LayerDetection]: ...

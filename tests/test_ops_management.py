@@ -189,6 +189,14 @@ def test_build_live_command_includes_official_runtime_defaults(tmp_path):
     assert "--record-video" in command
     profile_index = command.index("--visitor-trigger-profile")
     assert command[profile_index + 1] == "legacy"
+    runtime_index = command.index("--vision-runtime")
+    assert command[runtime_index + 1] == "serial-v1"
+    capture_fps_index = command.index("--broker-capture-fps")
+    assert command[capture_fps_index + 1] == "15.0"
+    gesture_mode_index = command.index("--gesture-running-mode")
+    assert command[gesture_mode_index + 1] == "image"
+    wave_mode_index = command.index("--wave-detection-mode")
+    assert command[wave_mode_index + 1] == "open_palm"
     backend_index = command.index("--backend")
     assert command[backend_index + 1] == "s2s-local"
     assert env["HF_REALTIME_WS_URL"] == "ws://127.0.0.1:8765/v1/realtime"
@@ -244,6 +252,26 @@ def test_ops_config_uses_baselined_media_liveness_thresholds(monkeypatch):
     assert config.media_heartbeat_stale_s == 5.0
     assert config.media_source_stale_s == 8.0
     assert config.event_loop_stale_s == 8.0
+
+
+def test_ops_config_loads_broker_vision_settings(monkeypatch):
+    monkeypatch.setenv("RECEPTION_VISION_RUNTIME", "broker-v1")
+    monkeypatch.setenv("RECEPTION_BROKER_CAPTURE_FPS", "15")
+    monkeypatch.setenv("RECEPTION_BROKER_RECORDER_QUEUE_SIZE", "45")
+    monkeypatch.setenv("RECEPTION_BROKER_GESTURE_QUEUE_SIZE", "20")
+    monkeypatch.setenv("RECEPTION_BROKER_POLICY_IDLE_S", "0.1")
+    monkeypatch.setenv("RECEPTION_GESTURE_RUNNING_MODE", "video")
+    monkeypatch.setenv("RECEPTION_WAVE_DETECTION_MODE", "hand_motion")
+
+    config = ops_core.OpsConfig.from_env()
+
+    assert config.vision_runtime == "broker-v1"
+    assert config.broker_capture_fps == 15.0
+    assert config.broker_recorder_queue_size == 45
+    assert config.broker_gesture_queue_size == 20
+    assert config.broker_policy_idle_s == 0.1
+    assert config.gesture_running_mode == "video"
+    assert config.wave_detection_mode == "hand_motion"
 
 
 def test_ops_config_rejects_unknown_visitor_trigger_profile(monkeypatch):
