@@ -417,6 +417,51 @@ def test_reception_policy_confirmed_depart_closes_active_conversation_and_speaks
     asyncio.run(run())
 
 
+def test_reception_policy_v4_suppresses_vision_policies_during_active_conversation() -> None:
+    async def run() -> None:
+        events = InMemoryEventSink()
+        context = RuntimeContext(event_sink=events)
+        registry = CapabilityRegistry()
+        calls = []
+
+        async def speak_text(context, text, reason, event):
+            calls.append((reason, text))
+            return True
+
+        registry.register("speak_text", speak_text)
+        policy = ReceptionPolicy(
+            ReceptionPolicySettings(
+                cooldown_s=0.0,
+                suppress_vision_policies_during_conversation=True,
+            )
+        )
+        engine = PolicyEngine([policy], capabilities=registry, context=context)
+        await engine.start()
+        await engine.handle_event(RuntimeEvent(kind="vision.wave", source="test"))
+        await engine.handle_event(RuntimeEvent(kind="vision.approach", source="door_policy"))
+        await engine.handle_event(RuntimeEvent(kind="vision.depart", source="door_policy"))
+
+        assert policy.conversation_active is True
+        assert calls == [("wave", "Hi! How can I help?")]
+        assert "policy.greet_suppressed" in events.kinds()
+        assert "policy.farewell_suppressed" in events.kinds()
+        assert "policy.conversation_closed" not in events.kinds()
+        assert "policy.farewell" not in events.kinds()
+
+        await engine.handle_event(
+            RuntimeEvent(
+                kind="realtime.conversation.item.input_audio_transcription.completed",
+                source="backend",
+                data={"transcript": "okay goodbye"},
+            )
+        )
+        assert policy.conversation_active is False
+        closed = [event for event in events.events if event.kind == "policy.conversation_closed"]
+        assert closed[-1].data["reason"] == "explicit_goodbye"
+
+    asyncio.run(run())
+
+
 def test_reception_policy_prepares_backend_session_before_opening_gate():
     async def run():
         events = InMemoryEventSink()

@@ -321,7 +321,7 @@ async def _run_live(
     scripted_playback_post_roll_s: float,
 ) -> None:
     resolved_visitor_profile = resolve_visitor_trigger_profile(visitor_trigger_profile)
-    door_policy_enabled = resolved_visitor_profile.implementation == "door_policy_v1"
+    door_policy_enabled = resolved_visitor_profile.implementation.startswith("door_policy_")
     if door_policy_enabled and not perception:
         raise click.ClickException("door-v1 requires person perception")
     resolved_pipeline_path = (
@@ -542,6 +542,7 @@ async def _run_live(
 
     movement_gate = PlaybackMovementGate(on_change=lambda active, reason: recorder.realtime("movement_gate", active=active, reason=reason))
     policy_settings: dict[str, Any] = {"audio_gate_until_wave": audio_gate}
+    policy_settings.update(resolved_visitor_profile.parameters.get("reception_policy", {}))
     if scripted_policy_greeting is not None:
         policy_settings["greeting"] = scripted_policy_greeting
     reception_policy = ReceptionPolicy(ReceptionPolicySettings(**policy_settings))

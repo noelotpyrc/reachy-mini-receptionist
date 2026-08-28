@@ -11,6 +11,7 @@ from reachy_mini_brain.official_runtime.door_observation import (
     PersonBoxInput,
 )
 from reachy_mini_brain.official_runtime.door_policy import (
+    PRESENCE_OVERLAP_DIRECT_GOODBYE_CONTRACT,
     DoorPolicySettings,
     DoorPolicyTriggerEngine,
 )
@@ -166,6 +167,142 @@ def test_retained_person_presence_blocks_greet_arm_during_short_detection_gap() 
     assert moving.retained_presence == "PRESENT"
     assert not moving.greet_candidate_armed
     assert not moving.events
+
+
+def test_v4_greets_on_three_consecutive_overlaps_after_person_appearance() -> None:
+    engine = DoorPolicyTriggerEngine(_v4_settings())
+
+    first = engine.update(_frame(0, 0.0, "STABLE", distance=0.03, overlap=0.50))
+    second = engine.update(_frame(1, 0.3, "STABLE", distance=0.03, overlap=0.40))
+    greeted = engine.update(_frame(2, 0.7, "STABLE", distance=0.03, overlap=0.30))
+
+    assert first.greet_overlap_streak == 1
+    assert second.greet_overlap_streak == 2
+    assert greeted.greet_overlap_streak == 3
+    assert [event["kind"] for event in greeted.events] == ["approach"]
+    assert greeted.reason == "person_appearance_with_consecutive_overlap"
+    assert not greeted.eligible_person_appearance
+    assert greeted.events[0]["source"] == "door_policy_v2"
+
+
+def test_v4_two_consecutive_overlaps_do_not_greet() -> None:
+    engine = DoorPolicyTriggerEngine(_v4_settings())
+
+    engine.update(_frame(0, 0.0, "STABLE", distance=0.03, overlap=0.50))
+    second = engine.update(_frame(1, 0.3, "STABLE", distance=0.03, overlap=0.40))
+
+    assert second.greet_candidate_armed
+    assert second.greet_overlap_streak == 2
+    assert not second.events
+
+
+def test_v4_overlap_after_presence_window_does_not_greet() -> None:
+    engine = DoorPolicyTriggerEngine(_v4_settings())
+
+    engine.update(_frame(0, 0.0, "STABLE", distance=0.03))
+    too_late = engine.update(_frame(1, 1.6, "STABLE", distance=0.03, overlap=0.50))
+
+    assert not too_late.greet_candidate_armed
+    assert not too_late.events
+
+
+def test_v4_ineligible_presence_episode_cannot_arm_after_becoming_eligible() -> None:
+    engine = DoorPolicyTriggerEngine(_v4_settings())
+
+    rejected = engine.update(
+        _frame(0, 0.0, "STABLE", distance=0.03, overlap=0.50, boundary_clearance_ratio=0.0)
+    )
+    later = [
+        engine.update(_frame(index, index * 0.3, "STABLE", distance=0.03, overlap=0.50))
+        for index in range(1, 5)
+    ]
+
+    assert not rejected.greet_candidate_armed
+    assert not any(item.events for item in later)
+
+
+def test_v4_camera_time_gap_without_missing_observation_does_not_restart_presence() -> None:
+    engine = DoorPolicyTriggerEngine(_v4_settings())
+
+    engine.update(
+        _frame(0, 0.0, "STABLE", distance=0.03, overlap=0.50, boundary_clearance_ratio=0.0)
+    )
+    after_gap = engine.update(
+        _frame(1, 2.0, "STABLE", distance=0.03, overlap=0.50)
+    )
+
+    assert not after_gap.eligible_person_appearance
+    assert not after_gap.greet_candidate_armed
+    assert not after_gap.events
+
+
+def test_v4_track_rearms_after_two_observed_missing_frames() -> None:
+    engine = DoorPolicyTriggerEngine(_v4_settings())
+
+    engine.update(
+        _frame(0, 0.0, "STABLE", distance=0.03, overlap=0.50, boundary_clearance_ratio=0.0)
+    )
+    engine.update(_frame(1, 0.3, "STABLE"))
+    engine.update(_frame(2, 0.6, "STABLE"))
+    first = engine.update(_frame(3, 0.9, "STABLE", distance=0.03, overlap=0.50))
+    engine.update(_frame(4, 1.1, "STABLE", distance=0.03, overlap=0.50))
+    greeted = engine.update(_frame(5, 1.3, "STABLE", distance=0.03, overlap=0.50))
+
+    assert first.eligible_person_appearance
+    assert [event["kind"] for event in greeted.events] == ["approach"]
+
+
+def test_v4_goodbye_uses_directional_distance_crossing_without_door_movement() -> None:
+    engine = DoorPolicyTriggerEngine(_v4_settings())
+
+    engine.update(_frame(0, 0.0, "STABLE", distance=0.12))
+    engine.update(_frame(1, 0.2, "STABLE", distance=0.07))
+    departed = engine.update(_frame(2, 0.4, "STABLE", distance=0.05))
+
+    assert [event["kind"] for event in departed.events] == ["depart"]
+    assert departed.reason == "person_distance_crossing"
+    assert departed.events[0]["source"] == "door_policy_v2"
+
+
+def test_v4_first_seen_near_does_not_emit_goodbye() -> None:
+    engine = DoorPolicyTriggerEngine(_v4_settings())
+
+    first_seen = engine.update(_frame(0, 0.0, "STABLE", distance=0.03))
+
+    assert first_seen.greet_candidate_armed
+    assert not first_seen.events
+
+
+def test_v4_first_seen_in_hysteresis_band_does_not_seed_goodbye_crossing() -> None:
+    engine = DoorPolicyTriggerEngine(_v4_settings())
+
+    engine.update(_frame(0, 0.0, "STABLE", distance=0.07))
+    entered = engine.update(_frame(1, 0.2, "STABLE", distance=0.05))
+
+    assert not entered.events
+
+
+def test_v4_oversized_person_cannot_arm_greet_or_trigger_goodbye() -> None:
+    engine = DoorPolicyTriggerEngine(_v4_settings())
+
+    oversized = engine.update(
+        _frame(0, 0.0, "MOVING", distance=0.12, person_area_ratio=0.65)
+    )
+    still_oversized = engine.update(
+        _frame(1, 0.2, "MOVING", distance=0.03, person_area_ratio=0.65)
+    )
+
+    assert not oversized.greet_candidate_armed
+    assert not oversized.events
+    assert not still_oversized.events
+
+
+def _v4_settings() -> DoorPolicySettings:
+    return DoorPolicySettings(
+        trigger_contract=PRESENCE_OVERLAP_DIRECT_GOODBYE_CONTRACT,
+        greet_presence_overlap_window_s=1.5,
+        greet_overlap_consecutive_observations=3,
+    )
 
 
 def test_live_coordinator_aligns_delayed_dino_result_to_buffered_source_frames() -> None:

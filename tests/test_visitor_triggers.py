@@ -17,6 +17,7 @@ from reachy_mini_brain.official_runtime.visitor_trigger_profiles import (
     DOOR_V1_20260805,
     DOOR_V2_20260809,
     DOOR_V3_20260825,
+    DOOR_V4_20260827,
     VISITOR_V1_20260802,
     resolve_visitor_trigger_profile,
 )
@@ -393,6 +394,7 @@ def test_versioned_profile_metadata_contains_complete_evaluated_configuration() 
     door_v1 = resolve_visitor_trigger_profile(DOOR_V1_20260805).metadata()
     door_v2 = resolve_visitor_trigger_profile(DOOR_V2_20260809).metadata()
     door_v3 = resolve_visitor_trigger_profile(DOOR_V3_20260825).metadata()
+    door_v4 = resolve_visitor_trigger_profile(DOOR_V4_20260827).metadata()
 
     assert legacy == {
         "name": "legacy",
@@ -431,6 +433,17 @@ def test_versioned_profile_metadata_contains_complete_evaluated_configuration() 
     assert door_v2["parameters"]["door_observer"]["sequential_change_enabled"] is False
     assert door_v3["parameters"]["door_observer"]["sequential_change_enabled"] is True
     assert door_v3["parameters"]["door_policy"] == door_v2["parameters"]["door_policy"]
+    assert door_v4["implementation"] == "door_policy_v2"
+    assert door_v4["parameters"]["door_observer"]["sequential_change_enabled"] is True
+    assert (
+        door_v4["parameters"]["door_policy"]["trigger_contract"]
+        == "presence_overlap_direct_goodbye_v3"
+    )
+    assert door_v4["parameters"]["door_policy"]["greet_presence_overlap_window_s"] == 1.5
+    assert door_v4["parameters"]["door_policy"]["greet_overlap_consecutive_observations"] == 3
+    assert door_v4["parameters"]["reception_policy"] == {
+        "suppress_vision_policies_during_conversation": True,
+    }
 
 
 def test_unknown_profile_is_rejected_before_detector_initialization() -> None:

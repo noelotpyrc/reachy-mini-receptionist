@@ -371,7 +371,9 @@ def build_approach_tracker(
 ) -> ApproachTracker | LegacyApproachTracker:
     if profile.implementation == "legacy_area_v1":
         return LegacyApproachTracker(frame_wh, smooth=smooth, **profile.parameters)
-    if profile.implementation in {"visitor_height_v1", "door_policy_v1"}:
+    if profile.implementation == "visitor_height_v1" or profile.implementation.startswith(
+        "door_policy_"
+    ):
         return ApproachTracker(frame_wh, smooth=smooth, trigger_config=profile.trigger_config)
     raise ValueError(f"unsupported visitor trigger implementation: {profile.implementation}")
 
@@ -625,7 +627,7 @@ class PerceptionPipeline:
         assert self._detector is not None
         persons = self._detector.detect(frame, bgr=bgr)
         events = self._approach.update(persons, ts=frame_ts)
-        if self.visitor_trigger_profile.implementation == "door_policy_v1":
+        if self.visitor_trigger_profile.implementation.startswith("door_policy_"):
             events = [event for event in events if event.get("kind") not in {"approach", "depart"}]
         observation_index = self._processed_frame_count if frame_index is None else int(frame_index)
         if self._gestures:

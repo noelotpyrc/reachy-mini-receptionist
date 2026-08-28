@@ -6,7 +6,7 @@ import bisect
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,11 @@ from .door_observation import (
 )
 from .door_review_rerun import DoorReviewRenderer
 from .door_policy import DoorPolicySettings, DoorPolicyTriggerEngine
+from .visitor_trigger_profiles import (
+    DOOR_V2_20260809,
+    VISITOR_TRIGGER_PROFILE_NAMES,
+    resolve_visitor_trigger_profile,
+)
 
 
 @dataclass(frozen=True)
@@ -66,21 +71,39 @@ class PersonTimeline:
 @click.option("--output-dir", type=click.Path(file_okay=False, path_type=Path), required=True)
 @click.option("--from-frame", type=click.IntRange(min=0), required=True)
 @click.option("--to-frame", type=click.IntRange(min=0), required=True)
+@click.option(
+    "--source-frame-offset",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="Add this offset when looking up original timestamp, person, and DINO sidecars.",
+)
+@click.option(
+    "--warmup-source-frames",
+    type=click.IntRange(min=0),
+    default=600,
+    show_default=True,
+    help="Sidecar prehistory used to warm retained door, sequential baseline, and policy state.",
+)
+@click.option(
+    "--visitor-trigger-profile",
+    type=click.Choice(VISITOR_TRIGGER_PROFILE_NAMES),
+    default=DOOR_V2_20260809,
+    show_default=True,
+)
 @click.option("--pipeline-id", default="door_grounding_dino", show_default=True)
 @click.option("--jpeg-quality", type=click.IntRange(1, 100), default=85, show_default=True)
-@click.option("--motion-enter-threshold", type=click.FloatRange(0.0, 1.0), default=0.10, show_default=True)
-@click.option("--motion-exit-threshold", type=click.FloatRange(0.0, 1.0), default=0.035, show_default=True)
+@click.option("--motion-enter-threshold", type=click.FloatRange(0.0, 1.0), default=None)
+@click.option("--motion-exit-threshold", type=click.FloatRange(0.0, 1.0), default=None)
 @click.option(
     "--relative-motion/--geometry-only",
-    default=False,
-    show_default=True,
-    help="Enable relative door-leaf motion as an additive fallback to geometry.",
+    default=None,
+    help="Override the selected profile's relative door-leaf motion setting.",
 )
 @click.option(
     "--sequential-change/--single-threshold",
-    default=False,
-    show_default=True,
-    help="Use a session-local robust sequential detector for MOVING entry.",
+    default=None,
+    help="Override the selected profile's sequential MOVING-entry setting.",
 )
 def cli(
     *,
@@ -91,12 +114,15 @@ def cli(
     output_dir: Path,
     from_frame: int,
     to_frame: int,
+    source_frame_offset: int,
+    warmup_source_frames: int,
+    visitor_trigger_profile: str,
     pipeline_id: str,
     jpeg_quality: int,
-    motion_enter_threshold: float,
-    motion_exit_threshold: float,
-    relative_motion: bool,
-    sequential_change: bool,
+    motion_enter_threshold: float | None,
+    motion_exit_threshold: float | None,
+    relative_motion: bool | None,
+    sequential_change: bool | None,
 ) -> None:
     """Create a focused Rerun artifact for one source-frame interval."""
 
@@ -106,12 +132,34 @@ def cli(
         raise click.ClickException(f"output directory already exists: {output_dir}")
     output_dir.mkdir(parents=True)
 
-    settings = DoorObserverSettings(
-        motion_enter_threshold=motion_enter_threshold,
-        motion_exit_threshold=motion_exit_threshold,
-        relative_motion_enabled=relative_motion,
-        sequential_change_enabled=sequential_change,
+    profile = resolve_visitor_trigger_profile(visitor_trigger_profile)
+    if not profile.implementation.startswith("door_policy_"):
+        raise click.ClickException(
+            f"{visitor_trigger_profile} is not a door-policy visitor profile"
+        )
+    settings = DoorObserverSettings(**profile.parameters["door_observer"])
+    settings = replace(
+        settings,
+        motion_enter_threshold=(
+            settings.motion_enter_threshold
+            if motion_enter_threshold is None
+            else motion_enter_threshold
+        ),
+        motion_exit_threshold=(
+            settings.motion_exit_threshold
+            if motion_exit_threshold is None
+            else motion_exit_threshold
+        ),
+        relative_motion_enabled=(
+            settings.relative_motion_enabled if relative_motion is None else relative_motion
+        ),
+        sequential_change_enabled=(
+            settings.sequential_change_enabled
+            if sequential_change is None
+            else sequential_change
+        ),
     )
+    policy_settings = DoorPolicySettings(**profile.parameters["door_policy"])
     frame_timestamps = _load_frame_timestamps(timestamp_sidecar)
     detection_rows = _load_detections(door_detections, pipeline_id=pipeline_id)
     detection_frame_indices = tuple(sorted(detection_rows))
@@ -127,13 +175,16 @@ def cli(
         person_capture=person_capture,
         pipeline_id=pipeline_id,
         frame_range=(from_frame, to_frame),
+        source_frame_offset=source_frame_offset,
+        warmup_source_frames=warmup_source_frames,
+        visitor_profile=profile.metadata(),
         settings=settings,
+        policy_settings=policy_settings,
         outputs={"frames": str(frames_path), "rrd": str(rrd_path)},
     )
     _write_json(manifest_path, manifest)
 
     observer = DoorMotionObserver(settings)
-    policy_settings = DoorPolicySettings()
     policy = DoorPolicyTriggerEngine(policy_settings)
     renderer = DoorReviewRenderer(
         save_path=rrd_path,
@@ -145,31 +196,75 @@ def cli(
     event_counts = {"approach": 0, "depart": 0}
     try:
         import cv2
+        import numpy as np
 
         cap = cv2.VideoCapture(str(video))
         fps = float(cap.get(cv2.CAP_PROP_FPS) or 5.0)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if width <= 0 or height <= 0:
+            raise RuntimeError(f"invalid video dimensions: {width}x{height}")
+        warmup_frame = np.zeros((height, width, 3), dtype=np.uint8)
+        warmup_indices = _warmup_frame_indices(
+            source_frame_offset=source_frame_offset,
+            warmup_source_frames=warmup_source_frames,
+            timestamp_frame_indices=tuple(sorted(frame_timestamps)),
+            detection_frame_indices=detection_frame_indices,
+        )
+        for source_frame_index in warmup_indices:
+            frame_ts = frame_timestamps[source_frame_index]
+            row = detection_rows.get(source_frame_index)
+            frame_people = people.nearest(frame_ts)
+            warmup_observation = observer.update(
+                frame_index=source_frame_index,
+                frame_ts=frame_ts,
+                frame_bgr=warmup_frame,
+                door_detections=list(row.detections) if row is not None else None,
+                people=frame_people,
+                occluders=frame_people,
+                semantic_completed_ts=row.completed_ts if row is not None else None,
+                semantic_inference_latency_ms=(
+                    row.inference_latency_ms if row is not None else None
+                ),
+            )
+            policy.update(
+                warmup_observation,
+                decision_ts=_next_detection_completion_ts(
+                    source_frame_index,
+                    frame_ts,
+                    detection_frame_indices=detection_frame_indices,
+                    detection_rows=detection_rows,
+                ),
+            )
         with frames_path.open("x", encoding="utf-8") as trace:
             frame_index = 0
             while True:
                 ok, frame = cap.read()
                 if not ok:
                     break
-                if frame_index > to_frame or frame_index > detection_frame_indices[-1]:
+                source_frame_index = frame_index + source_frame_offset
+                if (
+                    frame_index > to_frame
+                    or source_frame_index > detection_frame_indices[-1]
+                ):
                     break
                 if frame_index < from_frame:
                     frame_index += 1
                     continue
-                frame_ts = frame_timestamps.get(frame_index, frame_index / fps)
-                row = detection_rows.get(frame_index)
+                frame_ts = frame_timestamps.get(
+                    source_frame_index,
+                    source_frame_index / fps,
+                )
+                row = detection_rows.get(source_frame_index)
                 decision_ts = _next_detection_completion_ts(
-                    frame_index,
+                    source_frame_index,
                     frame_ts,
                     detection_frame_indices=detection_frame_indices,
                     detection_rows=detection_rows,
                 )
                 frame_people = people.nearest(frame_ts)
                 observation = observer.update(
-                    frame_index=frame_index,
+                    frame_index=source_frame_index,
                     frame_ts=frame_ts,
                     frame_bgr=frame,
                     door_detections=list(row.detections) if row is not None else None,
@@ -207,6 +302,7 @@ def cli(
         status="completed",
         finished_ts=round(time.time(), 3),
         processed_frames=processed,
+        warmup_processed_frames=len(warmup_indices),
         state_frame_counts=state_counts,
         policy_event_counts=event_counts,
         policy_settings=policy_settings.to_dict(),
@@ -215,6 +311,32 @@ def cli(
     click.echo(f"door review -> {rrd_path}")
     click.echo(f"frame observations -> {frames_path}")
     click.echo(f"manifest -> {manifest_path}")
+
+
+def _warmup_frame_indices(
+    *,
+    source_frame_offset: int,
+    warmup_source_frames: int,
+    timestamp_frame_indices: tuple[int, ...],
+    detection_frame_indices: tuple[int, ...],
+    policy_tail_frames: int = 25,
+) -> tuple[int, ...]:
+    if source_frame_offset <= 0 or warmup_source_frames <= 0:
+        return ()
+    first = max(0, source_frame_offset - warmup_source_frames)
+    tail_start = max(first, source_frame_offset - policy_tail_frames)
+    timestamps = {
+        frame_index
+        for frame_index in timestamp_frame_indices
+        if first <= frame_index < source_frame_offset
+    }
+    semantic = {
+        frame_index
+        for frame_index in detection_frame_indices
+        if first <= frame_index < source_frame_offset and frame_index in timestamps
+    }
+    policy_tail = {frame_index for frame_index in timestamps if frame_index >= tail_start}
+    return tuple(sorted(semantic | policy_tail))
 
 
 def _load_frame_timestamps(path: Path) -> dict[int, float]:
@@ -318,7 +440,11 @@ def _manifest(
     person_capture: Path,
     pipeline_id: str,
     frame_range: tuple[int, int],
+    source_frame_offset: int,
+    warmup_source_frames: int,
+    visitor_profile: dict[str, Any],
     settings: DoorObserverSettings,
+    policy_settings: DoorPolicySettings,
     outputs: dict[str, str],
 ) -> dict[str, Any]:
     return {
@@ -335,7 +461,13 @@ def _manifest(
             "pipeline_id": pipeline_id,
             "from_frame": frame_range[0],
             "to_frame": frame_range[1],
+            "source_frame_offset": source_frame_offset,
+            "warmup_source_frames": warmup_source_frames,
+            "source_from_frame": frame_range[0] + source_frame_offset,
+            "source_to_frame": frame_range[1] + source_frame_offset,
+            "visitor_trigger_profile": visitor_profile,
             "observer": settings.to_dict(),
+            "policy": policy_settings.to_dict(),
         },
         "outputs": outputs,
     }

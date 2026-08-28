@@ -258,6 +258,18 @@ class DoorReviewRenderer:
             "door_review/policy/presence/retained",
             rr.Scalars(float(policy.retained_presence == "PRESENT")),
         )
+        rr.log(
+            "door_review/policy/greet_overlap/presence_started",
+            rr.Scalars(float(policy.eligible_person_appearance)),
+        )
+        rr.log(
+            "door_review/policy/greet_overlap/streak",
+            rr.Scalars(float(policy.greet_overlap_streak)),
+        )
+        rr.log(
+            "door_review/policy/greet_overlap/required",
+            rr.Scalars(float(policy.greet_overlap_required)),
+        )
         rr.log("door_review/policy/candidate", rr.Scalars(_CANDIDATE_CODES[candidate]))
         rr.log("door_review/policy/trigger", rr.Scalars(_TRIGGER_CODES[trigger]))
         rr.log(
@@ -392,6 +404,12 @@ def _door_review_blueprint() -> Any | None:
             origin="/door_review/policy/candidate",
             contents=["/door_review/policy/candidate"],
             name="Policy arm code (0 idle, 1 arrival, 2 departure; not counts)",
+            axis_x=linked_x_axis,
+        ),
+        rrb.TimeSeriesView(
+            origin="/door_review/policy/greet_overlap",
+            contents=["/door_review/policy/greet_overlap/**"],
+            name="Greet presence and consecutive-overlap evidence",
             axis_x=linked_x_axis,
         ),
         rrb.TimeSeriesView(

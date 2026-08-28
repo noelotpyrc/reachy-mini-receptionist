@@ -159,6 +159,10 @@ RECEPTION_VISITOR_TRIGGER_PROFILE=visitor-v1-20260802
 RECEPTION_VISITOR_TRIGGER_PROFILE=door-v1-20260805
 RECEPTION_VISION_PIPELINES_CONFIG=/Users/leon/projects/reachy_mini_receptionist_release_3449f8e_frozen/config/vision/door-policy-v1.json
 RECEPTION_RERUN_MODE=off
+
+# Opt-in presence-overlap-greet/direct-goodbye candidate. This also prevents vision policies
+# from interrupting an active wave-chat conversation.
+RECEPTION_VISITOR_TRIGGER_PROFILE=door-v4-20260827
 ```
 
 For the current controlled acceptance, export the three door-policy values in the release shell

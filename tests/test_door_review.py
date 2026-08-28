@@ -3,6 +3,7 @@ from __future__ import annotations
 from reachy_mini_brain.official_runtime.door_review import (
     DoorDetectionFrame,
     _next_detection_completion_ts,
+    _warmup_frame_indices,
 )
 
 
@@ -33,3 +34,15 @@ def test_semantic_frame_uses_its_own_dino_completion() -> None:
     )
 
     assert decision_ts == 10.25
+
+
+def test_warmup_uses_semantic_history_plus_full_policy_tail() -> None:
+    indices = _warmup_frame_indices(
+        source_frame_offset=100,
+        warmup_source_frames=60,
+        timestamp_frame_indices=tuple(range(120)),
+        detection_frame_indices=(20, 40, 50, 70, 90, 110),
+        policy_tail_frames=10,
+    )
+
+    assert indices == (40, 50, 70, *range(90, 100))

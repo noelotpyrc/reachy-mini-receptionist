@@ -23,6 +23,7 @@ class ReceptionPolicySettings:
     conversation_idle_timeout_s: float = 45.0
     conversation_max_duration_s: float = 480.0
     audio_gate_until_wave: bool = True
+    suppress_vision_policies_during_conversation: bool = False
     speech_capability: str = "speak_text"
     antenna_capability: str = "antenna_pulse"
     conversation_session_capability: str = "begin_conversation_session"
@@ -103,6 +104,14 @@ class ReceptionPolicy:
         context: RuntimeContext,
         capabilities: CapabilityRegistry,
     ) -> None:
+        if self._conversation_active and self.settings.suppress_vision_policies_during_conversation:
+            self._policy_event(
+                context,
+                "farewell_suppressed",
+                reason="conversation_active",
+                event_kind=event.kind,
+            )
+            return
         if self._conversation_active:
             self._close_conversation(context, "vision_depart")
         if not self._cooldown_ready("depart"):

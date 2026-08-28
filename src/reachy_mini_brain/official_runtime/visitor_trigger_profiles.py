@@ -7,7 +7,10 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from .door_observation import DoorObserverSettings
-from .door_policy import DoorPolicySettings
+from .door_policy import (
+    PRESENCE_OVERLAP_DIRECT_GOODBYE_CONTRACT,
+    DoorPolicySettings,
+)
 from .visitor_triggers import HeightSignalConfig, VisitorTriggerConfig
 
 
@@ -16,12 +19,14 @@ VISITOR_V1_20260802 = "visitor-v1-20260802"
 DOOR_V1_20260805 = "door-v1-20260805"
 DOOR_V2_20260809 = "door-v2-20260809"
 DOOR_V3_20260825 = "door-v3-20260825"
+DOOR_V4_20260827 = "door-v4-20260827"
 VISITOR_TRIGGER_PROFILE_NAMES = (
     DEFAULT_VISITOR_TRIGGER_PROFILE,
     VISITOR_V1_20260802,
     DOOR_V1_20260805,
     DOOR_V2_20260809,
     DOOR_V3_20260825,
+    DOOR_V4_20260827,
 )
 
 
@@ -119,6 +124,25 @@ _PROFILES = {
                 sequential_change_enabled=True,
             ).to_dict(),
             "door_policy": DoorPolicySettings().to_dict(),
+        },
+        trigger_config=_VISITOR_V1_CONFIG,
+    ),
+    DOOR_V4_20260827: VisitorTriggerProfile(
+        name=DOOR_V4_20260827,
+        implementation="door_policy_v2",
+        parameters={
+            "person_observation": asdict(_VISITOR_V1_CONFIG),
+            "door_observer": DoorObserverSettings(
+                sequential_change_enabled=True,
+            ).to_dict(),
+            "door_policy": DoorPolicySettings(
+                trigger_contract=PRESENCE_OVERLAP_DIRECT_GOODBYE_CONTRACT,
+                greet_presence_overlap_window_s=1.5,
+                greet_overlap_consecutive_observations=3,
+            ).to_dict(),
+            "reception_policy": {
+                "suppress_vision_policies_during_conversation": True,
+            },
         },
         trigger_config=_VISITOR_V1_CONFIG,
     ),

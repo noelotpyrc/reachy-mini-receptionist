@@ -143,6 +143,38 @@ Offline acceptance on 2026-08-09 removed both false events from frames `130-220`
 `official-live-20260804-144621` retained depart at frame `63` and approach at frame `86`; frames
 `600-690` of `official-live-20260804-145713` retained departs at frames `619` and `670`.
 
+### Presence-Overlap Greet and Direct Goodbye Contract
+
+The opt-in `door-v4-20260827` profile changes the trigger contract while retaining the v3
+sequential door observer and the v2 close-person protections. Earlier profiles remain unchanged as
+rollback targets.
+
+1. **Greet:** the first eligible observation of a logical person track arms a `1.5 s` candidate.
+   Three consecutive observations with person-door overlap of at least `0.10` emit
+   `vision.approach`. Door movement is not part of the greet decision. A track remains in the same
+   presence episode across timestamp gaps and one missing observation; two observed missing frames
+   rearm it for a later appearance.
+2. **Goodbye:** an eligible logical person must first establish an outside distance greater than
+   `0.08`. A later decreasing feet-to-door distance crossing to at most `0.06` emits
+   `vision.depart` immediately, without waiting for DINO door movement. A person first seen near
+   the door or inside the `0.06-0.08` hysteresis band cannot emit goodbye without first establishing
+   outside history.
+3. **Eligibility:** oversized or image-boundary-clipped person boxes still establish presence but
+   cannot arm or complete either trigger. If a presence episode starts ineligible, that episode
+   cannot become a greet candidate merely because its box later becomes eligible. Door occlusion
+   alone is not image-boundary clipping.
+4. **Conversation isolation:** while wave chat is active, both vision greet and vision farewell are
+   logged as suppressed. They cannot speak, close the audio gate, or close the conversation.
+   Explicit user goodbye, idle timeout, and maximum-duration timeout remain valid chat exits.
+
+The v4 policy trace records `trigger_contract`, eligible-person appearance, candidate track IDs,
+the consecutive-overlap streak and requirement, distance crossings, decisions, and suppression
+events. With the three-observation threshold, the four selected offline clips passed: the
+depart/return clip emitted depart at frame `46` and approach at `88`; the close-person negative
+emitted neither event; the door-first ordering clip emitted approach at `14087`; and the combined
+clip emitted approach at `4833` and depart at `4999`. Live acceptance is still required before
+promotion.
+
 Grounding DINO runs continuously as an asynchronous policy-role pipeline at up to `2 Hz`; RF-DETR
 person perception remains on the camera path. DINO output is fused with the person observation and
 image from the DINO source frame, not the frame current when inference completes. The first M1 Max
