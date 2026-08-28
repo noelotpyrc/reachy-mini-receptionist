@@ -2,13 +2,14 @@
 name = "reachy-mini-brain"
 version = "0.1.0"
 description = "Reception runtime and tooling for Reachy Mini robot"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = [
-    "reachy-mini>=1.8.0",
+    "reachy-mini==1.10.0",
     "click",
     "numpy",
     "opencv-python>=4.13.0.92",
     "scipy",
+    "soundfile",
     "websockets>=15.0.1",
 ]
 
@@ -16,7 +17,6 @@ dependencies = [
 audio = [
     "faster-whisper",
     "piper-tts",
-    "soundfile",
     "pathvalidate",
     "silero-vad",
 ]
@@ -29,33 +29,6 @@ vision = [
 # to ~/.cache/reachy_mini/ on first use.
 gesture = [
     "mediapipe>=0.10.14,<0.11",
-]
-# Dependencies required when the accepted official-runtime path imports the
-# official Reachy Mini conversation app handler source checkout.
-official-runtime = [
-    "aiortc>=1.13.0",
-    "av",
-    "fastrtc>=0.0.34",
-    "gradio==5.50.1.dev1",
-    "gstreamer-bundle==1.28.3",
-    "gstreamer-cli==1.28.3",
-    "gstreamer-ext-runtime==1.28.3",
-    "gstreamer-gtk==1.28.3",
-    "gstreamer-libs==1.28.3",
-    "gstreamer-plugins==1.28.3",
-    "gstreamer-plugins-gpl==1.28.3",
-    "gstreamer-plugins-gpl-restricted==1.28.3",
-    "gstreamer-plugins-libs==1.28.3",
-    "gstreamer-plugins-restricted==1.28.3",
-    "gstreamer-python==1.28.3",
-    "huggingface-hub==1.3.0",
-    "httpx>=0.28.1",
-    "python-dotenv",
-    "openai>=2.30.0",
-    "google-genai>=1.0.0",
-    "reachy_mini_dances_library",
-    "reachy_mini_toolbox",
-    "mcp>=1.27.1",
 ]
 sim = ["reachy-mini[mujoco]"]
 livekit = [

@@ -22,7 +22,6 @@ from .door_policy import DoorPolicySettings
 from .door_policy_live import LiveDoorPolicyCoordinator
 from .env import PROJECT_ROOT, load_project_env
 from .events import CompositeEventSink, EventSink, RuntimeEvent
-from .hf_official import DEFAULT_OFFICIAL_APP_SRC, build_hf_official_handler
 from .live_detection import FramePacket, LiveDetectionManager, load_pipeline_config
 from .livekit_handler import LiveKitBackendConfig, LiveKitRealtimeHandler
 from .livekit_room_bridge import LiveKitRoomBridge
@@ -84,7 +83,7 @@ def _instruction_provenance(instructions: str, *, source: str) -> dict[str, Any]
 
 
 @click.command()
-@click.option("--backend", type=click.Choice(["s2s-local", "hf-official", "livekit"]), default="s2s-local", show_default=True)
+@click.option("--backend", type=click.Choice(["s2s-local", "livekit"]), default="s2s-local", show_default=True)
 @click.option("--run-id", default=None, help="Run id. Defaults to timestamped id.")
 @click.option("--artifact-root", type=click.Path(path_type=Path), default=DEFAULT_ARTIFACT_ROOT)
 @click.option("--duration", type=float, default=120.0, show_default=True, help="Maximum live run duration in seconds.")
@@ -190,10 +189,7 @@ def _instruction_provenance(instructions: str, *, source: str) -> dict[str, Any]
     help="Send no application profile prompt because the upstream Hermes profile owns receptionist context.",
 )
 @click.option("--hf-voice", default="Sohee", show_default=True)
-@click.option("--hf-connection-mode", type=click.Choice(["local", "deployed"]), default="local", show_default=True)
 @click.option("--hf-realtime-ws-url", envvar="HF_REALTIME_WS_URL", default="ws://100.127.86.67:8765/v1/realtime")
-@click.option("--hf-token", envvar="HF_TOKEN", default=None)
-@click.option("--official-app-src", type=click.Path(path_type=Path), default=DEFAULT_OFFICIAL_APP_SRC)
 @click.option(
     "--policy-audio-cache-dir",
     envvar="POLICY_AUDIO_CACHE_DIR",
@@ -301,10 +297,7 @@ async def _run_live(
     instructions: str | None,
     profile_owned_context: bool,
     hf_voice: str,
-    hf_connection_mode: str,
     hf_realtime_ws_url: str,
-    hf_token: str | None,
-    official_app_src: Path,
     policy_audio_cache_dir: Path,
     livekit_url: str,
     livekit_api_key: str,
@@ -404,10 +397,8 @@ async def _run_live(
             "conversation_cue_high_s": conversation_cue_high_s,
             "conversation_cue_rest_s": conversation_cue_rest_s,
             "hf_voice": hf_voice,
-            "hf_connection_mode": hf_connection_mode,
             "hf_realtime_ws_url_set": bool(hf_realtime_ws_url),
             **instructions_provenance,
-            "official_app_src": str(official_app_src),
             "policy_audio_cache_dir": str(policy_audio_cache_dir),
             "scripted_policy_flow": scripted_policy_flow,
             "scripted_policy_gap_s": scripted_policy_gap_s,
@@ -674,10 +665,7 @@ async def _run_live(
         instructions_source=instructions_provenance["instructions_source"],
         instructions_sha256=instructions_provenance["instructions_sha256"],
         hf_voice=hf_voice,
-        hf_connection_mode=hf_connection_mode,
         hf_realtime_ws_url=hf_realtime_ws_url,
-        hf_token=hf_token,
-        official_app_src=official_app_src,
         livekit_url=livekit_url,
         livekit_api_key=livekit_api_key,
         livekit_api_secret=livekit_api_secret,
@@ -1422,10 +1410,7 @@ def _build_handler(
     instructions_source: str | None,
     instructions_sha256: str | None,
     hf_voice: str,
-    hf_connection_mode: str,
     hf_realtime_ws_url: str,
-    hf_token: str | None,
-    official_app_src: Path,
     livekit_url: str,
     livekit_api_key: str,
     livekit_api_secret: str,
@@ -1436,18 +1421,6 @@ def _build_handler(
     camera_worker: Any | None,
     reachy_mini: Any | None,
 ) -> Any:
-    if backend == "hf-official":
-        return build_hf_official_handler(
-            event_sink=event_sink,
-            official_app_src=official_app_src,
-            instructions=instructions,
-            voice=hf_voice,
-            connection_mode=hf_connection_mode,
-            realtime_ws_url=hf_realtime_ws_url if hf_connection_mode == "local" else None,
-            hf_token=hf_token,
-            camera_worker=camera_worker,
-            reachy_mini=reachy_mini,
-        )
     if backend == "s2s-local":
         return S2SRealtimeHandler(
             event_sink=event_sink,

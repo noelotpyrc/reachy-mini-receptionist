@@ -57,7 +57,7 @@ RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_<revision>_frozen
 
 env VIRTUAL_ENV="$RELEASE/.release-venv" /Users/leon/.local/bin/uv sync \
   --project "$RELEASE" --active --frozen --no-editable --no-dev \
-  --extra official-runtime --extra vision --extra gesture \
+  --extra vision --extra gesture \
   --extra door-vision --extra diagnosis
 ```
 

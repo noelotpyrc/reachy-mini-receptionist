@@ -9,7 +9,8 @@ speech-to-speech backend provide greet, goodbye, wave-to-chat, recording, and re
 This path is based on Pollen Robotics' official Reachy Mini conversation app:
 <https://github.com/pollen-robotics/reachy_mini_conversation_app>. This repo is not a clean fork; it
 ports and adapts the official app's runtime design for our clinic-reception UX, local backend work,
-and replay/logging harness.
+and replay/logging harness. The production runtime uses this repo's native S2S handler and does not
+import or execute the Conversation app checkout.
 
 The older `reception` daemon remains in the repo as a legacy fallback/reference path. Do not use it
 as the default live-test path unless explicitly comparing against legacy behavior.
@@ -17,7 +18,7 @@ as the default live-test path unless explicitly comparing against legacy behavio
 ## Setup
 
 ```bash
-uv sync --extra official-runtime --extra vision --extra gesture --extra diagnosis --extra door-vision --extra dev
+uv sync --extra vision --extra gesture --extra diagnosis --extra door-vision --extra dev
 uv sync --extra audio --extra brain  # optional: legacy listen/speak + legacy brain tools
 ```
 

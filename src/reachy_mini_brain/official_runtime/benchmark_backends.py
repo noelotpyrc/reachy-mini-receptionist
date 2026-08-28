@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import shutil
 import asyncio
 from dataclasses import asdict, dataclass
@@ -21,14 +20,12 @@ from .events import CompositeEventSink, InMemoryEventSink, JsonlEventSink, Runti
 from .wav_replay import run_wav_replay
 from .livekit_handler import LiveKitBackendConfig, LiveKitRealtimeHandler
 from .livekit_room_bridge import LiveKitRoomBridge
+from .s2s_realtime import S2SRealtimeHandler
 
 
 load_project_env()
 
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "artifacts" / "backend-benchmarks"
-DEFAULT_OFFICIAL_APP_SRC = Path(
-    os.getenv("REACHY_MINI_CONVERSATION_APP_SRC", "/Users/noel/projects/reachy_mini_conversation_app/src")
-)
 DEFAULT_INSTRUCTIONS = (
     "You are a concise clinic receptionist. Listen to the user's speech and answer naturally in one short sentence."
 )
@@ -62,7 +59,7 @@ class BenchmarkSummary:
 
 @click.command()
 @click.argument("input_wavs", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--backend", "backends", multiple=True, type=click.Choice(["hf-official", "livekit"]))
+@click.option("--backend", "backends", multiple=True, type=click.Choice(["s2s-local", "livekit"]))
 @click.option("--batch-id", default=None, help="Benchmark batch id. Defaults to timestamped id.")
 @click.option("--artifact-root", default=DEFAULT_ARTIFACT_ROOT, type=click.Path(path_type=Path))
 @click.option("--frame-duration-ms", default=WEBRTC_AUDIO_FRAME_MS, show_default=True)
@@ -70,11 +67,8 @@ class BenchmarkSummary:
 @click.option("--drain-idle-polls", default=200, show_default=True)
 @click.option("--real-time/--no-real-time", default=True, show_default=True)
 @click.option("--instructions", default=DEFAULT_INSTRUCTIONS, show_default=True)
-@click.option("--official-app-src", default=DEFAULT_OFFICIAL_APP_SRC, type=click.Path(path_type=Path))
-@click.option("--hf-voice", default="Sohee", show_default=True)
-@click.option("--hf-connection-mode", envvar="HF_REALTIME_CONNECTION_MODE", default=None)
-@click.option("--hf-realtime-ws-url", envvar="HF_REALTIME_WS_URL", default=None)
-@click.option("--hf-token", envvar="HF_TOKEN", default=None)
+@click.option("--s2s-voice", default="Sohee", show_default=True)
+@click.option("--s2s-realtime-ws-url", envvar="HF_REALTIME_WS_URL", default="ws://127.0.0.1:8765/v1/realtime")
 @click.option("--livekit-url", envvar="LIVEKIT_URL", default="")
 @click.option("--livekit-api-key", envvar="LIVEKIT_API_KEY", default="")
 @click.option("--livekit-api-secret", envvar="LIVEKIT_API_SECRET", default="")
@@ -98,11 +92,8 @@ def cli(
     drain_idle_polls: int,
     real_time: bool,
     instructions: str,
-    official_app_src: Path,
-    hf_voice: str,
-    hf_connection_mode: str | None,
-    hf_realtime_ws_url: str | None,
-    hf_token: str | None,
+    s2s_voice: str,
+    s2s_realtime_ws_url: str,
     livekit_url: str,
     livekit_api_key: str,
     livekit_api_secret: str,
@@ -121,7 +112,7 @@ def cli(
 
     if not input_wavs:
         raise click.UsageError("Provide at least one WAV file.")
-    selected_backends = list(backends or ("hf-official", "livekit"))
+    selected_backends = list(backends or ("s2s-local", "livekit"))
     batch_id = batch_id or f"backend-benchmark-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     batch_dir = artifact_root / batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
@@ -143,11 +134,8 @@ def cli(
                         drain_idle_polls=drain_idle_polls,
                         real_time=real_time,
                         instructions=instructions,
-                        official_app_src=official_app_src,
-                        hf_voice=hf_voice,
-                        hf_connection_mode=hf_connection_mode,
-                        hf_realtime_ws_url=hf_realtime_ws_url,
-                        hf_token=hf_token,
+                        s2s_voice=s2s_voice,
+                        s2s_realtime_ws_url=s2s_realtime_ws_url,
                         livekit_url=livekit_url,
                         livekit_api_key=livekit_api_key,
                         livekit_api_secret=livekit_api_secret,
@@ -195,11 +183,8 @@ async def _run_one_backend(
     drain_idle_polls: int,
     real_time: bool,
     instructions: str,
-    official_app_src: Path,
-    hf_voice: str,
-    hf_connection_mode: str | None,
-    hf_realtime_ws_url: str | None,
-    hf_token: str | None,
+    s2s_voice: str,
+    s2s_realtime_ws_url: str,
     livekit_url: str,
     livekit_api_key: str,
     livekit_api_secret: str,
@@ -239,15 +224,12 @@ async def _run_one_backend(
             suppress_silent_output=suppress_silent_output,
             silent_output_peak_threshold=silent_output_peak_threshold,
         )
-    elif backend == "hf-official":
-        handler = _build_hf_official_handler(
+    elif backend == "s2s-local":
+        handler = S2SRealtimeHandler(
             event_sink=event_sink,
-            official_app_src=official_app_src,
+            realtime_ws_url=s2s_realtime_ws_url,
             instructions=instructions,
-            voice=hf_voice,
-            connection_mode=hf_connection_mode,
-            realtime_ws_url=hf_realtime_ws_url,
-            hf_token=hf_token,
+            voice=s2s_voice,
         )
     else:
         raise ValueError(f"unsupported backend: {backend}")
@@ -337,166 +319,6 @@ def _build_livekit_handler(
     )
     bridge = LiveKitRoomBridge(config, event_sink=event_sink)
     return LiveKitRealtimeHandler(config=config, bridge=bridge, event_sink=event_sink)
-
-
-def _build_hf_official_handler(
-    *,
-    event_sink: CompositeEventSink,
-    official_app_src: Path,
-    instructions: str,
-    voice: str,
-    connection_mode: str | None,
-    realtime_ws_url: str | None,
-    hf_token: str | None,
-) -> Any:
-    import sys
-
-    if official_app_src and str(official_app_src) not in sys.path:
-        sys.path.insert(0, str(official_app_src))
-    os.environ["BACKEND_PROVIDER"] = "huggingface"
-    if connection_mode:
-        os.environ["HF_REALTIME_CONNECTION_MODE"] = connection_mode
-    if realtime_ws_url:
-        os.environ["HF_REALTIME_WS_URL"] = realtime_ws_url
-    if hf_token:
-        os.environ["HF_TOKEN"] = hf_token
-
-    try:
-        from reachy_mini_conversation_app.config import HF_BACKEND, config, refresh_runtime_config_from_env
-        from reachy_mini_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
-        from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            "Could not import official Hugging Face handler. Run from the official app venv, "
-            "install its dependencies here, or pass --official-app-src to a checkout with dependencies available."
-        ) from exc
-
-    refresh_runtime_config_from_env()
-    config.BACKEND_PROVIDER = HF_BACKEND
-
-    class BenchmarkHuggingFaceRealtimeHandler(HuggingFaceRealtimeHandler):
-        BACKEND_PROVIDER = HuggingFaceRealtimeHandler.BACKEND_PROVIDER
-        SAMPLE_RATE = HuggingFaceRealtimeHandler.SAMPLE_RATE
-        REFRESH_CLIENT_ON_RECONNECT = HuggingFaceRealtimeHandler.REFRESH_CLIENT_ON_RECONNECT
-        AUDIO_INPUT_COST_PER_1M = HuggingFaceRealtimeHandler.AUDIO_INPUT_COST_PER_1M
-        AUDIO_OUTPUT_COST_PER_1M = HuggingFaceRealtimeHandler.AUDIO_OUTPUT_COST_PER_1M
-        TEXT_INPUT_COST_PER_1M = HuggingFaceRealtimeHandler.TEXT_INPUT_COST_PER_1M
-        TEXT_OUTPUT_COST_PER_1M = HuggingFaceRealtimeHandler.TEXT_OUTPUT_COST_PER_1M
-        IMAGE_INPUT_COST_PER_1M = HuggingFaceRealtimeHandler.IMAGE_INPUT_COST_PER_1M
-
-        def __init__(self, *args: Any, benchmark_instructions: str, **kwargs: Any) -> None:
-            self._benchmark_instructions = benchmark_instructions
-            self._benchmark_session_task: asyncio.Task[None] | None = None
-            super().__init__(*args, **kwargs)
-
-        async def start_up(self) -> None:
-            await self._prepare_startup_credentials()
-            self.client = await self._build_realtime_client()
-            self._connected_event.clear()
-            self._benchmark_session_task = asyncio.create_task(
-                self._run_realtime_session(),
-                name="hf-official-benchmark-session",
-            )
-            try:
-                await asyncio.wait_for(self._connected_event.wait(), timeout=20.0)
-            except asyncio.TimeoutError as exc:
-                if self._benchmark_session_task.done():
-                    await self._benchmark_session_task
-                raise RuntimeError("Timed out waiting for official HF realtime session to connect.") from exc
-
-        async def shutdown(self) -> None:
-            await super().shutdown()
-            if self._benchmark_session_task is not None:
-                if not self._benchmark_session_task.done():
-                    self._benchmark_session_task.cancel()
-                try:
-                    await self._benchmark_session_task
-                except asyncio.CancelledError:
-                    pass
-                finally:
-                    self._benchmark_session_task = None
-
-        def _get_session_instructions(self) -> str:
-            return self._benchmark_instructions
-
-        def _get_active_tool_specs(self) -> list[dict[str, Any]]:
-            return []
-
-        def copy(self) -> Any:
-            return type(self)(
-                self.deps,
-                self.gradio_mode,
-                self.instance_path,
-                startup_voice=self._voice_override,
-                benchmark_instructions=self._benchmark_instructions,
-            )
-
-    deps = ToolDependencies(
-        reachy_mini=_NoopReachyMini(),
-        movement_manager=_NoopMovementManager(),
-        camera_worker=None,
-        vision_processor=None,
-        reception_observer=_OfficialRealtimeObserver(event_sink),
-    )
-    return BenchmarkHuggingFaceRealtimeHandler(
-        deps,
-        gradio_mode=False,
-        instance_path=None,
-        startup_voice=voice,
-        benchmark_instructions=instructions,
-    )
-
-
-class _OfficialRealtimeObserver:
-    def __init__(self, event_sink: CompositeEventSink) -> None:
-        self.event_sink = event_sink
-
-    def record_realtime_event(self, kind: str, **data: Any) -> None:
-        self.event_sink.emit(RuntimeEvent(kind=f"hf.realtime.{kind}", source="official_runtime.hf_official", data=data))
-
-    def record_session_snapshot(self, snapshot: dict[str, Any]) -> None:
-        self.event_sink.emit(
-            RuntimeEvent(kind="hf.session.snapshot", source="official_runtime.hf_official", data=snapshot)
-        )
-
-    def record_response_metadata(self, response_id: str, metadata: dict[str, Any]) -> None:
-        self.event_sink.emit(
-            RuntimeEvent(
-                kind="hf.response.metadata",
-                source="official_runtime.hf_official",
-                data={"response_id": response_id, "metadata": metadata},
-            )
-        )
-
-
-class _NoopMovementManager:
-    def __init__(self) -> None:
-        self.listening = False
-
-    def set_listening(self, value: bool) -> None:
-        self.listening = bool(value)
-
-    def is_idle(self) -> bool:
-        return False
-
-    def queue_move(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
-
-    def clear_move_queue(self) -> None:
-        return None
-
-    def set_moving_state(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
-
-
-class _NoopReachyMini:
-    media = None
-
-    def get_current_head_pose(self) -> Any:
-        return None
-
-    def get_current_joint_positions(self) -> tuple[Any, Any]:
-        return None, None
 
 
 def _summarize_run(

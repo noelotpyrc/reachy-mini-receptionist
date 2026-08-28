@@ -19,12 +19,9 @@ from reachy_mini_brain.official_runtime.ops_cli import cli
 
 def make_config(tmp_path: Path) -> ops_core.OpsConfig:
     repo = tmp_path / "repo"
-    official = tmp_path / "official"
     repo.mkdir()
-    official.mkdir()
     return ops_core.OpsConfig(
         repo_path=repo,
-        official_app_repo=official,
         robot_host="192.0.2.10",
         robot_port=8000,
         s2s_host="127.0.0.1",
@@ -389,13 +386,12 @@ def test_base_env_resets_pythonpath_without_gstreamer_overrides(tmp_path, monkey
 
 def test_default_python_prefers_clean_repo_venv(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
-    official = tmp_path / "official"
     repo_python = repo / ".venv" / "bin" / "python"
     repo_python.parent.mkdir(parents=True)
     repo_python.write_text("", encoding="utf-8")
     monkeypatch.delenv("OFFICIAL_RUNTIME_PYTHON", raising=False)
 
-    assert ops_core._default_python_bin(repo_path=repo, official_app_repo=official) == repo_python
+    assert ops_core._default_python_bin(repo_path=repo) == repo_python
 
 
 def test_audio_playback_validation_does_not_require_official_app_source(tmp_path):

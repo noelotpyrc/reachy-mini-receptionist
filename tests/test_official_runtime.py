@@ -62,6 +62,7 @@ from reachy_mini_brain.official_runtime.live_app import (
     _run_scripted_playback_wav,
 )
 from reachy_mini_brain.official_runtime.benchmark_backends import _summarize_run
+from reachy_mini_brain.official_runtime.benchmark_backends import cli as backend_benchmark_cli
 from reachy_mini_brain.official_runtime.policy_audio_cache import PolicyAudioCache
 from reachy_mini_brain.official_runtime.perception import GestureFrameObservation
 from reachy_mini_brain import robot
@@ -1083,7 +1084,7 @@ def test_official_runtime_live_cli_help_loads_without_robot_dependencies():
     assert result.exit_code == 0
     assert "Run the ported official-runtime path" in result.output
     assert "s2s-local" in result.output
-    assert "--hf-connection-mode" in result.output
+    assert "hf-official" not in result.output
     assert "--ready-cue" in result.output
     assert "--scripted-playback-wav" in result.output
     assert "--visitor-trigger-profile" in result.output
@@ -1091,6 +1092,15 @@ def test_official_runtime_live_cli_help_loads_without_robot_dependencies():
     assert "--broker-capture-fps" in result.output
     assert "--gesture-running-mode" in result.output
     assert "--wave-detection-mode" in result.output
+
+
+def test_backend_benchmark_cli_uses_native_s2s_backend():
+    result = CliRunner().invoke(backend_benchmark_cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "s2s-local" in result.output
+    assert "hf-official" not in result.output
+    assert "--official-app-src" not in result.output
 
 
 def test_live_cli_rejects_unknown_visitor_trigger_profile():

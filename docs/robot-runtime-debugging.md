@@ -210,7 +210,5 @@ If mDNS is flaky, use the robot IP instead of `reachy-mini.local`.
 - Reachy Mini Python SDK docs: https://huggingface.co/docs/reachy_mini/SDK/python-sdk
 - Reachy Mini advanced media controls: https://huggingface.co/docs/reachy_mini/platforms/reachy_mini/media_advanced_controls
 - Local legacy REST client reference: `src/reachy_mini_brain/robot.py`
-- Local official-app runtime reference:
-  `/Users/noel/projects/reachy_mini_conversation_app/src/reachy_mini_conversation_app/main.py`
-- Local official-app stream reference:
-  `/Users/noel/projects/reachy_mini_conversation_app/src/reachy_mini_conversation_app/console.py`
+- Native reception runtime: `src/reachy_mini_brain/official_runtime/live_app.py`
+- Native S2S stream handler: `src/reachy_mini_brain/official_runtime/s2s_realtime.py`

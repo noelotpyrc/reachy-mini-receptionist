@@ -10,7 +10,7 @@ if [[ -z "$RUNTIME_PYTHON" ]]; then
     RUNTIME_PYTHON="$REACHY_REPO/.venv/bin/python"
   else
     echo "Missing runtime Python: $REACHY_REPO/.venv/bin/python" >&2
-    echo "Create the clean repo venv with: uv sync --extra official-runtime --extra gesture --extra diagnosis --extra dev" >&2
+    echo "Create the clean repo venv with: uv sync --extra gesture --extra diagnosis --extra dev" >&2
     exit 64
   fi
 fi
@@ -32,7 +32,6 @@ for candidate in "$RUNTIME_VENV"/lib/python*/site-packages/gstreamer_python/lib/
 done
 
 export PYTHONPATH="$REACHY_REPO/src${GSTREAMER_PYTHON_PATH:+:$GSTREAMER_PYTHON_PATH}${PYTHONPATH:+:$PYTHONPATH}"
-export HF_REALTIME_CONNECTION_MODE="${HF_REALTIME_CONNECTION_MODE:-local}"
 export HF_REALTIME_WS_URL="${HF_REALTIME_WS_URL:-ws://100.127.86.67:8765/v1/realtime}"
 
 if [[ "${ALLOW_LIVE_DUPLICATE:-0}" != "1" ]]; then
@@ -47,6 +46,5 @@ fi
 exec "$RUNTIME_PYTHON" \
   -m reachy_mini_brain.official_runtime.live_app \
   --backend s2s-local \
-  --hf-connection-mode "$HF_REALTIME_CONNECTION_MODE" \
   --hf-realtime-ws-url "$HF_REALTIME_WS_URL" \
   "$@"

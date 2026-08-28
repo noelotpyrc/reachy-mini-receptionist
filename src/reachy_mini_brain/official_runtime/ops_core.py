@@ -51,7 +51,6 @@ class OpsConfig:
     """Configuration for m1max/robot ops actions."""
 
     repo_path: Path
-    official_app_repo: Path
     robot_host: str
     robot_port: int
     s2s_host: str
@@ -98,9 +97,6 @@ class OpsConfig:
     def from_env(cls) -> "OpsConfig":
         load_project_env()
         repo_path = Path(os.environ.get("REACHY_REPO", str(PROJECT_ROOT))).expanduser()
-        official_app_repo = Path(
-            os.environ.get("OFFICIAL_APP_REPO", "/Users/leon/projects/reachy_mini_conversation_app")
-        ).expanduser()
         log_dir = Path(os.environ.get("LOG_DIR", str(repo_path / "artifacts" / "logs"))).expanduser()
         state_dir = Path(os.environ.get("OPS_STATE_DIR", str(repo_path / "artifacts" / "ops"))).expanduser()
         preflight_wav = Path(
@@ -116,10 +112,9 @@ class OpsConfig:
                 ),
             )
         ).expanduser()
-        python_bin = _default_python_bin(repo_path=repo_path, official_app_repo=official_app_repo)
+        python_bin = _default_python_bin(repo_path=repo_path)
         return cls(
             repo_path=repo_path,
-            official_app_repo=official_app_repo,
             robot_host=os.environ.get("ROBOT_HOST", "192.168.1.165"),
             robot_port=int(os.environ.get("ROBOT_PORT", "8000")),
             s2s_host=os.environ.get("S2S_HOST", "127.0.0.1"),
@@ -1094,7 +1089,6 @@ def build_audio_playback_command(config: OpsConfig, wav_path: Path, *, run_id: s
     env = _base_env(config)
     env.update(
         {
-            "HF_REALTIME_CONNECTION_MODE": "local",
             "HF_REALTIME_WS_URL": f"ws://{config.s2s_host}:{config.s2s_port}/v1/realtime",
             "REACHY_HOST": config.robot_host,
         }
@@ -1164,8 +1158,6 @@ def build_live_command(
         "reachy_mini_brain.official_runtime.live_app",
         "--backend",
         "s2s-local",
-        "--hf-connection-mode",
-        "local",
         "--hf-realtime-ws-url",
         f"ws://{config.s2s_host}:{config.s2s_port}/v1/realtime",
         "--run-id",
@@ -1424,7 +1416,7 @@ def _gstreamer_python_path_for_venv(venv_root: Path) -> Path | None:
     return None
 
 
-def _default_python_bin(*, repo_path: Path, official_app_repo: Path) -> Path:
+def _default_python_bin(*, repo_path: Path) -> Path:
     configured = os.environ.get("OFFICIAL_RUNTIME_PYTHON")
     if configured:
         return Path(configured).expanduser()
