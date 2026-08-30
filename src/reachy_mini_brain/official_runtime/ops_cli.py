@@ -206,6 +206,14 @@ def shutdown_cmd(ctx: click.Context) -> None:
     _emit_many(ctx, ops_core.shutdown(_config(ctx), authorized=_authorized(ctx)))
 
 
+@cli.command("emergency-stop")
+@click.pass_context
+def emergency_stop_cmd(ctx: click.Context) -> None:
+    """Run the bounded shutdown path and leave backend services warm."""
+
+    _emit_many(ctx, ops_core.shutdown(_config(ctx), authorized=_authorized(ctx)))
+
+
 @cli.command("latest-run")
 @click.pass_context
 def latest_run_cmd(ctx: click.Context) -> None:

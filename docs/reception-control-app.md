@@ -21,6 +21,11 @@ Add a **Reception** section to the official application with:
 - recording state and the latest-run/artifact location; and
 - a clear distinction between `Offline`, `Starting`, `Live`, `Stopping`, and `Faulted`.
 
+Reception sessions started by the app run until an administrator selects **End Reception** or
+**Emergency Stop**. The app must request first-class unlimited-session semantics from OPS rather
+than emulating them with a large numeric duration. Fixed-duration runs remain available to the CLI
+for assisted tests and deliberately bounded shifts.
+
 The existing official application remains responsible for its current daemon, motor, camera/audio,
 application-management, update, and manual-position controls. Reception controls compose those
 capabilities through this repository's OPS lifecycle rather than duplicating them.
@@ -105,4 +110,3 @@ check, and Open Palm test. They are intentionally outside the first control-app 
 - automatic physical-run restart.
 
 These can be added independently after the local administrative lifecycle is accepted.
-

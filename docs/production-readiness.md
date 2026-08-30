@@ -45,14 +45,14 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Accepted for first production pass** | Door v4 and the current chat backend are frozen at the user-accepted behavior; further tuning is deferred rather than a launch blocker. |
 | Long-run behavior | Multi-hour run with conversations and no wedged subsystems | **Pass for assisted use** | Recent two-hour and shorter recorded runs completed cleanly with advancing broker/media counters and finalized artifacts. Policy/chat quality is accepted separately for the first pass. |
 | Startup | Bounded, observable transition to ready | **Pass for assisted use** | The GStreamer nested-environment fix reached ready repeatedly from frozen release `b7520a0` with advancing audio/video and clean shutdown. |
-| Session duration | First-class run-until-stopped mode | **Blocked** | Current operation uses a very large numeric duration as an indefinite-run workaround. Implement explicit unlimited semantics. |
+| Session duration | First-class run-until-stopped mode | **Deferred to control app** | Assisted CLI shifts use a deliberate fixed duration, currently eight hours. The reception control app will start an unlimited session that ends through End Reception or Emergency Stop; this is not a blocker for assisted production. |
 | Recording integrity | Audio/video/capture finalize and retain diagnosable timing | **Accepted limitation** | Fixed-`5 FPS` MKVs play faster than wall time, but frame order is intact and JSONL sidecars retain the timing source of truth used by replay/Rerun. Use MKVs only for qualitative review; map a reported player position to frame index and then sidecar `ts`. |
 | Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Partial / acceptance pending** | The detached session supervisor now records whether the runner-owned manifest closed cleanly or remained interrupted, including open artifact paths. A recorder sidecar is still required if hard-kill finalization rather than explicit interruption is required. |
 | Privacy | Approved raw-data policy, access boundaries, and retention | **Pass / active** | Production records audio and derived vision diagnostics but defaults raw MKV video off. Audio/video older than 30 days are reported daily for reviewed cleanup; no automatic deletion is allowed. Artifacts remain private to the local operator account. |
 | Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Pass for assisted use** | Aggregate status validates the OpenRouter key without a model call and reports Hermes, S2S, launchd, disk headroom, recording age, runner heartbeats, and media faults. Controlled live media-fault acceptance remains. |
 | Supervision | Services recover safely after machine/process or media failure | **Pass for non-physical services** | Hermes and S2S launchd `KeepAlive` restart was verified on 2026-08-29 with new PIDs and healthy ports. The physical runner remains operator-authorized and is never auto-restarted. |
 | Remote access | Authenticated, auditable, least-privilege control | **Blocked for non-technical users** | SSH/Tailscale plus OPS is acceptable for assisted production. No remote operations API or operator UI exists yet. |
-| Emergency handling | Idempotent remote stop and documented local fallback | **Partial** | `stop-session` and `shutdown` exist. Define an operator-visible emergency stop, timeout behavior, and recovery instructions. |
+| Emergency handling | Idempotent remote stop and documented local fallback | **Pass for assisted use** | `emergency-stop` exposes the existing bounded shutdown path, keeps backend services warm, and has documented timeout, verification, repeat, and local-m1max fallback behavior. Live execution is covered by release validation rather than a separate human gate. |
 
 ## Latest Long-Run Evidence
 
@@ -198,8 +198,9 @@ Complete these in order. Stop and diagnose when a gate fails.
    **Complete.**
 2. Accept and document the fixed-FPS MKV limitation; require sidecar timestamps for timing-sensitive
    diagnosis. **Complete.**
-3. Use the fixed eight-hour production duration for the first assisted shifts; explicit unlimited
-   semantics remain deferred.
+3. Use the fixed eight-hour production duration for the first assisted shifts. Explicit unlimited
+   semantics are deferred to the reception control app, where a run continues until End Reception
+   or Emergency Stop is invoked.
 4. Activate the frozen release through `reception-prod` and its private production configuration.
    **Complete.**
 5. Validate aggregate Hermes/provider/service/disk/retention health on m1max. **Complete.**

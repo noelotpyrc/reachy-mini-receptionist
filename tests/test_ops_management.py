@@ -898,6 +898,34 @@ def test_stop_session_and_shutdown_are_scoped_to_runner_and_robot(tmp_path, monk
     assert "stop_backend" not in calls
 
 
+def test_emergency_stop_cli_uses_bounded_shutdown_and_requires_confirmation(
+    tmp_path, monkeypatch
+):
+    config = make_config(tmp_path)
+    calls: list[bool] = []
+
+    def fake_shutdown(config, *, authorized):
+        ops_core._require_physical_authorization("shutdown", authorized)
+        calls.append(authorized)
+        return [ops_core.ActionResult(action="runner.stop")]
+
+    monkeypatch.setattr(
+        ops_core.OpsConfig,
+        "from_env",
+        classmethod(lambda cls: config),
+    )
+    monkeypatch.setattr(ops_core, "shutdown", fake_shutdown)
+    runner = CliRunner()
+
+    rejected = runner.invoke(cli, ["emergency-stop"])
+    accepted = runner.invoke(cli, ["--confirm-physical", "emergency-stop"])
+
+    assert rejected.exit_code != 0
+    assert "physical robot action" in rejected.output
+    assert accepted.exit_code == 0
+    assert calls == [True]
+
+
 def test_full_preflight_runs_exposed_substeps_in_order(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     calls: list[str] = []

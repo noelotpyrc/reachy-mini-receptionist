@@ -473,6 +473,42 @@ Use backend stop only when intentionally shutting down the warm backend:
 PYTHONPATH=src .venv/bin/python -m reachy_mini_brain.official_runtime.ops_cli backend stop
 ```
 
+## Emergency Stop Procedure
+
+The production emergency action is an operational fail-stop, not a certified hardware safety
+stop. It terminates the supervised reception runner, escalates to a forced process stop after the
+bounded grace period, releases robot media, requests the sleep pose, disables motors, and leaves
+Hermes and S2S warm.
+
+From either a remote SSH session or a terminal on m1max, run:
+
+```bash
+~/.local/bin/reception-prod --confirm-physical emergency-stop
+```
+
+The supervised path gives the child up to 30 seconds to finalize, while OPS gives the supervisor up
+to 60 seconds to complete finalization and robot cleanup before forcing it down. The command can be
+repeated safely when its result is uncertain.
+
+Verify the retained state after the command returns:
+
+```bash
+~/.local/bin/reception-prod status --include-robot
+```
+
+Expected state:
+
+- runner is stopped and no active runner PID remains;
+- latest terminal status records `requested_stop`, or reports an explicit interruption/fault;
+- robot media is released and motors are disabled; and
+- Hermes and S2S remain loaded and healthy.
+
+If the remote shell is unavailable, run the same command from a local m1max terminal. If OPS cannot
+reach the robot daemon, do not start another reception session: preserve the returned status and
+logs, use Reachy Mini Control locally to stop the active robot application, and follow the official
+Reachy Mini power procedure only when software control is unavailable. A trained onsite operator
+must handle any immediate physical hazard directly.
+
 ## Removed Legacy Reception Daemon
 
 The old `reachy_mini_brain.reception` daemon and `alert_engine` flow were removed after the
