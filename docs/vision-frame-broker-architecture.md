@@ -2,14 +2,10 @@
 
 ## Status
 
-Implemented locally as an opt-in runtime architecture for raising MediaPipe and diagnostic recording
-to a real 15 FPS without forcing RF-DETR or Grounding DINO to run at that cadence. Deployment,
-m1max benchmarking, and controlled live acceptance remain tracked under the wave-reliability
-follow-up in `todo-official-runtime.md`.
-
-The current production path remains `serial-v1`. The new path is introduced as `broker-v1` behind
-an explicit runtime setting and must not become the default until offline and controlled live
-acceptance are complete.
+Implemented, deployed, and accepted as the production runtime architecture for raising MediaPipe
+and diagnostic recording to a real 15 FPS without forcing RF-DETR or Grounding DINO to run at that
+cadence. Live runs verified advancing broker/media counters, finalized artifacts, and healthy audio
+under the added workers. `serial-v1` remains an explicit next-run rollback.
 
 ## Problem
 
@@ -53,8 +49,8 @@ ByteTrack, Grounding DINO, door geometry, and policy generation.
 
 | Mode | Behavior |
 |---|---|
-| `serial-v1` | Existing `_vision_loop` behavior, unchanged; initial and rollback default. |
-| `broker-v1` | Canonical capture producer plus per-consumer subscriptions described here. |
+| `serial-v1` | Existing `_vision_loop` behavior, unchanged; explicit rollback. |
+| `broker-v1` | Accepted production default: canonical capture producer plus per-consumer subscriptions described here. |
 
 Every run manifest records the mode, configured cadences, queue capacities, and effective consumer
 counters. A mode change requires a clean stop and a new run ID.
@@ -233,7 +229,7 @@ Implementation is additive:
 5. Replay recorded sources and run the existing door-policy regression set.
 6. Benchmark 15 FPS capture, recording, and MediaPipe on m1max with RF/DINO enabled.
 7. Run a short controlled live wave and door acceptance.
-8. Promote `broker-v1` only after acceptance; retain `serial-v1` for at least one production release.
+8. Promote `broker-v1` only after acceptance; retain `serial-v1` as an explicit rollback. **Complete.**
 
 Rollback normally means stopping the current run and starting a new run with:
 
@@ -241,13 +237,14 @@ Rollback normally means stopping the current run and starting a new run with:
 RECEPTION_VISION_RUNTIME=serial-v1
 ```
 
-The current frozen m1max release remains the second rollback level. Automatic mid-session fallback
+The previous frozen m1max release remains the second rollback level. Automatic mid-session fallback
 is prohibited because it would reset temporal model state, risk duplicate policy events, and mix
 frame namespaces in one artifact set.
 
 ## Acceptance Gates
 
-- OPS commands select `serial-v1` explicitly, and its focused behavior tests remain unchanged.
+- OPS preserves explicit runtime selection: production selects `broker-v1`, while `serial-v1`
+  remains the tested next-run rollback.
 - Broker unit tests prove fan-out delivery, per-subscriber removal, ordering, replacement, overflow,
   and clean close behavior.
 - A 15 FPS source recording has zero recorder drops and a sidecar row for every decoded frame.

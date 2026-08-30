@@ -233,16 +233,18 @@ exactly one healthy replacement and never loops indefinitely.
 
 ## Phase 3 — Iterate UX & backend with the fast loop
 
-### 7a. Stabilize vision-triggered greet/goodbye policy  `[ ]`
-**Status:** implementation and captured offline evaluation complete; controlled visitor live
-acceptance pending.
+### 7a. Stabilize vision-triggered greet/goodbye policy  `[x]`
+**Status:** accepted for the first assisted production pass. Further visitor-policy and gesture
+tuning is deferred and is not a launch blocker.
 
 **Goal:** Promote the door-ordered visitor policy only after real entry, conversation, and exit
 behavior is accepted without contradictory greet/goodbye speech.
 
-**Current implementation:** `door-v1-20260805` uses continuous Grounding DINO door observations,
-RF-DETR person observations, and ordered door-motion/person-interaction evidence. Fixed policy text
-uses deterministic TTS. See [`vision-visitor-state-proposal.md`](vision-visitor-state-proposal.md).
+**Current implementation:** `door-v4-20260827` uses RF-DETR person observations, retained Grounding
+DINO door geometry, presence-overlap greet, and direct person-to-door distance-crossing goodbye.
+The v2 close-person protections remain active, and vision policies cannot interrupt an active
+wave-chat conversation. Fixed policy text uses deterministic TTS. See
+[`vision-visitor-state-proposal.md`](vision-visitor-state-proposal.md).
 
 **Evidence (2026-07-25 live run `official-live-20260725-111932`):**
 - Marker 2 (`11:21:01`, "unwanted goodbye/greet"): track 5 emitted `approach` at
@@ -257,44 +259,25 @@ uses deterministic TTS. See [`vision-visitor-state-proposal.md`](vision-visitor-
   wave-chat conversation were not the source of these two unwanted sequences.
 
 **Implemented result:** logical track handoff, observed/retained state separation, door observation,
-door-person interaction metrics, ordered greet/goodbye candidates, live/offline Rerun diagnosis,
-and a versioned rollback profile are covered by focused tests and accepted captured clips.
+door-person interaction metrics, versioned door v1-v4 profiles, live/offline Rerun diagnosis, and
+one-setting rollback are covered by focused tests, labelled clips, and controlled live use. The
+two-layer close-person patch removed the false greet at frame `155` and false goodbye at frame
+`195` in `official-live-20260807-110807` while preserving four accepted events across the two
+real-door replay clips. Door v4 and the current chat latch are accepted for the first production
+pass; earlier profiles remain available for rollback.
 
-**Remaining steps:**
-- Revisit wave-detection reliability; no replacement is accepted yet. A replay-only implementation
-  of the Reachy Mini Rock Paper Scissors temporal hand-center algorithm was evaluated against the
-  two known close-wave recordings without changing the live `Open_Palm` default:
-  - `official-live-20260807-110807`, frames `120-190`: `31 / 71` frames had a hand observation,
-    but no two-second window combined the required two direction changes with `0.08` normalized
-    displacement; both temporal and static detection emitted zero waves;
-  - `official-live-20260825-145234`, frames `4800-4920`: `36 / 121` frames had a hand observation;
-    frame `4853` reached two direction changes and `0.0743` displacement, below the algorithm's
-    `0.08` threshold; both temporal and static detection emitted zero waves;
-  - MediaPipe `VIDEO` mode reduced useful trajectory evidence on both windows. Lowering the
-    displacement threshold would recover only the second sample and is not accepted from this
-    two-positive set. The temporal path remains available for offline comparison only.
-  - **Offline implementation complete:** the versioned frame-broker runtime described in
-    [`vision-frame-broker-architecture.md`](vision-frame-broker-architecture.md) provides one
-    canonical 15 FPS stream to recording and MediaPipe while RF-DETR/DINO select frame-identified
-    lower-rate subsets. Fan-out, overflow, startup ordering, source provenance, policy-event
-    serialization, shutdown, manifest counters, and the OPS selector have deterministic tests.
-    `serial-v1` remains the rollback default. Next, deploy to m1max, benchmark zero-drop 15 FPS
-    recording/MediaPipe with RF-DETR and DINO active, then run controlled wave acceptance.
-- **Offline complete:** the two-layer close-person patch rejects contaminated door geometry and
-  makes oversized or frame-clipped person interactions policy-ineligible without hiding presence.
-  It removes the false greet at frame `155` and false goodbye at frame `195` in
-  `official-live-20260807-110807` while preserving four accepted events across the two real-door
-  replay clips. The patch is versioned as `door-v2-20260809`, with `door-v1-20260805` retained for
-  rollback. Controlled live acceptance remains required before promotion.
-- Run one controlled door entry, greet, wave-chat, and door exit with a person onsite.
-- Confirm trigger order, policy-speech latency, no duplicate greeting/farewell, and normal wave-chat.
-- Review the retained video, person/door observations, policy events, audio, and transcripts.
-- Promote `door-v2-20260809`, restore `door-v1-20260805`, or restore `legacy`; do not retune
-  thresholds from an unlabelled run.
+The `broker-v1` frame runtime is deployed as the production default. It supplies one canonical
+15 FPS stream to recording and MediaPipe while RF-DETR and DINO select frame-identified lower-rate
+subsets. Live runs verified advancing broker/media counters, finalized artifacts, and healthy audio.
+`serial-v1` remains an explicit next-run rollback.
 
-**Done when:** the two false sequences above produce no farewell, genuine walk-away
-still produces one farewell, and a live walk-in-and-wave produces one coherent opener
-without stacked greet/goodbye policy speech.
+**Deferred follow-up:** production defines the chat gesture as MediaPipe `Open_Palm` rather than a
+general waving-motion classifier. The replay-only temporal hand-center experiment did not recover
+both known close-wave recordings reliably, so it was not promoted. Reopen gesture evaluation only
+with a larger labelled set; do not tune thresholds from one or two positive samples.
+
+**Done for this pass:** accepted greet/goodbye behavior, an explicit open-palm chat gesture, no
+vision-policy interruption of active chat, retained diagnostic artifacts, and documented rollback.
 
 ### 7b. Antenna UX polish  `[ ]`
 **Goal:** After #1 validates the cue logic, tune movement style/timing.
@@ -411,7 +394,8 @@ machine-checkable reason.
   capture before changing the tracker or spending another live run.
 - 2026-08-06 — #7a implementation and captured offline acceptance complete with the versioned
   `door-v1-20260805` policy. Long run `official-live-20260806-114813` established idle door-detection
-  stability but observed no people, so controlled visitor live acceptance remains open.
+  stability but observed no people, so controlled visitor live acceptance was still open at that
+  stage. Later door-v4 visitor runs were accepted for the first production pass.
 - 2026-08-06 — backend feature work paused at the deployed Hermes/GPT-5.6-Luna baseline. Production
   readiness, operations hardening, recording integrity, privacy/retention, and remote control are now
   the priority; see `production-readiness.md`.

@@ -2,7 +2,7 @@
 
 **Status:** not yet approved for unattended clinic production
 
-**Current phase:** assisted production preparation
+**Current phase:** assisted production acceptance
 
 **Updated:** 2026-08-30
 
@@ -19,7 +19,8 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 - Active production candidate: immutable release `4c28a3e`, selected by
   `/Users/leon/.config/reachy-reception/active-release`, validated by `reception-prod` before every
   command. It uses Python `3.12.13`, Reachy SDK `1.10.0`, and the lock-enforced environment.
-- The live-validated `b7520a0` frozen release remains the first release-level rollback target.
+- The live-validated `87d35ba` frozen release remains the first release-level rollback target.
+- The older `b7520a0` frozen release remains available as a second release-level fallback.
 - Recovery and rollback: pre-removal source is tagged `legacy-daemon-last` at `260e2f2`; the previous
   clean release at `612ea43` and the dirty deployment checkout remain intact.
 - S2S backend: `speech-to-speech==0.2.10`, fork SHA `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`,
@@ -39,7 +40,7 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 | Area | Gate | Status | Evidence / remaining work |
 | --- | --- | --- | --- |
-| Release | Immutable product revision, reproducible venv, documented rollback | **Pass / activated** | `reception-prod` resolves one private active-release file, rejects mutable/dirty/mismatched releases, and loads one private production config. The previous `b7520a0` frozen release remains rollback. |
+| Release | Immutable product revision, reproducible venv, documented rollback | **Pass / activated** | `reception-prod` resolves one private active-release file, rejects mutable/dirty/mismatched releases, and loads one private production config. Frozen release `87d35ba` is the first rollback target; `b7520a0` remains an older fallback. |
 | Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Backend setup script, runtime metadata, Hermes text/integration tests, deterministic policy-TTS benchmark, and read-only Hermes/provider health checks are complete. |
 | Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Physical runner restart must remain operator-authorized. |
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Accepted for first production pass** | Door v4 and the current chat backend are frozen at the user-accepted behavior; further tuning is deferred rather than a launch blocker. |
@@ -47,14 +48,20 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 | Startup | Bounded, observable transition to ready | **Pass / activated** | Frozen release `4c28a3e` reached ready in `112.301 s` on its first ordinary start and `9.827 s` on its second, with advancing audio/video, zero heartbeat-writer errors, and clean shutdown. |
 | Session duration | First-class run-until-stopped mode | **Deferred to control app** | Assisted CLI shifts use a deliberate fixed duration, currently eight hours. The reception control app will start an unlimited session that ends through End Reception or Emergency Stop; this is not a blocker for assisted production. |
 | Recording integrity | Audio/video/capture finalize and retain diagnosable timing | **Accepted limitation** | Fixed-`5 FPS` MKVs play faster than wall time, but frame order is intact and JSONL sidecars retain the timing source of truth used by replay/Rerun. Use MKVs only for qualitative review; map a reported player position to frame index and then sidecar `ts`. |
-| Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Partial / acceptance pending** | The detached session supervisor now records whether the runner-owned manifest closed cleanly or remained interrupted, including open artifact paths. A recorder sidecar is still required if hard-kill finalization rather than explicit interruption is required. |
+| Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Pass for assisted use** | Controlled media loss in `official-live-20260830-085651` finalized the enabled artifacts and preserved the terminal fault. If a hard kill prevents runner cleanup, the detached supervisor retains interrupted status and open artifact paths. A recorder sidecar remains a deferred enhancement for hard-kill finalization. |
 | Privacy | Approved raw-data policy, access boundaries, and retention | **Pass / active** | Production records audio and derived vision diagnostics but defaults raw MKV video off. Audio/video older than 30 days are reported daily for reviewed cleanup; no automatic deletion is allowed. Artifacts remain private to the local operator account. |
 | Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Pass / accepted** | Aggregate status validates the OpenRouter key without a model call and reports Hermes, S2S, launchd, disk headroom, recording age, runner heartbeats, and media faults. Controlled robot-media loss faulted and cleaned up within the configured bound on 2026-08-30. |
 | Supervision | Services recover safely after machine/process or media failure | **Pass / fail-stop accepted** | Hermes and S2S launchd `KeepAlive` restart was verified on 2026-08-29. Controlled media loss stopped and cleaned up the physical runner without automatic restart on 2026-08-30. |
 | Remote access | Authenticated, auditable, least-privilege control | **Blocked for non-technical users** | SSH/Tailscale plus OPS is acceptable for assisted production. No remote operations API or operator UI exists yet. |
-| Emergency handling | Idempotent remote stop and documented local fallback | **Pass for assisted use** | `emergency-stop` exposes the existing bounded shutdown path, keeps backend services warm, and has documented timeout, verification, repeat, and local-m1max fallback behavior. Live execution is covered by release validation rather than a separate human gate. |
+| Emergency handling | Idempotent remote stop and documented local fallback | **Pass for assisted use** | `emergency-stop` exposes the existing bounded shutdown path, keeps backend services warm, and has documented timeout, verification, repeat, and local-m1max fallback behavior. Controlled media loss exercised the same bounded fail-stop and cleanup path. |
 
-## Latest Long-Run Evidence
+All non-shift gates required for assisted production now pass, are accepted with a documented
+limitation, or are explicitly deferred outside this pass. The remaining promotion work is one
+assisted clinic shift followed by evidence review and an explicit promote-or-rollback decision.
+The operator web UI, run-until-stopped mode, and recorder-sidecar hard-kill enhancement remain
+follow-up work rather than blockers for that assisted shift.
+
+## Latest Acceptance Evidence
 
 ### GStreamer uv startup incident (2026-08-25)
 
@@ -97,15 +104,12 @@ Fresh-release m1max and robot-media acceptance passed on 2026-08-30 from frozen 
 No manual registry prewarm was used. The first ordinary start reached `ready` in `112.301 s`; the
 second reached it in `9.827 s`. Both runs advanced audio/video heartbeats and shut down cleanly.
 
-The permanent fix must give the live child a clean, deterministic GStreamer environment rather than
-passing interpreter-mutated values through each launcher layer. In particular, OPS should remove
-bundle-managed GStreamer variables from the supervisor environment, and the supervisor should
-launch the child from the clean environment stored in its launch specification rather than from
-its own post-`.pth` `os.environ`. Acceptance requires a newly built frozen environment with no
-pre-existing registry: one normal OPS start must reach `ready`, audio/video sequences must advance,
-and a second start must do the same without manual cache preparation. The plugin linkage warning
-must either be removed by a compatible package/runtime layout or explicitly proven harmless after
-the optional Python-plugin directory is excluded from scanning.
+The accepted fix gives the live child a clean, deterministic GStreamer environment rather than
+passing interpreter-mutated values through each launcher layer. OPS removes bundle-managed
+GStreamer variables from the supervisor environment, and the supervisor launches the child from
+the clean environment stored in its launch specification. The fresh and warm starts above satisfy
+the acceptance criteria without manual cache preparation. The optional Python-plugin linkage
+warning is nonblocking when that incompatible optional plugin directory is excluded from scanning.
 
 Run `official-live-20260807-110807` exposed a media-liveness failure that process-only health cannot
 detect:
@@ -240,15 +244,20 @@ Complete these in order. Stop and diagnose when a gate fails.
    diagnosis. **Complete.**
 3. Use the fixed eight-hour production duration for the first assisted shifts. Explicit unlimited
    semantics are deferred to the reception control app, where a run continues until End Reception
-   or Emergency Stop is invoked.
-4. Activate the frozen release through `reception-prod` and its private production configuration.
-   **Complete.**
+   or Emergency Stop is invoked. Normal timed stop was accepted in
+   `official-live-20260830-135154`. **Complete.**
+4. Activate the frozen release through `reception-prod` and its private production configuration;
+   verify both a fresh and warm ordinary startup. Accepted with release `4c28a3e` in
+   `official-live-20260830-084803` and `official-live-20260830-085318`. **Complete.**
 5. Validate aggregate Hermes/provider/service/disk/retention health on m1max. **Complete.**
 6. Confirm launchd restarts Hermes and S2S without enabling automatic physical-runner restart.
    **Complete.**
 7. Treat current visitor-policy and chat behavior as accepted for the first production pass.
-8. Run one assisted clinic shift with remote status checks and a tested emergency stop procedure.
-9. Review evidence and explicitly promote or roll back.
+   **Complete.**
+8. Verify bounded media fail-stop and physical cleanup without automatic restart. Accepted in
+   `official-live-20260830-085651`. **Complete.**
+9. Run one assisted clinic shift with remote status checks and the tested emergency-stop procedure.
+10. Review evidence and explicitly promote or roll back.
 
 ## Remote Operations Roadmap
 

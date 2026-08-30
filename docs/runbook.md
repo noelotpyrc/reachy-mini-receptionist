@@ -33,9 +33,11 @@ Product/controller repo:
   `/Users/leon/.config/reachy-reception/active-release`; inspect it through `reception-prod status`
   rather than selecting a checkout manually.
 - Current live-validated assisted release:
+  `/Users/leon/projects/reachy_mini_receptionist_release_4c28a3e_frozen` at `4c28a3e`
+- First release-level rollback:
+  `/Users/leon/projects/reachy_mini_receptionist_release_87d35ba_frozen` at `87d35ba`
+- Older frozen fallback:
   `/Users/leon/projects/reachy_mini_receptionist_release_b7520a0_frozen` at `b7520a0`
-- Previous clean assisted release:
-  `/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6` at `612ea43`
 
 Keep the dirty rollback checkout intact. A prepared release has its own `.release-venv`, while its
 ignored `.env`, `private`, and `artifacts` paths reference the existing deployment-owned data. Set
@@ -183,13 +185,11 @@ The door policy pipeline loads Grounding DINO when the runner starts. On the pre
 the first isolated model load took about 20 seconds; this is startup time before robot interaction,
 not per-frame inference latency.
 
-The frame-broker architecture is an opt-in evaluation path and is not yet the production default:
+The frame-broker architecture is the accepted production path. The serial architecture remains a
+one-setting rollback that takes effect on the next run:
 
 ```bash
-# Current production behavior and one-setting rollback.
-RECEPTION_VISION_RUNTIME=serial-v1
-
-# Broker evaluation settings. Apply only to a new run.
+# Current production behavior.
 RECEPTION_VISION_RUNTIME=broker-v1
 RECEPTION_BROKER_CAPTURE_FPS=15
 RECEPTION_BROKER_RECORDER_QUEUE_SIZE=30
@@ -197,6 +197,9 @@ RECEPTION_BROKER_GESTURE_QUEUE_SIZE=30
 RECEPTION_BROKER_POLICY_IDLE_S=0.1
 RECEPTION_GESTURE_RUNNING_MODE=image
 RECEPTION_WAVE_DETECTION_MODE=open_palm
+
+# Rollback. Apply only after stopping the current run.
+RECEPTION_VISION_RUNTIME=serial-v1
 ```
 
 `broker-v1` records canonical source frame IDs in the video and derived-capture sidecars and writes
