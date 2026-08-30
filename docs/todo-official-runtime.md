@@ -188,11 +188,12 @@ typeâ†’behavior map. Refactoring `ReceptionPolicy` into per-behavior policies â€
 - Optional run-on cluster annotation for speculative-turn transcript drops.
 - Additional listening controls such as A/B overlap, loop selected range, and keyboard shortcuts.
 
-### 6a. Media liveness and terminal WebRTC recovery  `[~]`
+### 6a. Media liveness and terminal WebRTC recovery  `[x]`
 **Status:** fail-stop implementation, offline tests, healthy-run threshold baselining, frozen
 m1max deployment, and controlled media-loss acceptance are complete. The 2026-08-27 normal-stop
 correction transitions liveness to `stopping` before output drain so timed shutdown cannot be
-mislabeled `audio_stale`. Normal timed-stop acceptance remains.
+mislabeled `audio_stale`. Run `official-live-20260830-135154` completed normal timed-stop acceptance
+with terminal status `complete` / `completed`, closed artifacts, and successful cleanup.
 
 **Goal:** A live PID must not be reported healthy after audio/video input has stopped. A terminal
 WebRTC disruption must either complete a safe fail-stop or, under a separately approved unattended

@@ -153,8 +153,10 @@ bounded robot cleanup.
 **Normal-stop correction (2026-08-27):** when a timed input source ends, the live runtime now enters
 `stopping` before its bounded output-drain and artifact-finalization period. The supervisor continues
 to enforce stale-source thresholds while `ready`, but no longer misclassifies intentional microphone
-closure during normal shutdown as `audio_stale`. Offline lifecycle and supervisor tests pass; confirm
-the terminal status on the next timed robot run.
+closure during normal shutdown as `audio_stale`. Live run `official-live-20260830-135154` used a
+30-second duration override: input ended normally, phase changed to `stopping`, the 20-second output
+drain completed without a stale-source fault, and terminal status was `complete` / `completed` with
+closed artifacts and successful robot cleanup.
 
 The runtime must track monotonic last-seen timestamps independently for expected audio input and
 video input after `software_pipeline_initialized`. Normal frame gaps and startup are not faults;
@@ -207,6 +209,9 @@ Frozen release `4c28a3e` completed release and startup acceptance on 2026-08-30:
 - Controlled media-loss run `official-live-20260830-085651` faulted on `audio_stale`, closed
   artifacts, completed cleanup without a forced kill, retained a diagnosable terminal status, and
   did not create a replacement physical run.
+- Timed run `official-live-20260830-135154` transitioned through `stopping`, completed its bounded
+  output drain without a false media fault, closed artifacts, and returned aggregate status to
+  `ok` with no remaining runner.
 
 The non-live release build at `749ee18` completed on 2026-08-06:
 

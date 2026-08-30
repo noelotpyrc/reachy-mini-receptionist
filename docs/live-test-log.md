@@ -10,6 +10,26 @@ Each entry uses three buckets:
 
 ---
 
+## 2026-08-30 - normal timed-stop acceptance
+
+**Run:** `official-live-20260830-135154`
+**Setup:** frozen release `4c28a3e`, production configuration with a one-process
+`LIVE_DURATION=30` override, raw audio and derived vision capture enabled, raw video and Rerun
+streaming disabled.
+
+### Good
+
+- The run reached `ready` with advancing microphone and camera sequences.
+- Input ended approximately 30 seconds after the runtime handler started. Liveness transitioned to
+  `stopping` before the bounded 20-second output drain, so the intentionally closed microphone was
+  not evaluated as `audio_stale`.
+- Terminal status was `complete` / `completed`, with no fault, return code zero, no forced kill,
+  closed artifacts, and successful bounded cleanup.
+- Aggregate status returned to `ok`; no runner or supervisor remained. Robot media was released,
+  motors were disabled, no move was active, and Hermes/S2S remained healthy.
+
+---
+
 ## 2026-08-30 - controlled media-loss fail-stop acceptance
 
 **Run:** `official-live-20260830-085651`
