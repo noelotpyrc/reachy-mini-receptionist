@@ -420,6 +420,22 @@ def test_recording_retention_cli_is_report_only(tmp_path, monkeypatch):
     assert old_audio.exists()
 
 
+def test_storage_status_summarizes_retention_without_file_paths(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    old_audio = config.artifact_root / "audio" / "old.wav"
+    old_audio.parent.mkdir(parents=True)
+    old_audio.write_bytes(b"audio")
+    old_ts = time.time() - 31 * 86400
+    os.utime(old_audio, (old_ts, old_ts))
+    result = ops_core.storage_status(config)
+
+    retention = result.data["recording_retention"]
+    assert retention["due_file_count"] == 1
+    assert retention["listed_file_count"] == 0
+    assert retention["due_files"] == []
+    assert retention["paths_truncated"] is True
+
+
 def test_ops_config_loads_broker_vision_settings(monkeypatch):
     monkeypatch.setenv("RECEPTION_VISION_RUNTIME", "broker-v1")
     monkeypatch.setenv("RECEPTION_BROKER_CAPTURE_FPS", "15")

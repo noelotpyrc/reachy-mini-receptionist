@@ -637,6 +637,7 @@ def storage_status(config: OpsConfig) -> ActionResult:
     retention = recording_retention_report(
         config.artifact_root,
         retention_days=config.recording_retention_days,
+        path_limit=0,
     )
     errors = () if disk_ok else (f"artifact disk free space is below {threshold_gb:g} GiB",)
     return ActionResult(

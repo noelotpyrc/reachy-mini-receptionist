@@ -16,12 +16,10 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 ## Current Baseline
 
-- Current live-validated assisted release: clean checkout at `b7520a0` in
-  `/Users/leon/projects/reachy_mini_receptionist_release_b7520a0_frozen`, using Reachy SDK `1.10.0`.
-  Multiple ordinary starts, a two-hour run, and recorded shorter runs completed with advancing
-  media/broker counters and clean finalization.
-- The next production candidate will be activated through the stable release mechanism. The
-  `b7520a0` frozen release remains its first release-level rollback target.
+- Active production candidate: the immutable release selected by
+  `/Users/leon/.config/reachy-reception/active-release`, validated by `reception-prod` before every
+  command. It uses Python `3.12.13`, Reachy SDK `1.10.0`, and the lock-enforced environment.
+- The live-validated `b7520a0` frozen release remains the first release-level rollback target.
 - Recovery and rollback: pre-removal source is tagged `legacy-daemon-last` at `260e2f2`; the previous
   clean release at `612ea43` and the dirty deployment checkout remain intact.
 - S2S backend: `speech-to-speech==0.2.10`, fork SHA `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`,
@@ -41,7 +39,7 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 | Area | Gate | Status | Evidence / remaining work |
 | --- | --- | --- | --- |
-| Release | Immutable product revision, reproducible venv, documented rollback | **Implementation complete / deployment pending** | `reception-prod` resolves one private active-release file, rejects mutable/dirty/mismatched releases, and loads one private production config. Activate the next frozen m1max release and retain the previous frozen release as rollback. |
+| Release | Immutable product revision, reproducible venv, documented rollback | **Pass / activated** | `reception-prod` resolves one private active-release file, rejects mutable/dirty/mismatched releases, and loads one private production config. The previous `b7520a0` frozen release remains rollback. |
 | Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Backend setup script, runtime metadata, Hermes text/integration tests, deterministic policy-TTS benchmark, and read-only Hermes/provider health checks are complete. |
 | Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Physical runner restart must remain operator-authorized. |
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Accepted for first production pass** | Door v4 and the current chat backend are frozen at the user-accepted behavior; further tuning is deferred rather than a launch blocker. |
@@ -50,9 +48,9 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 | Session duration | First-class run-until-stopped mode | **Blocked** | Current operation uses a very large numeric duration as an indefinite-run workaround. Implement explicit unlimited semantics. |
 | Recording integrity | Audio/video/capture finalize and retain diagnosable timing | **Accepted limitation** | Fixed-`5 FPS` MKVs play faster than wall time, but frame order is intact and JSONL sidecars retain the timing source of truth used by replay/Rerun. Use MKVs only for qualitative review; map a reported player position to frame index and then sidecar `ts`. |
 | Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Partial / acceptance pending** | The detached session supervisor now records whether the runner-owned manifest closed cleanly or remained interrupted, including open artifact paths. A recorder sidecar is still required if hard-kill finalization rather than explicit interruption is required. |
-| Privacy | Approved raw-data policy, access boundaries, and retention | **Policy defined / deployment pending** | Production records audio and derived vision diagnostics but defaults raw MKV video off. Audio/video older than 30 days are reported daily for reviewed cleanup; no automatic deletion is allowed. Artifacts remain private to the local operator account. |
-| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Implementation complete / deployment pending** | Aggregate status includes authenticated non-billable OpenRouter key validation, Hermes health, S2S, launchd state, disk headroom, recording age, runner heartbeats, and media faults. Validate from the activated m1max release. |
-| Supervision | Services recover safely after machine/process or media failure | **Implementation complete / deployment pending** | Hermes and S2S have launchd `KeepAlive` definitions. The session supervisor retains fail-stop and bounded cleanup; the physical runner remains operator-authorized and is never auto-restarted. Controlled media-fault acceptance remains. |
+| Privacy | Approved raw-data policy, access boundaries, and retention | **Pass / active** | Production records audio and derived vision diagnostics but defaults raw MKV video off. Audio/video older than 30 days are reported daily for reviewed cleanup; no automatic deletion is allowed. Artifacts remain private to the local operator account. |
+| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Pass for assisted use** | Aggregate status validates the OpenRouter key without a model call and reports Hermes, S2S, launchd, disk headroom, recording age, runner heartbeats, and media faults. Controlled live media-fault acceptance remains. |
+| Supervision | Services recover safely after machine/process or media failure | **Pass for non-physical services** | Hermes and S2S launchd `KeepAlive` restart was verified on 2026-08-29 with new PIDs and healthy ports. The physical runner remains operator-authorized and is never auto-restarted. |
 | Remote access | Authenticated, auditable, least-privilege control | **Blocked for non-technical users** | SSH/Tailscale plus OPS is acceptable for assisted production. No remote operations API or operator UI exists yet. |
 | Emergency handling | Idempotent remote stop and documented local fallback | **Partial** | `stop-session` and `shutdown` exist. Define an operator-visible emergency stop, timeout behavior, and recovery instructions. |
 
@@ -203,8 +201,10 @@ Complete these in order. Stop and diagnose when a gate fails.
 3. Use the fixed eight-hour production duration for the first assisted shifts; explicit unlimited
    semantics remain deferred.
 4. Activate the frozen release through `reception-prod` and its private production configuration.
-5. Validate aggregate Hermes/provider/service/disk/retention health on m1max.
+   **Complete.**
+5. Validate aggregate Hermes/provider/service/disk/retention health on m1max. **Complete.**
 6. Confirm launchd restarts Hermes and S2S without enabling automatic physical-runner restart.
+   **Complete.**
 7. Treat current visitor-policy and chat behavior as accepted for the first production pass.
 8. Run one assisted clinic shift with remote status checks and a tested emergency stop procedure.
 9. Review evidence and explicitly promote or roll back.
