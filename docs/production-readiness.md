@@ -4,7 +4,7 @@
 
 **Current phase:** assisted production preparation
 
-**Updated:** 2026-08-29
+**Updated:** 2026-08-30
 
 This document is the promotion checklist for running the receptionist in the clinic for an extended
 period without a developer onsite. It owns pass/block status. Detailed implementation and operating
@@ -16,7 +16,7 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 ## Current Baseline
 
-- Active production candidate: the immutable release selected by
+- Active production candidate: immutable release `4c28a3e`, selected by
   `/Users/leon/.config/reachy-reception/active-release`, validated by `reception-prod` before every
   command. It uses Python `3.12.13`, Reachy SDK `1.10.0`, and the lock-enforced environment.
 - The live-validated `b7520a0` frozen release remains the first release-level rollback target.
@@ -44,7 +44,7 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 | Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Physical runner restart must remain operator-authorized. |
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Accepted for first production pass** | Door v4 and the current chat backend are frozen at the user-accepted behavior; further tuning is deferred rather than a launch blocker. |
 | Long-run behavior | Multi-hour run with conversations and no wedged subsystems | **Pass for assisted use** | Recent two-hour and shorter recorded runs completed cleanly with advancing broker/media counters and finalized artifacts. Policy/chat quality is accepted separately for the first pass. |
-| Startup | Bounded, observable transition to ready | **Pass for assisted use** | The GStreamer nested-environment fix reached ready repeatedly from frozen release `b7520a0` with advancing audio/video and clean shutdown. |
+| Startup | Bounded, observable transition to ready | **Pass / activated** | Frozen release `4c28a3e` reached ready in `112.301 s` on its first ordinary start and `9.827 s` on its second, with advancing audio/video, zero heartbeat-writer errors, and clean shutdown. |
 | Session duration | First-class run-until-stopped mode | **Deferred to control app** | Assisted CLI shifts use a deliberate fixed duration, currently eight hours. The reception control app will start an unlimited session that ends through End Reception or Emergency Stop; this is not a blocker for assisted production. |
 | Recording integrity | Audio/video/capture finalize and retain diagnosable timing | **Accepted limitation** | Fixed-`5 FPS` MKVs play faster than wall time, but frame order is intact and JSONL sidecars retain the timing source of truth used by replay/Rerun. Use MKVs only for qualitative review; map a reported player position to frame index and then sidecar `ts`. |
 | Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Partial / acceptance pending** | The detached session supervisor now records whether the runner-owned manifest closed cleanly or remained interrupted, including open artifact paths. A recorder sidecar is still required if hard-kill finalization rather than explicit interruption is required. |
@@ -93,7 +93,9 @@ before launching the media child. Unrelated diagnostics such as `GST_DEBUG` rema
 ensures the selected child interpreter applies its `.pth` environment exactly once. Focused OPS,
 supervisor, liveness, and runtime tests pass. A local venv with no registry cache successfully
 initialized GStreamer `1.28.3` and created one normal registry file without manual prewarming.
-Fresh-release m1max and robot-media acceptance remain pending.
+Fresh-release m1max and robot-media acceptance passed on 2026-08-30 from frozen release `4c28a3e`.
+No manual registry prewarm was used. The first ordinary start reached `ready` in `112.301 s`; the
+second reached it in `9.827 s`. Both runs advanced audio/video heartbeats and shut down cleanly.
 
 The permanent fix must give the live child a clean, deterministic GStreamer environment rather than
 passing interpreter-mutated values through each launcher layer. In particular, OPS should remove
@@ -134,6 +136,10 @@ before the supervisor reports `startup_stalled`; the strict heartbeat-file thres
 heartbeat writer also retries filesystem failures instead of terminating its thread, logs the first
 and every tenth consecutive failure, and reports cumulative write errors in its next successful
 snapshot. The default startup grace is `180 s`, based on a measured valid startup of `113.2 s`.
+Live acceptance used frozen release `4c28a3e`: runs `official-live-20260830-084803` and
+`official-live-20260830-085318` reached `ready` in `112.301 s` and `9.827 s`, respectively. Both
+reported zero heartbeat-writer errors, advancing audio/video, closed artifacts, and successful
+bounded robot cleanup.
 
 **Normal-stop correction (2026-08-27):** when a timed input source ends, the live runtime now enters
 `stopping` before its bounded output-drain and artifact-finalization period. The supervisor continues
@@ -179,6 +185,16 @@ Grounding DINO door observations, and Rerun streaming disabled.
   while its sidecar timestamps are required for timing and cross-artifact alignment.
 
 ## Latest Release Evidence
+
+Frozen release `4c28a3e` completed release and startup acceptance on 2026-08-30:
+
+- `uv lock --check` and `uv pip check` passed in Python `3.12.13` runtime and validation
+  environments reproduced from `uv.lock`.
+- Full default suite: `305 passed, 1 skipped, 36 deselected`; focused Ruff passed.
+- Full Ruff retained the same 23 pre-existing findings as the preceding release and introduced no
+  new finding.
+- Two ordinary OPS starts reached `ready` with advancing microphone and camera heartbeats; both
+  normal stops closed artifacts, released media, disabled motors, and left Hermes/S2S healthy.
 
 The non-live release build at `749ee18` completed on 2026-08-06:
 

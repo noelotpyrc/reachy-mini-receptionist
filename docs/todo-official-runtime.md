@@ -208,9 +208,10 @@ continued to report `ok` from PID existence. See `live-test-log.md` and
 1. **Implemented:** record source-level monotonic timestamps and sequences for expected microphone
    samples and camera frames independently of recording, plus an asyncio event-loop pulse.
 2. **Partially complete:** configurable startup and stale-source thresholds are implemented. The
-   current `120 s` startup, `5 s` heartbeat-file, and `8 s` source/event-loop defaults are based on
+   current `180 s` startup, `5 s` heartbeat-file, and `8 s` source/event-loop defaults are based on
    four retained healthy m1max runs. Their maximum observed audio and video gaps were `0.484 s` and
-   `4.216 s`, respectively; controlled live interruption acceptance remains required.
+   `4.216 s`, respectively. Frozen release `4c28a3e` passed first/second ordinary startup acceptance
+   in `112.301 s` and `9.827 s`; controlled live interruption acceptance remains required.
 3. **Implemented:** expose heartbeat/source ages through runner and aggregate status; a stale source
    changes active status to `faulting` before process teardown.
 4. **Implemented:** a detached per-run supervisor owns the live child, graceful stop/hard-stop
