@@ -74,22 +74,6 @@ if [[ ! -f "$CONFIG_DIR/production.env" ]]; then
   /usr/bin/install -m 600 "$RELEASE/config/production.env.example" "$CONFIG_DIR/production.env"
 fi
 
-active_tmp="$CONFIG_DIR/active-release.tmp.$$"
-printf '%s\n' "$RELEASE" > "$active_tmp"
-/bin/chmod 600 "$active_tmp"
-/bin/mv "$active_tmp" "$CONFIG_DIR/active-release"
-
-for label in \
-  com.reachy.reception.s2s \
-  com.reachy.reception.hermes \
-  com.reachy.reception.recording-retention; do
-  template="$RELEASE/config/launchd/$label.plist.in"
-  rendered="$STATE_DIR/$label.plist"
-  /usr/bin/sed "s|@HOME@|$HOME|g" "$template" > "$rendered"
-  /usr/bin/plutil -lint "$rendered" >/dev/null
-  /usr/bin/install -m 600 "$rendered" "$AGENT_DIR/$label.plist"
-done
-
 if [[ "$ENABLE_SERVICES" == "1" ]]; then
   for spec in "com.reachy.reception.s2s:8765" "com.reachy.reception.hermes:8642"; do
     label="${spec%%:*}"
@@ -102,6 +86,37 @@ if [[ "$ENABLE_SERVICES" == "1" ]]; then
       exit 75
     fi
   done
+fi
+
+for label in \
+  com.reachy.reception.s2s \
+  com.reachy.reception.hermes \
+  com.reachy.reception.recording-retention; do
+  template="$RELEASE/config/launchd/$label.plist.in"
+  rendered="$STATE_DIR/$label.plist"
+  /usr/bin/sed "s|@HOME@|$HOME|g" "$template" > "$rendered"
+  /usr/bin/plutil -lint "$rendered" >/dev/null
+  installed="$AGENT_DIR/$label.plist"
+  if [[ -f "$installed" ]] && /usr/bin/cmp -s "$rendered" "$installed"; then
+    continue
+  fi
+  target="gui/$UID/$label"
+  if /bin/launchctl print "$target" >/dev/null 2>&1; then
+    if [[ "$ENABLE_SERVICES" != "1" ]]; then
+      printf 'Loaded service definition changed; rerun with --enable-services: %s\n' "$label" >&2
+      exit 75
+    fi
+    /bin/launchctl bootout "$target"
+  fi
+  /usr/bin/install -m 600 "$rendered" "$installed"
+done
+
+active_tmp="$CONFIG_DIR/active-release.tmp.$$"
+printf '%s\n' "$RELEASE" > "$active_tmp"
+/bin/chmod 600 "$active_tmp"
+/bin/mv "$active_tmp" "$CONFIG_DIR/active-release"
+
+if [[ "$ENABLE_SERVICES" == "1" ]]; then
   for label in \
     com.reachy.reception.s2s \
     com.reachy.reception.hermes \

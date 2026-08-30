@@ -1084,6 +1084,16 @@ def test_s2s_backend_setup_script_contract() -> None:
     assert "rm -rf" not in text
 
 
+def test_production_installer_preserves_loaded_service_definitions() -> None:
+    text = Path("scripts/m1max/install_production_runtime.sh").read_text(encoding="utf-8")
+
+    assert '/usr/bin/cmp -s "$rendered" "$installed"' in text
+    assert "Loaded service definition changed; rerun with --enable-services" in text
+    assert text.index('/usr/bin/cmp -s "$rendered" "$installed"') < text.index(
+        'active_tmp="$CONFIG_DIR/active-release.tmp.$$"'
+    )
+
+
 def test_hermes_profile_sync_script_contract() -> None:
     script = Path("scripts/m1max/sync_hermes_profile.sh")
     text = script.read_text(encoding="utf-8")
