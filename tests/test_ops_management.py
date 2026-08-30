@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import wave
 from pathlib import Path
 
@@ -185,7 +186,7 @@ def test_build_live_command_includes_official_runtime_defaults(tmp_path):
     assert "--record-audio" in command
     assert "--record-video" in command
     profile_index = command.index("--visitor-trigger-profile")
-    assert command[profile_index + 1] == "legacy"
+    assert command[profile_index + 1] == "door-v4-20260827"
     runtime_index = command.index("--vision-runtime")
     assert command[runtime_index + 1] == "serial-v1"
     capture_fps_index = command.index("--broker-capture-fps")
@@ -239,6 +240,14 @@ def test_ops_config_loads_versioned_visitor_trigger_profile(monkeypatch):
     assert config.visitor_trigger_profile == "visitor-v1-20260802"
 
 
+def test_ops_config_defaults_to_door_v4(monkeypatch):
+    monkeypatch.delenv("RECEPTION_VISITOR_TRIGGER_PROFILE", raising=False)
+
+    config = ops_core.OpsConfig.from_env()
+
+    assert config.visitor_trigger_profile == "door-v4-20260827"
+
+
 def test_ops_config_uses_baselined_media_liveness_thresholds(monkeypatch):
     monkeypatch.delenv("MEDIA_HEARTBEAT_STALE_S", raising=False)
     monkeypatch.delenv("MEDIA_SOURCE_STALE_S", raising=False)
@@ -249,6 +258,166 @@ def test_ops_config_uses_baselined_media_liveness_thresholds(monkeypatch):
     assert config.media_heartbeat_stale_s == 5.0
     assert config.media_source_stale_s == 8.0
     assert config.event_loop_stale_s == 8.0
+
+
+def test_production_config_defaults_to_no_video(monkeypatch, tmp_path):
+    config_path = Path("config/production.env.example")
+    for line in config_path.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("REACHY_REPO", str(tmp_path))
+
+    config = ops_core.OpsConfig.from_env()
+
+    assert config.record_audio is True
+    assert config.record_video is False
+    assert config.capture_vision is True
+    assert config.recording_retention_days == 30
+    assert config.extended_health is True
+    assert config.require_managed_services is True
+
+
+def test_recording_retention_reports_only_old_audio_and_video(tmp_path):
+    artifact_root = tmp_path / "official-runtime-live"
+    old_audio = artifact_root / "audio" / "input-old.wav"
+    old_video = artifact_root / "video" / "video-old.mkv"
+    new_audio = artifact_root / "audio" / "input-new.wav"
+    old_capture = artifact_root / "capture" / "capture-old.jsonl"
+    for path in (old_audio, old_video, new_audio, old_capture):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"1234")
+    now = time.time()
+    old_ts = now - 31 * 86400
+    os.utime(old_audio, (old_ts, old_ts))
+    os.utime(old_video, (old_ts, old_ts))
+    os.utime(old_capture, (old_ts, old_ts))
+
+    report = ops_core.recording_retention_report(
+        artifact_root,
+        retention_days=30,
+        now_ts=now,
+    )
+
+    assert report["scanned_file_count"] == 3
+    assert report["due_file_count"] == 2
+    assert report["due_bytes"] == 8
+    assert {item["path"] for item in report["due_files"]} == {
+        "audio/input-old.wav",
+        "video/video-old.mkv",
+    }
+    assert report["deletion_performed"] is False
+    assert old_audio.exists()
+    assert old_video.exists()
+    assert old_capture.exists()
+
+
+def test_external_health_uses_hermes_and_nonbillable_provider_check(tmp_path, monkeypatch):
+    config = ops_core.OpsConfig(
+        **{
+            **make_config(tmp_path).__dict__,
+            "extended_health": True,
+            "require_managed_services": True,
+        }
+    )
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secret-provider-key")
+
+    def fake_request(url, *, timeout_s, bearer_token=None):
+        calls.append((url, bearer_token))
+        if url.endswith("/health"):
+            return {"ok": True, "http_status": 200, "body": {"status": "ok"}}
+        return {
+            "ok": True,
+            "http_status": 200,
+            "body": {"data": {"label": "private-label", "usage": 12}},
+        }
+
+    monkeypatch.setattr(ops_core, "_json_health_request", fake_request)
+    monkeypatch.setattr(
+        ops_core,
+        "launchd_service_status",
+        lambda label: {"label": label, "status": "loaded", "state": "running"},
+    )
+
+    result = ops_core.external_services_status(config)
+
+    assert result.status == "ok"
+    assert calls == [
+        (ops_core.DEFAULT_HERMES_HEALTH_URL, None),
+        (ops_core.DEFAULT_PROVIDER_HEALTH_URL, "secret-provider-key"),
+    ]
+    assert result.data["provider"] == {"ok": True, "http_status": 200}
+    assert "secret-provider-key" not in json.dumps(result.to_dict())
+    assert "private-label" not in json.dumps(result.to_dict())
+
+
+def test_external_health_reports_missing_provider_key(tmp_path, monkeypatch):
+    config = ops_core.OpsConfig(
+        **{**make_config(tmp_path).__dict__, "extended_health": True}
+    )
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        ops_core,
+        "_json_health_request",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "http_status": 200,
+            "body": {"status": "ok"},
+        },
+    )
+    monkeypatch.setattr(
+        ops_core,
+        "launchd_service_status",
+        lambda label: {"label": label, "status": "loaded"},
+    )
+
+    result = ops_core.external_services_status(config)
+
+    assert result.status == "degraded"
+    assert "missing OPENROUTER_API_KEY" in result.errors[0]
+
+
+def test_required_managed_backend_rejects_unmanaged_listener(tmp_path, monkeypatch):
+    config = ops_core.OpsConfig(
+        **{**make_config(tmp_path).__dict__, "require_managed_services": True}
+    )
+    monkeypatch.setattr(ops_core, "_port_open", lambda *args, **kwargs: True)
+    monkeypatch.setattr(ops_core, "_find_pids", lambda pattern: [123])
+    monkeypatch.setattr(
+        ops_core,
+        "launchd_service_status",
+        lambda label: {"label": label, "status": "not_loaded"},
+    )
+
+    result = ops_core.start_backend(config)
+
+    assert result.status == "failed"
+    assert "unmanaged process" in result.errors[0]
+
+
+def test_recording_retention_cli_is_report_only(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    old_audio = config.artifact_root / "audio" / "old.wav"
+    old_audio.parent.mkdir(parents=True)
+    old_audio.write_bytes(b"audio")
+    old_ts = time.time() - 31 * 86400
+    os.utime(old_audio, (old_ts, old_ts))
+    monkeypatch.setattr(
+        ops_core.OpsConfig,
+        "from_env",
+        classmethod(lambda cls: config),
+    )
+
+    result = CliRunner().invoke(cli, ["--json-output", "recording-retention"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "cleanup_due"
+    assert payload["data"]["due_file_count"] == 1
+    assert payload["data"]["deletion_performed"] is False
+    assert old_audio.exists()
 
 
 def test_ops_config_loads_broker_vision_settings(monkeypatch):
@@ -297,7 +466,11 @@ def test_build_policy_command_can_target_single_greet(tmp_path):
         scripted_policy_gap_s=3,
         scripted_policy_timeout_s=30,
         scripted_policy_greeting=config.policy_preflight_greeting,
+        visitor_trigger_profile=ops_core.LEGACY_VISITOR_TRIGGER_PROFILE,
     )
+
+    profile_index = command.index("--visitor-trigger-profile")
+    assert command[profile_index + 1] == "legacy"
 
     assert "--scripted-policy-flow" in command
     flow_index = command.index("--scripted-policy-flow")

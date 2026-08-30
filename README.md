@@ -72,16 +72,9 @@ src/reachy_mini_brain/
 ```bash
 # Current live-test path on m1max
 ssh leon@100.127.86.67
-RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen
-cd "$RELEASE"
-export REACHY_REPO="$RELEASE"
-export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"
-export PYTHONPATH="$RELEASE/src"
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli status
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
-  --confirm-physical start-session --record-audio --capture-vision
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
-  --confirm-physical stop-session
+~/.local/bin/reception-prod status
+~/.local/bin/reception-prod --confirm-physical start-session
+~/.local/bin/reception-prod --confirm-physical stop-session
 
 # Direct CLI entrypoint used by the ops wrapper
 .venv/bin/python -m reachy_mini_brain.official_runtime.live_app --help

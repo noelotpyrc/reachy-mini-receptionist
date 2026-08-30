@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.reachy.reception.recording-retention</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@HOME@/.local/lib/reachy-reception/recording_retention_reminder.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>@HOME@</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>86400</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>@HOME@/.local/state/reachy-reception/logs/recording-retention.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/.local/state/reachy-reception/logs/recording-retention.log</string>
+</dict>
+</plist>

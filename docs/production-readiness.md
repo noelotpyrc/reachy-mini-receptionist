@@ -4,7 +4,7 @@
 
 **Current phase:** assisted production preparation
 
-**Updated:** 2026-08-27
+**Updated:** 2026-08-29
 
 This document is the promotion checklist for running the receptionist in the clinic for an extended
 period without a developer onsite. It owns pass/block status. Detailed implementation and operating
@@ -16,12 +16,12 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 ## Current Baseline
 
-- Prepared m1max reliability release: clean checkout at `3449f8e` in
-  `/Users/leon/projects/reachy_mini_receptionist_release_3449f8e_frozen`. Lock-enforced runtime and
-  validation environments, full pytest, and changed-file Ruff passed. Media-liveness live
-  acceptance is pending because the robot API was unreachable during deployment.
-- Previously live-validated assisted release: `749ee18` in
-  `/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen` remains the rollback target.
+- Current live-validated assisted release: clean checkout at `b7520a0` in
+  `/Users/leon/projects/reachy_mini_receptionist_release_b7520a0_frozen`, using Reachy SDK `1.10.0`.
+  Multiple ordinary starts, a two-hour run, and recorded shorter runs completed with advancing
+  media/broker counters and clean finalization.
+- The next production candidate will be activated through the stable release mechanism. The
+  `b7520a0` frozen release remains its first release-level rollback target.
 - Recovery and rollback: pre-removal source is tagged `legacy-daemon-last` at `260e2f2`; the previous
   clean release at `612ea43` and the dirty deployment checkout remain intact.
 - S2S backend: `speech-to-speech==0.2.10`, fork SHA `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`,
@@ -29,8 +29,9 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 - Agent wrapper: production Hermes profile on `127.0.0.1:8642`; clinic context remains outside Git.
 - Direct provider/model: OpenRouter with `openai/gpt-5.6-luna` as the configured direct model.
 - Policy speech: fixed greet/goodbye text uses deterministic TTS and does not invoke an LLM.
-- Visitor policy candidate: `door-v1-20260805`, combining semantic door movement with person-door
-  interaction.
+- Visitor policy default: `door-v4-20260827`, using presence-overlap greet and direct
+  person-to-door distance-crossing goodbye. `legacy` and door v1-v3 remain explicit rollback
+  profiles.
 - Operational surface: `ops_core` plus `reception-ops`; structured status and physical-action
   authorization are implemented.
 - Diagnosis: raw/derived artifacts, audio review, offline Rerun review, door-policy review, and
@@ -40,18 +41,18 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 | Area | Gate | Status | Evidence / remaining work |
 | --- | --- | --- | --- |
-| Release | Immutable product revision, reproducible venv, documented rollback | **Pass for assisted use** | Candidate `3449f8e` uses Python `3.12.13` and lock-enforced non-editable runtime/validation venvs; `749ee18` remains the live-validated rollback. Replace commit-named/manual activation with a stable production release mechanism before non-technical operation. |
-| Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Backend setup script, runtime metadata, Hermes text/integration tests, and deterministic policy-TTS benchmark completed. Add wrapper/provider checks to aggregate health. |
+| Release | Immutable product revision, reproducible venv, documented rollback | **Implementation complete / deployment pending** | `reception-prod` resolves one private active-release file, rejects mutable/dirty/mismatched releases, and loads one private production config. Activate the next frozen m1max release and retain the previous frozen release as rollback. |
+| Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Backend setup script, runtime metadata, Hermes text/integration tests, deterministic policy-TTS benchmark, and read-only Hermes/provider health checks are complete. |
 | Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Physical runner restart must remain operator-authorized. |
-| Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Blocked** | Door policy passed captured offline evaluation. A controlled live door-entry, conversation, and exit sequence is still required. |
-| Long-run behavior | Multi-hour run with conversations and no wedged subsystems | **Blocked** | `official-live-20260806-114813` ran for about 96 minutes but observed no people or conversations, so it tested idle stability only. |
-| Startup | Bounded, observable transition to ready | **Partial / acceptance pending** | Progress and timeout/fault reporting are implemented. The GStreamer nested-environment fix is implemented and offline-tested locally; validate one normal start from a fresh m1max release with no pre-existing registry and no manual prewarm. |
+| Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Accepted for first production pass** | Door v4 and the current chat backend are frozen at the user-accepted behavior; further tuning is deferred rather than a launch blocker. |
+| Long-run behavior | Multi-hour run with conversations and no wedged subsystems | **Pass for assisted use** | Recent two-hour and shorter recorded runs completed cleanly with advancing broker/media counters and finalized artifacts. Policy/chat quality is accepted separately for the first pass. |
+| Startup | Bounded, observable transition to ready | **Pass for assisted use** | The GStreamer nested-environment fix reached ready repeatedly from frozen release `b7520a0` with advancing audio/video and clean shutdown. |
 | Session duration | First-class run-until-stopped mode | **Blocked** | Current operation uses a very large numeric duration as an indefinite-run workaround. Implement explicit unlimited semantics. |
 | Recording integrity | Audio/video/capture finalize and retain diagnosable timing | **Accepted limitation** | Fixed-`5 FPS` MKVs play faster than wall time, but frame order is intact and JSONL sidecars retain the timing source of truth used by replay/Rerun. Use MKVs only for qualitative review; map a reported player position to frame index and then sidecar `ts`. |
 | Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Partial / acceptance pending** | The detached session supervisor now records whether the runner-owned manifest closed cleanly or remained interrupted, including open artifact paths. A recorder sidecar is still required if hard-kill finalization rather than explicit interruption is required. |
-| Privacy | Approved raw-data policy, access boundaries, and retention | **Decision required** | Continuous audio plus video is about `0.4 GB/hour` in the latest run and may contain sensitive clinic information. Decide production defaults and retention before unattended recording. |
-| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Partial / acceptance pending** | Source-level audio/video ages, event-loop age, and retained terminal faults are implemented locally. Validate thresholds and fail-stop on m1max. Wrapper/provider health and disk headroom remain missing. |
-| Supervision | Services recover safely after machine/process or media failure | **Partial / acceptance pending** | A detached session supervisor now performs fail-stop, bounded robot cleanup, terminal recording, and active-state retirement while leaving the backend warm. Controlled live fault acceptance remains; automatic physical restart stays disabled. Backend and wrapper still need managed service definitions. |
+| Privacy | Approved raw-data policy, access boundaries, and retention | **Policy defined / deployment pending** | Production records audio and derived vision diagnostics but defaults raw MKV video off. Audio/video older than 30 days are reported daily for reviewed cleanup; no automatic deletion is allowed. Artifacts remain private to the local operator account. |
+| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Implementation complete / deployment pending** | Aggregate status includes authenticated non-billable OpenRouter key validation, Hermes health, S2S, launchd state, disk headroom, recording age, runner heartbeats, and media faults. Validate from the activated m1max release. |
+| Supervision | Services recover safely after machine/process or media failure | **Implementation complete / deployment pending** | Hermes and S2S have launchd `KeepAlive` definitions. The session supervisor retains fail-stop and bounded cleanup; the physical runner remains operator-authorized and is never auto-restarted. Controlled media-fault acceptance remains. |
 | Remote access | Authenticated, auditable, least-privilege control | **Blocked for non-technical users** | SSH/Tailscale plus OPS is acceptable for assisted production. No remote operations API or operator UI exists yet. |
 | Emergency handling | Idempotent remote stop and documented local fallback | **Partial** | `stop-session` and `shutdown` exist. Define an operator-visible emergency stop, timeout behavior, and recovery instructions. |
 
@@ -199,16 +200,12 @@ Complete these in order. Stop and diagnose when a gate fails.
    **Complete.**
 2. Accept and document the fixed-FPS MKV limitation; require sidecar timestamps for timing-sensitive
    diagnosis. **Complete.**
-3. Implement explicit unlimited session duration and startup progress/fault reporting.
-4. Define the production configuration outside Git: release, visitor profile, recording mode,
-   retention, provider, voice, and rollback target.
-5. Add authenticated health checks for Hermes and the external provider plus media/artifact growth
-   checks for an active run. Media-liveness fault and fail-stop are implemented locally; deploy,
-   baseline thresholds, and complete controlled live acceptance.
-6. Add service supervision for non-physical persistent services. Keep automatic physical runner
-   restart disabled unless the bounded-restart policy above receives a separate safety approval.
-7. Run one controlled visitor acceptance: door entry, greet, wave-chat, ordinary questions,
-   goodbye, and door exit, with artifacts retained for review.
+3. Use the fixed eight-hour production duration for the first assisted shifts; explicit unlimited
+   semantics remain deferred.
+4. Activate the frozen release through `reception-prod` and its private production configuration.
+5. Validate aggregate Hermes/provider/service/disk/retention health on m1max.
+6. Confirm launchd restarts Hermes and S2S without enabling automatic physical-runner restart.
+7. Treat current visitor-policy and chat behavior as accepted for the first production pass.
 8. Run one assisted clinic shift with remote status checks and a tested emergency stop procedure.
 9. Review evidence and explicitly promote or roll back.
 

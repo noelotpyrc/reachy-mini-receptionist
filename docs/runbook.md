@@ -29,17 +29,20 @@ Product/controller repo:
 
 - Local dev: `/Users/noel/projects/reachy_mini_receptionist_clean`
 - m1max rollback checkout: `/Users/leon/projects/reachy_mini_receptionist_deploy`
-- Current prepared m1max reliability release:
-  `/Users/leon/projects/reachy_mini_receptionist_release_3449f8e_frozen` at `3449f8e`
-- Previously live-validated assisted release:
-  `/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen` at `749ee18`
+- Active production release: the single frozen path in
+  `/Users/leon/.config/reachy-reception/active-release`; inspect it through `reception-prod status`
+  rather than selecting a checkout manually.
+- Current live-validated assisted release:
+  `/Users/leon/projects/reachy_mini_receptionist_release_b7520a0_frozen` at `b7520a0`
 - Previous clean assisted release:
   `/Users/leon/projects/reachy_mini_receptionist_release_6b4c5a6` at `612ea43`
 
 Keep the dirty rollback checkout intact. A prepared release has its own `.release-venv`, while its
 ignored `.env`, `private`, and `artifacts` paths reference the existing deployment-owned data. Set
-`REACHY_REPO` and `OFFICIAL_RUNTIME_PYTHON` explicitly when operating a release so the OPS process
-and spawned runner use the same product revision.
+the production release with `install_production_runtime.sh`; normal operation must use the stable
+`~/.local/bin/reception-prod` launcher. It validates that the selected directory is frozen, its name
+matches Git HEAD, its tracked worktree is clean, and its `.release-venv` exists. It has no fallback
+to the mutable deployment checkout.
 
 Do not use `/Users/leon/projects/reachy_mini_receptionist_release_749ee18`: its initial environment
 was resolved without enforcing `uv.lock` and is retained only until deletion is separately approved.
@@ -119,37 +122,40 @@ Run from m1max:
 
 ```bash
 ssh leon@100.127.86.67
-RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_3449f8e_frozen
-cd "$RELEASE"
-export REACHY_REPO="$RELEASE"
-export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"
-export PYTHONPATH="$RELEASE/src"
 
-# Safe status: backend + runner + latest-run pointer.
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli status
+# Safe aggregate status: release config, backend, Hermes, provider, runner, storage, and retention.
+~/.local/bin/reception-prod status
 
 # Optional fuller read-only status, including robot daemon state.
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli status --include-robot
+~/.local/bin/reception-prod status --include-robot
 ```
 
 Run preflight before a normal live session when time allows:
 
 ```bash
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
-  --confirm-physical preflight
+~/.local/bin/reception-prod --confirm-physical preflight
 ```
 
 Start the live session:
 
 ```bash
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
-  --confirm-physical start-session --record-audio --record-video --capture-vision
+~/.local/bin/reception-prod --confirm-physical start-session
 ```
 
-The vision greet/goodbye implementation is selected in the deploy repo's `.env`:
+The private `~/.config/reachy-reception/production.env` is copied from
+`config/production.env.example` on first installation and preserved on later release activation.
+The production default records audio and derived vision JSONL but does not record raw MKV video.
+Use `--record-video` only for a deliberately diagnosed run.
+
+Managed OPS sessions default to `door-v4-20260827` when
+`RECEPTION_VISITOR_TRIGGER_PROFILE` is unset. Set the variable in the deploy repo's `.env` only to
+select an explicit profile or rollback target:
 
 ```bash
-# Safe default and immediate rollback target.
+# Managed-runtime default; this assignment is optional.
+RECEPTION_VISITOR_TRIGGER_PROFILE=door-v4-20260827
+
+# Immediate behavior rollback target.
 RECEPTION_VISITOR_TRIGGER_PROFILE=legacy
 
 # Captured-evaluation candidate for controlled live acceptance.
@@ -160,19 +166,18 @@ RECEPTION_VISITOR_TRIGGER_PROFILE=door-v1-20260805
 RECEPTION_VISION_PIPELINES_CONFIG=/Users/leon/projects/reachy_mini_receptionist_release_3449f8e_frozen/config/vision/door-policy-v1.json
 RECEPTION_RERUN_MODE=off
 
-# Opt-in presence-overlap-greet/direct-goodbye candidate. This also prevents vision policies
-# from interrupting an active wave-chat conversation.
-RECEPTION_VISITOR_TRIGGER_PROFILE=door-v4-20260827
 ```
 
-For the current controlled acceptance, export the three door-policy values in the release shell
-instead of changing the shared rollback `.env`. Keeping Rerun streaming off isolates the conversation
-and policy test while raw video and detector observations are still recorded.
+The v4 default uses presence-overlap greet, direct distance-crossing goodbye, and prevents vision
+policies from interrupting an active wave-chat conversation. Keeping Rerun streaming and raw video
+off isolates the production conversation path while derived vision and detector observations remain
+available.
 
 Only one value should be active. A changed value applies to the next OPS invocation and live
 process, so stop the current session normally and start a new one. Unknown profile names fail at
 startup. The run manifest's `config.visitor_trigger_profile` object records the selected name and
-complete resolved configuration.
+complete resolved configuration. Camera-free policy-speech preflight explicitly uses `legacy`; it
+tests fixed-text TTS playback and does not evaluate a visitor vision profile.
 
 The door policy pipeline loads Grounding DINO when the runner starts. On the prepared m1max release,
 the first isolated model load took about 20 seconds; this is startup time before robot interaction,
@@ -257,13 +262,13 @@ Profile rollback is operational: set `RECEPTION_VISITOR_TRIGGER_PROFILE=legacy`,
 `reachy_mini_receptionist_deploy` checkout and its environment. Neither path requires reverting a
 commit.
 
-Add `--record-video` only when raw MKV video is needed. It increases artifact size.
+Add `--record-video` only when raw MKV video is needed. It increases artifact size and places raw
+clinic imagery inside the 30-day review window.
 
 Stop and clean up:
 
 ```bash
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
-  --confirm-physical stop-session
+~/.local/bin/reception-prod --confirm-physical stop-session
 ```
 
 Expected post-run state:
@@ -296,6 +301,11 @@ robot tests unless:
 - backend state appears wedged;
 - a cold-start timing measurement is needed.
 
+Production Hermes and S2S are launchd-managed non-physical services. Their definitions use
+`KeepAlive`; the physical runner is never installed as a service and is never automatically
+restarted. `reception-prod status` requires both service definitions plus live Hermes/S2S checks.
+`reception-prod backend restart` deliberately unloads and reloads the managed S2S service.
+
 Create or update the managed backend runtime venv from this repo:
 
 ```bash
@@ -327,6 +337,22 @@ Current backend contract:
 - LLM slot: `responses-api` through the local Hermes wrapper on `127.0.0.1:8642`
 - Direct model path: OpenRouter `openai/gpt-5.6-luna`
 - TTS: `qwen3`, voice `Sohee`
+
+## Recording Retention
+
+Production defaults are `RECORD_AUDIO=1`, `CAPTURE_VISION=1`, and `RECORD_VIDEO=0`. Raw video is
+opt-in because it is the dominant storage consumer. Both raw audio and any opt-in raw video enter a
+30-day review window.
+
+```bash
+~/.local/bin/reception-prod recording-retention
+```
+
+The command only reports files whose modification time is older than 30 days. A daily launchd job
+writes `~/.local/state/reachy-reception/recording-retention-latest.json` and displays a macOS
+notification when review is due. It never moves or deletes files. Any cleanup still requires an
+explicitly reviewed file list and deletion confirmation. The development Mac uses the equivalent
+`scripts/install_recording_retention_reminder.sh` job and a separate local report.
 
 The accepted live app talks to this backend directly. It should not require
 `/Users/leon/projects/reachy_mini_conversation_app`.

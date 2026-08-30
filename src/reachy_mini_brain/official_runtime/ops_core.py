@@ -16,14 +16,18 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .env import PROJECT_ROOT, clean_gstreamer_environment, load_project_env
-from .visitor_trigger_profiles import DEFAULT_VISITOR_TRIGGER_PROFILE, resolve_visitor_trigger_profile
+from .visitor_trigger_profiles import (
+    DEFAULT_VISITOR_TRIGGER_PROFILE,
+    LEGACY_VISITOR_TRIGGER_PROFILE,
+    resolve_visitor_trigger_profile,
+)
 
 
 LIVE_PATTERN = "reachy_mini_brain.official_runtime.live_app"
@@ -36,6 +40,10 @@ DEFAULT_PREFLIGHT_WAV = (
     "official-live-20260623-122844-01-pcm16.wav"
 )
 DEFAULT_POLICY_PREFLIGHT_GREETING = "Welcome to the clinic. How can I help you today?"
+DEFAULT_HERMES_HEALTH_URL = "http://127.0.0.1:8642/health"
+DEFAULT_PROVIDER_HEALTH_URL = "https://openrouter.ai/api/v1/key"
+DEFAULT_S2S_SERVICE_LABEL = "com.reachy.reception.s2s"
+DEFAULT_HERMES_SERVICE_LABEL = "com.reachy.reception.hermes"
 
 
 class OpsError(RuntimeError):
@@ -92,6 +100,16 @@ class OpsConfig:
     broker_policy_idle_s: float = 0.1
     gesture_running_mode: str = "image"
     wave_detection_mode: str = "open_palm"
+    extended_health: bool = False
+    hermes_health_url: str = DEFAULT_HERMES_HEALTH_URL
+    provider_health_url: str = DEFAULT_PROVIDER_HEALTH_URL
+    provider_api_key_env: str = "OPENROUTER_API_KEY"
+    external_health_timeout_s: float = 5.0
+    artifact_disk_min_free_gb: float = 20.0
+    recording_retention_days: int = 30
+    require_managed_services: bool = False
+    s2s_service_label: str = DEFAULT_S2S_SERVICE_LABEL
+    hermes_service_label: str = DEFAULT_HERMES_SERVICE_LABEL
 
     @classmethod
     def from_env(cls) -> "OpsConfig":
@@ -171,6 +189,34 @@ class OpsConfig:
             ),
             gesture_running_mode=os.environ.get("RECEPTION_GESTURE_RUNNING_MODE", "image"),
             wave_detection_mode=os.environ.get("RECEPTION_WAVE_DETECTION_MODE", "open_palm"),
+            extended_health=_env_bool("OPS_EXTENDED_HEALTH", default=False),
+            hermes_health_url=os.environ.get(
+                "HERMES_HEALTH_URL", DEFAULT_HERMES_HEALTH_URL
+            ),
+            provider_health_url=os.environ.get(
+                "PROVIDER_HEALTH_URL", DEFAULT_PROVIDER_HEALTH_URL
+            ),
+            provider_api_key_env=os.environ.get(
+                "PROVIDER_HEALTH_API_KEY_ENV", "OPENROUTER_API_KEY"
+            ),
+            external_health_timeout_s=float(
+                os.environ.get("EXTERNAL_HEALTH_TIMEOUT_S", "5")
+            ),
+            artifact_disk_min_free_gb=float(
+                os.environ.get("ARTIFACT_DISK_MIN_FREE_GB", "20")
+            ),
+            recording_retention_days=int(
+                os.environ.get("RECORDING_RETENTION_DAYS", "30")
+            ),
+            require_managed_services=_env_bool(
+                "OPS_REQUIRE_MANAGED_SERVICES", default=False
+            ),
+            s2s_service_label=os.environ.get(
+                "S2S_SERVICE_LABEL", DEFAULT_S2S_SERVICE_LABEL
+            ),
+            hermes_service_label=os.environ.get(
+                "HERMES_SERVICE_LABEL", DEFAULT_HERMES_SERVICE_LABEL
+            ),
         )
 
     @property
@@ -312,8 +358,11 @@ class RunnerState:
 def backend_status(config: OpsConfig) -> ActionResult:
     port_live = _port_open(config.s2s_host, config.s2s_port)
     pids = _find_pids(BACKEND_PATTERN)
+    service = launchd_service_status(config.s2s_service_label)
     status = "ok" if port_live else "stopped"
     if pids and not port_live:
+        status = "degraded"
+    if config.require_managed_services and service["status"] != "loaded":
         status = "degraded"
     return ActionResult(
         action="backend.status",
@@ -321,14 +370,41 @@ def backend_status(config: OpsConfig) -> ActionResult:
         machine_verification=(
             Verification("tcp_port", "ok" if port_live else "failed", {"host": config.s2s_host, "port": config.s2s_port}),
             Verification("process", "ok" if pids else "not_found", {"pids": pids}),
+            Verification(
+                "managed_service",
+                service["status"],
+                {"label": config.s2s_service_label},
+            ),
         ),
-        data={"host": config.s2s_host, "port": config.s2s_port, "port_live": port_live, "pids": pids},
+        data={
+            "host": config.s2s_host,
+            "port": config.s2s_port,
+            "port_live": port_live,
+            "pids": pids,
+            "managed_service": service,
+        },
+        errors=(
+            (f"required launchd service is not loaded: {config.s2s_service_label}",)
+            if config.require_managed_services and service["status"] != "loaded"
+            else ()
+        ),
     )
 
 
 def start_backend(config: OpsConfig) -> ActionResult:
     status_before = backend_status(config)
     if status_before.data["port_live"]:
+        if config.require_managed_services and status_before.data["managed_service"]["status"] != "loaded":
+            return ActionResult(
+                action="backend.start",
+                status="failed",
+                changed=False,
+                machine_verification=status_before.machine_verification,
+                data=status_before.data,
+                errors=(
+                    "backend port is held by an unmanaged process; stop it before enabling the production service",
+                ),
+            )
         return ActionResult(
             action="backend.start",
             status="ok",
@@ -340,6 +416,30 @@ def start_backend(config: OpsConfig) -> ActionResult:
     path_errors = _validate_backend_launch_paths(config)
     if path_errors:
         return ActionResult(action="backend.start", status="failed", errors=tuple(path_errors))
+
+    service_plist = _launch_agent_path(config.s2s_service_label)
+    if config.require_managed_services or service_plist.exists():
+        service_start = _start_launchd_service(config.s2s_service_label, service_plist)
+        if service_start is not None:
+            deadline = time.monotonic() + config.backend_start_timeout_s
+            while time.monotonic() < deadline:
+                if _port_open(config.s2s_host, config.s2s_port):
+                    current = backend_status(config)
+                    return ActionResult(
+                        action="backend.start",
+                        status="ok",
+                        changed=True,
+                        machine_verification=current.machine_verification,
+                        data={**current.data, "managed_start": service_start},
+                    )
+                time.sleep(1)
+            return ActionResult(
+                action="backend.start",
+                status="failed",
+                changed=True,
+                data={"managed_start": service_start},
+                errors=("managed backend did not become ready before timeout",),
+            )
 
     config.log_dir.mkdir(parents=True, exist_ok=True)
     logfile = config.log_dir / f"s2s-backend-live-{_timestamp()}.log"
@@ -390,6 +490,24 @@ def start_backend(config: OpsConfig) -> ActionResult:
 
 
 def stop_backend(config: OpsConfig) -> ActionResult:
+    service = launchd_service_status(config.s2s_service_label)
+    if service["status"] == "loaded":
+        completed = _launchctl("bootout", _launchd_target(config.s2s_service_label))
+        stopped = _find_pids(BACKEND_PATTERN)
+        return ActionResult(
+            action="backend.stop",
+            status="ok" if completed.returncode == 0 else "failed",
+            changed=completed.returncode == 0,
+            machine_verification=(
+                Verification(
+                    "managed_service_unloaded",
+                    "ok" if completed.returncode == 0 else "failed",
+                    {"label": config.s2s_service_label},
+                ),
+            ),
+            data={"requested_pids": stopped, "stopped_pids": stopped},
+            errors=((completed.stderr.strip() or "launchctl bootout failed",) if completed.returncode else ()),
+        )
     pids = _find_pids(BACKEND_PATTERN)
     stopped = _terminate_pids(pids)
     return ActionResult(
@@ -403,6 +521,209 @@ def stop_backend(config: OpsConfig) -> ActionResult:
 
 def restart_backend(config: OpsConfig) -> list[ActionResult]:
     return [stop_backend(config), start_backend(config)]
+
+
+def launchd_service_status(label: str) -> dict[str, Any]:
+    """Return read-only launchd state without treating unsupported hosts as loaded."""
+
+    if sys.platform != "darwin" or shutil.which("launchctl") is None:
+        return {"label": label, "status": "unsupported"}
+    completed = _launchctl("print", _launchd_target(label))
+    if completed.returncode != 0:
+        return {"label": label, "status": "not_loaded"}
+    state = "unknown"
+    pid: int | None = None
+    for line in completed.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("state = "):
+            state = stripped.split("=", 1)[1].strip()
+        elif stripped.startswith("pid = "):
+            try:
+                pid = int(stripped.split("=", 1)[1].strip())
+            except ValueError:
+                pid = None
+    return {"label": label, "status": "loaded", "state": state, "pid": pid}
+
+
+def external_services_status(config: OpsConfig) -> ActionResult:
+    """Check Hermes and provider authentication without making a model request."""
+
+    if not config.extended_health:
+        return ActionResult(
+            action="external-services.status",
+            status="not_enabled",
+            data={"enabled": False},
+        )
+
+    errors: list[str] = []
+    checks: list[Verification] = []
+    data: dict[str, Any] = {"enabled": True}
+
+    hermes = _json_health_request(
+        config.hermes_health_url,
+        timeout_s=config.external_health_timeout_s,
+    )
+    data["hermes"] = hermes
+    hermes_ok = hermes.get("ok") is True and hermes.get("body", {}).get("status") == "ok"
+    checks.append(
+        Verification(
+            "hermes",
+            "ok" if hermes_ok else "failed",
+            {"url": config.hermes_health_url, "http_status": hermes.get("http_status")},
+        )
+    )
+    if not hermes_ok:
+        errors.append(f"Hermes health failed: {hermes.get('error') or hermes.get('http_status')}")
+
+    provider_key = os.environ.get(config.provider_api_key_env, "")
+    if not provider_key:
+        provider = {"ok": False, "error": f"missing {config.provider_api_key_env}"}
+    else:
+        provider_result = _json_health_request(
+            config.provider_health_url,
+            timeout_s=config.external_health_timeout_s,
+            bearer_token=provider_key,
+        )
+        provider = {
+            key: value
+            for key, value in provider_result.items()
+            if key in {"ok", "http_status", "error"}
+        }
+    data["provider"] = provider
+    provider_ok = provider.get("ok") is True
+    checks.append(
+        Verification(
+            "provider_auth",
+            "ok" if provider_ok else "failed",
+            {
+                "url": config.provider_health_url,
+                "http_status": provider.get("http_status"),
+                "key_env": config.provider_api_key_env,
+            },
+        )
+    )
+    if not provider_ok:
+        errors.append(f"provider authentication failed: {provider.get('error') or provider.get('http_status')}")
+
+    hermes_service = launchd_service_status(config.hermes_service_label)
+    data["hermes_service"] = hermes_service
+    service_ok = hermes_service["status"] == "loaded"
+    checks.append(
+        Verification(
+            "hermes_managed_service",
+            "ok" if service_ok else hermes_service["status"],
+            {"label": config.hermes_service_label},
+        )
+    )
+    if config.require_managed_services and not service_ok:
+        errors.append(f"required launchd service is not loaded: {config.hermes_service_label}")
+
+    return ActionResult(
+        action="external-services.status",
+        status="ok" if not errors else "degraded",
+        machine_verification=tuple(checks),
+        data=data,
+        errors=tuple(errors),
+    )
+
+
+def storage_status(config: OpsConfig) -> ActionResult:
+    target = config.artifact_root
+    existing_target = target if target.exists() else config.repo_path
+    usage = shutil.disk_usage(existing_target)
+    free_gb = usage.free / (1024**3)
+    threshold_gb = config.artifact_disk_min_free_gb
+    disk_ok = free_gb >= threshold_gb
+    retention = recording_retention_report(
+        config.artifact_root,
+        retention_days=config.recording_retention_days,
+    )
+    errors = () if disk_ok else (f"artifact disk free space is below {threshold_gb:g} GiB",)
+    return ActionResult(
+        action="storage.status",
+        status="ok" if disk_ok else "degraded",
+        machine_verification=(
+            Verification(
+                "disk_headroom",
+                "ok" if disk_ok else "failed",
+                {
+                    "path": str(existing_target),
+                    "free_gb": round(free_gb, 2),
+                    "minimum_free_gb": threshold_gb,
+                },
+            ),
+            Verification(
+                "recording_retention",
+                "due" if retention["due_file_count"] else "ok",
+                {
+                    "retention_days": retention["retention_days"],
+                    "due_file_count": retention["due_file_count"],
+                    "due_bytes": retention["due_bytes"],
+                },
+            ),
+        ),
+        data={
+            "disk": {
+                "path": str(existing_target),
+                "total_gb": round(usage.total / (1024**3), 2),
+                "used_gb": round(usage.used / (1024**3), 2),
+                "free_gb": round(free_gb, 2),
+                "minimum_free_gb": threshold_gb,
+            },
+            "recording_retention": retention,
+        },
+        errors=errors,
+    )
+
+
+def recording_retention_report(
+    artifact_root: Path,
+    *,
+    retention_days: int,
+    now_ts: float | None = None,
+    path_limit: int = 50,
+) -> dict[str, Any]:
+    """Report old raw audio/video artifacts; never remove or modify them."""
+
+    if retention_days < 1:
+        raise OpsError("recording retention days must be at least 1")
+    now = time.time() if now_ts is None else now_ts
+    cutoff = now - retention_days * 86400
+    due: list[tuple[float, Path, int]] = []
+    scanned = 0
+    for directory_name in ("audio", "video"):
+        directory = artifact_root / directory_name
+        if not directory.exists():
+            continue
+        for path in directory.rglob("*"):
+            if not path.is_file():
+                continue
+            scanned += 1
+            stat = path.stat()
+            if stat.st_mtime < cutoff:
+                due.append((stat.st_mtime, path, stat.st_size))
+    due.sort(key=lambda item: item[0])
+    due_bytes = sum(item[2] for item in due)
+    listed = [
+        {
+            "path": str(path.relative_to(artifact_root)),
+            "modified_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+            "bytes": size,
+        }
+        for mtime, path, size in due[:path_limit]
+    ]
+    return {
+        "artifact_root": str(artifact_root),
+        "retention_days": retention_days,
+        "cutoff": datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat(),
+        "scanned_file_count": scanned,
+        "due_file_count": len(due),
+        "due_bytes": due_bytes,
+        "listed_file_count": len(listed),
+        "paths_truncated": len(due) > len(listed),
+        "due_files": listed,
+        "deletion_performed": False,
+    }
 
 
 def robot_status(config: OpsConfig) -> ActionResult:
@@ -960,6 +1281,7 @@ def preflight_policy(
         scripted_policy_gap_s=config.policy_preflight_gap_s,
         scripted_policy_timeout_s=config.policy_preflight_timeout_s,
         scripted_policy_greeting=config.policy_preflight_greeting if "greet" in flow else None,
+        visitor_trigger_profile=LEGACY_VISITOR_TRIGGER_PROFILE,
     )
     config.log_dir.mkdir(parents=True, exist_ok=True)
     logfile = config.log_dir / f"{actual_run_id}.log"
@@ -1058,17 +1380,23 @@ def stop_session(config: OpsConfig, *, authorized: bool) -> list[ActionResult]:
 def aggregate_status(config: OpsConfig, *, include_robot: bool = False) -> ActionResult:
     backend = backend_status(config)
     runner = runner_status(config)
+    external = external_services_status(config)
+    storage = storage_status(config)
     latest = load_latest_run(config)
     data: dict[str, Any] = {
         "backend": backend.to_dict(),
         "runner": runner.to_dict(),
+        "external_services": external.to_dict(),
+        "storage": storage.to_dict(),
         "latest_run": latest,
     }
     checks = [
         Verification("backend", backend.status, backend.data),
         Verification("runner", runner.status, runner.data),
+        Verification("external_services", external.status, external.data),
+        Verification("storage", storage.status, storage.data),
     ]
-    errors = list(backend.errors) + list(runner.errors)
+    errors = list(backend.errors) + list(runner.errors) + list(external.errors) + list(storage.errors)
     if include_robot:
         robot = robot_status(config)
         data["robot"] = robot.to_dict()
@@ -1143,6 +1471,7 @@ def build_live_command(
     rerun_mode: str | None = None,
     heartbeat_path: Path | None = None,
     heartbeat_interval_s: float = 1.0,
+    visitor_trigger_profile: str | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     env = _base_env(config)
     env.update(
@@ -1152,6 +1481,7 @@ def build_live_command(
             "REACHY_HOST": config.robot_host,
         }
     )
+    resolved_visitor_trigger_profile = visitor_trigger_profile or config.visitor_trigger_profile
     command = [
         str(config.python_bin),
         "-m",
@@ -1176,7 +1506,7 @@ def build_live_command(
         "--record-video" if record_video else "--no-record-video",
         "--capture-vision" if capture_vision else "--no-capture-vision",
         "--visitor-trigger-profile",
-        config.visitor_trigger_profile,
+        resolved_visitor_trigger_profile,
         "--vision-runtime",
         config.vision_runtime,
         "--broker-capture-fps",
@@ -1472,6 +1802,68 @@ def _robot_request(
         return json.loads(body)
     except json.JSONDecodeError:
         return body.decode("utf-8", errors="replace")
+
+
+def _json_health_request(
+    url: str,
+    *,
+    timeout_s: float,
+    bearer_token: str | None = None,
+) -> dict[str, Any]:
+    request = Request(url, method="GET")
+    request.add_header("Accept", "application/json")
+    if bearer_token:
+        request.add_header("Authorization", f"Bearer {bearer_token}")
+    try:
+        with urlopen(request, timeout=timeout_s) as response:
+            status = int(getattr(response, "status", 200))
+            body_bytes = response.read()
+    except HTTPError as exc:
+        return {"ok": False, "http_status": exc.code, "error": f"HTTP {exc.code}"}
+    except (URLError, TimeoutError, OSError) as exc:
+        return {"ok": False, "http_status": None, "error": str(exc)}
+    try:
+        body = json.loads(body_bytes) if body_bytes else {}
+    except json.JSONDecodeError:
+        return {"ok": False, "http_status": status, "error": "response was not JSON"}
+    return {"ok": 200 <= status < 300, "http_status": status, "body": body}
+
+
+def _launchd_target(label: str) -> str:
+    return f"gui/{os.getuid()}/{label}"
+
+
+def _launch_agent_path(label: str) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+
+def _launchctl(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["launchctl", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _start_launchd_service(label: str, plist_path: Path) -> dict[str, Any] | None:
+    if sys.platform != "darwin" or shutil.which("launchctl") is None:
+        return None
+    status = launchd_service_status(label)
+    if status["status"] != "loaded":
+        if not plist_path.is_file():
+            return None
+        bootstrap = _launchctl("bootstrap", f"gui/{os.getuid()}", str(plist_path))
+        if bootstrap.returncode != 0:
+            raise OpsError(
+                f"could not bootstrap {label}: {bootstrap.stderr.strip() or bootstrap.stdout.strip()}"
+            )
+    kickstart = _launchctl("kickstart", "-k", _launchd_target(label))
+    if kickstart.returncode != 0:
+        raise OpsError(
+            f"could not kickstart {label}: {kickstart.stderr.strip() or kickstart.stdout.strip()}"
+        )
+    return {"label": label, "mode": "launchd", "plist": str(plist_path)}
 
 
 def _require_physical_authorization(action: str, authorized: bool) -> None:

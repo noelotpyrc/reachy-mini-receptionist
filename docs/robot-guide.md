@@ -12,16 +12,9 @@ Use this path for live receptionist tests unless explicitly comparing against le
 Run from m1max:
 
 ```bash
-RELEASE=/Users/leon/projects/reachy_mini_receptionist_release_749ee18_frozen
-cd "$RELEASE"
-export REACHY_REPO="$RELEASE"
-export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"
-export PYTHONPATH="$RELEASE/src"
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli status
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
-  --confirm-physical start-session --record-audio --capture-vision
-"$OFFICIAL_RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli \
-  --confirm-physical stop-session
+~/.local/bin/reception-prod status
+~/.local/bin/reception-prod --confirm-physical start-session
+~/.local/bin/reception-prod --confirm-physical stop-session
 ```
 
 The wrapper owns the normal live-test lifecycle:

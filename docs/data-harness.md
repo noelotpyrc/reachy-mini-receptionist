@@ -112,10 +112,12 @@ Re-derivable; inherits Cat-2's errors. Convenient for monitoring / debugging log
    fix is to record explicit capture/read/playback-submit timestamps and sequence numbers.
 5. **Camera timestamps are runner-observed, not sensor PTS.** The SDK still returns pixels without a
    camera timestamp. The video sidecar is the current practical alignment source.
-6. **Production health is incomplete.** OPS does not yet prove Hermes/provider reachability,
-   camera/microphone progress, artifact growth, or disk thresholds.
-7. **Continuous recording lacks an approved privacy/retention policy.** Raw clinic audio/video must
-   not become a production default until access and retention are decided.
+6. **Production health requires deployment acceptance.** OPS now reports Hermes/provider,
+   camera/microphone progress, managed services, recording age, and disk headroom. The checks still
+   need validation from the activated m1max release and a controlled media-fault test.
+7. **Recording policy is defined.** Production keeps audio and derived vision diagnostics, defaults
+   raw MKV video off, and reports audio/video older than 30 days for reviewed cleanup. The reminder
+   never deletes automatically.
 
 ## Takeaway + instrumentation priority
 - **Cat-1 is the reusable asset; Cat-2/3 are disposable** (re-derivable from Cat-1 + a model).

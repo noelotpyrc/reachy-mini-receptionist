@@ -216,6 +216,39 @@ def latest_run_cmd(ctx: click.Context) -> None:
     _emit(ctx, result)
 
 
+@cli.command("recording-retention")
+@click.option("--days", type=click.IntRange(min=1), default=None)
+@click.pass_context
+def recording_retention_cmd(ctx: click.Context, days: int | None) -> None:
+    """Report raw audio/video files eligible for reviewed cleanup; never delete."""
+
+    config = _config(ctx)
+    retention_days = days or config.recording_retention_days
+    report = ops_core.recording_retention_report(
+        config.artifact_root,
+        retention_days=retention_days,
+    )
+    _emit(
+        ctx,
+        ActionResult(
+            action="recording-retention",
+            status="cleanup_due" if report["due_file_count"] else "ok",
+            machine_verification=(
+                ops_core.Verification(
+                    "recording_age",
+                    "due" if report["due_file_count"] else "ok",
+                    {
+                        "retention_days": retention_days,
+                        "due_file_count": report["due_file_count"],
+                        "due_bytes": report["due_bytes"],
+                    },
+                ),
+            ),
+            data=report,
+        ),
+    )
+
+
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def preflight(ctx: click.Context) -> None:
@@ -304,7 +337,7 @@ def _emit_text(result: ActionResult) -> None:
         click.echo(f"  error: {error}", err=True)
     if result.data:
         for key, value in result.data.items():
-            if key in {"backend", "runner", "robot"}:
+            if key in {"backend", "runner", "robot", "external_services", "storage"}:
                 continue
             click.echo(f"  {key}: {_compact(value)}")
 
