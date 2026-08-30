@@ -397,6 +397,28 @@ def test_required_managed_backend_rejects_unmanaged_listener(tmp_path, monkeypat
     assert "unmanaged process" in result.errors[0]
 
 
+def test_required_managed_backend_rejects_missing_launchd_service(tmp_path, monkeypatch):
+    config = ops_core.OpsConfig(
+        **{**make_config(tmp_path).__dict__, "require_managed_services": True}
+    )
+    script = config.repo_path / "scripts" / "m1max" / "run_s2s_backend.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setattr(ops_core, "_port_open", lambda *args, **kwargs: False)
+    monkeypatch.setattr(ops_core, "_find_pids", lambda pattern: [])
+    monkeypatch.setattr(
+        ops_core,
+        "launchd_service_status",
+        lambda label: {"label": label, "status": "not_loaded"},
+    )
+    monkeypatch.setattr(ops_core, "_start_launchd_service", lambda *args: None)
+
+    result = ops_core.start_backend(config)
+
+    assert result.status == "failed"
+    assert "required launchd service is unavailable" in result.errors[0]
+
+
 def test_recording_retention_cli_is_report_only(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     old_audio = config.artifact_root / "audio" / "old.wav"

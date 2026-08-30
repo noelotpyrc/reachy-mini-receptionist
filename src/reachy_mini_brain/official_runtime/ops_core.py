@@ -418,28 +418,34 @@ def start_backend(config: OpsConfig) -> ActionResult:
         return ActionResult(action="backend.start", status="failed", errors=tuple(path_errors))
 
     service_plist = _launch_agent_path(config.s2s_service_label)
-    if config.require_managed_services or service_plist.exists():
+    if config.require_managed_services:
         service_start = _start_launchd_service(config.s2s_service_label, service_plist)
-        if service_start is not None:
-            deadline = time.monotonic() + config.backend_start_timeout_s
-            while time.monotonic() < deadline:
-                if _port_open(config.s2s_host, config.s2s_port):
-                    current = backend_status(config)
-                    return ActionResult(
-                        action="backend.start",
-                        status="ok",
-                        changed=True,
-                        machine_verification=current.machine_verification,
-                        data={**current.data, "managed_start": service_start},
-                    )
-                time.sleep(1)
+        if service_start is None:
             return ActionResult(
                 action="backend.start",
                 status="failed",
-                changed=True,
-                data={"managed_start": service_start},
-                errors=("managed backend did not become ready before timeout",),
+                changed=False,
+                errors=(f"required launchd service is unavailable: {config.s2s_service_label}",),
             )
+        deadline = time.monotonic() + config.backend_start_timeout_s
+        while time.monotonic() < deadline:
+            if _port_open(config.s2s_host, config.s2s_port):
+                current = backend_status(config)
+                return ActionResult(
+                    action="backend.start",
+                    status="ok",
+                    changed=True,
+                    machine_verification=current.machine_verification,
+                    data={**current.data, "managed_start": service_start},
+                )
+            time.sleep(1)
+        return ActionResult(
+            action="backend.start",
+            status="failed",
+            changed=True,
+            data={"managed_start": service_start},
+            errors=("managed backend did not become ready before timeout",),
+        )
 
     config.log_dir.mkdir(parents=True, exist_ok=True)
     logfile = config.log_dir / f"s2s-backend-live-{_timestamp()}.log"
