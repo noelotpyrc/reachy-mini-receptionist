@@ -112,9 +112,10 @@ Re-derivable; inherits Cat-2's errors. Convenient for monitoring / debugging log
    fix is to record explicit capture/read/playback-submit timestamps and sequence numbers.
 5. **Camera timestamps are runner-observed, not sensor PTS.** The SDK still returns pixels without a
    camera timestamp. The video sidecar is the current practical alignment source.
-6. **Production health requires deployment acceptance.** OPS now reports Hermes/provider,
-   camera/microphone progress, managed services, recording age, and disk headroom. The checks still
-   need validation from the activated m1max release and a controlled media-fault test.
+6. **Production health passed deployment acceptance.** OPS reports Hermes/provider,
+   camera/microphone progress, managed services, recording age, and disk headroom. Frozen release
+   `4c28a3e` passed first/second startup checks and controlled media-loss fail-stop acceptance on
+   2026-08-30.
 7. **Recording policy is defined.** Production keeps audio and derived vision diagnostics, defaults
    raw MKV video off, and reports audio/video older than 30 days for reviewed cleanup. The reminder
    never deletes automatically.

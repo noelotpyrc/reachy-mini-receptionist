@@ -189,10 +189,10 @@ typeâ†’behavior map. Refactoring `ReceptionPolicy` into per-behavior policies â€
 - Additional listening controls such as A/B overlap, loop selected range, and keyboard shortcuts.
 
 ### 6a. Media liveness and terminal WebRTC recovery  `[~]`
-**Status:** fail-stop implementation, offline tests, healthy-run threshold baselining, and frozen
-m1max deployment at `3449f8e` are complete. The 2026-08-27 normal-stop correction transitions
-liveness to `stopping` before output drain so timed shutdown cannot be mislabeled `audio_stale`.
-A controlled live interruption and normal timed-stop acceptance remain production-blocking.
+**Status:** fail-stop implementation, offline tests, healthy-run threshold baselining, frozen
+m1max deployment, and controlled media-loss acceptance are complete. The 2026-08-27 normal-stop
+correction transitions liveness to `stopping` before output drain so timed shutdown cannot be
+mislabeled `audio_stale`. Normal timed-stop acceptance remains.
 
 **Goal:** A live PID must not be reported healthy after audio/video input has stopped. A terminal
 WebRTC disruption must either complete a safe fail-stop or, under a separately approved unattended
@@ -211,7 +211,7 @@ continued to report `ok` from PID existence. See `live-test-log.md` and
    current `180 s` startup, `5 s` heartbeat-file, and `8 s` source/event-loop defaults are based on
    four retained healthy m1max runs. Their maximum observed audio and video gaps were `0.484 s` and
    `4.216 s`, respectively. Frozen release `4c28a3e` passed first/second ordinary startup acceptance
-   in `112.301 s` and `9.827 s`; controlled live interruption acceptance remains required.
+   in `112.301 s` and `9.827 s`.
 3. **Implemented:** expose heartbeat/source ages through runner and aggregate status; a stale source
    changes active status to `faulting` before process teardown.
 4. **Implemented:** a detached per-run supervisor owns the live child, graceful stop/hard-stop
@@ -219,9 +219,10 @@ continued to report `ok` from PID existence. See `live-test-log.md` and
    retirement, and retained terminal status. The backend remains warm.
 5. **Deferred by design:** keep bounded restart behind an explicit recovery policy. A restart must stop the old session,
    use a new run ID linked to the failed run, cap attempts with backoff, and fail-stop on recurrence.
-6. **Offline complete:** tests cover startup grace, required/optional source starvation, event-loop
+6. **Complete:** tests cover startup grace, required/optional source starvation, event-loop
    starvation, artifact close/interruption classification, bounded cleanup, and OPS fault status.
-   Run one controlled live WebRTC interruption test after user confirmation.
+   Controlled run `official-live-20260830-085651` released robot media after `ready`; the supervisor
+   faulted on `audio_stale`, closed artifacts, cleaned up the robot, and created no replacement run.
 
 **Done when:** status cannot remain `ok` beyond the configured liveness bound; fail-stop leaves no
 runner/media ownership leak and preserves diagnosable artifacts; any approved restart creates

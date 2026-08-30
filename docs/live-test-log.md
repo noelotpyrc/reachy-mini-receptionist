@@ -10,6 +10,34 @@ Each entry uses three buckets:
 
 ---
 
+## 2026-08-30 - controlled media-loss fail-stop acceptance
+
+**Run:** `official-live-20260830-085651`
+**Setup:** frozen release `4c28a3e`, production door-v4 and broker-v1 configuration, raw audio and
+derived vision capture enabled, raw video and Rerun streaming disabled.
+
+### Good
+
+- The run reached `ready` with advancing microphone and camera sequences and zero heartbeat-writer
+  errors before fault injection.
+- Robot media was deliberately released through `/api/media/release` at `1788094639.854`. Audio and
+  video sequences stopped, then the supervisor recorded `media_liveness_fault` / `audio_stale` after
+  the configured eight-second source threshold.
+- Artifacts closed `8.843 s` after injection. Terminal status and bounded cleanup completed after
+  `12.586 s`; the child exited with return code zero and no forced kill.
+- No runner or replacement session remained. Media was released, motors were disabled, no move was
+  active, and Hermes/S2S remained healthy.
+- Aggregate status retained the failure as `degraded` / `stopped_faulted`, preserving the fault for
+  operator review rather than silently returning to `ok`.
+
+### Remaining
+
+- This accepts the default fail-stop path. Automatic physical-runner restart remains deliberately
+  disabled and was not tested.
+- Normal timed-stop acceptance remains separate.
+
+---
+
 ## 2026-08-07 - WebRTC reset left a live PID with no media
 
 **Run:** `official-live-20260807-110807`

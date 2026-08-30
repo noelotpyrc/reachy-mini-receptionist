@@ -49,8 +49,8 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 | Recording integrity | Audio/video/capture finalize and retain diagnosable timing | **Accepted limitation** | Fixed-`5 FPS` MKVs play faster than wall time, but frame order is intact and JSONL sidecars retain the timing source of truth used by replay/Rerun. Use MKVs only for qualitative review; map a reported player position to frame index and then sidecar `ts`. |
 | Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Partial / acceptance pending** | The detached session supervisor now records whether the runner-owned manifest closed cleanly or remained interrupted, including open artifact paths. A recorder sidecar is still required if hard-kill finalization rather than explicit interruption is required. |
 | Privacy | Approved raw-data policy, access boundaries, and retention | **Pass / active** | Production records audio and derived vision diagnostics but defaults raw MKV video off. Audio/video older than 30 days are reported daily for reviewed cleanup; no automatic deletion is allowed. Artifacts remain private to the local operator account. |
-| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Pass for assisted use** | Aggregate status validates the OpenRouter key without a model call and reports Hermes, S2S, launchd, disk headroom, recording age, runner heartbeats, and media faults. Controlled live media-fault acceptance remains. |
-| Supervision | Services recover safely after machine/process or media failure | **Pass for non-physical services** | Hermes and S2S launchd `KeepAlive` restart was verified on 2026-08-29 with new PIDs and healthy ports. The physical runner remains operator-authorized and is never auto-restarted. |
+| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Pass / accepted** | Aggregate status validates the OpenRouter key without a model call and reports Hermes, S2S, launchd, disk headroom, recording age, runner heartbeats, and media faults. Controlled robot-media loss faulted and cleaned up within the configured bound on 2026-08-30. |
+| Supervision | Services recover safely after machine/process or media failure | **Pass / fail-stop accepted** | Hermes and S2S launchd `KeepAlive` restart was verified on 2026-08-29. Controlled media loss stopped and cleaned up the physical runner without automatic restart on 2026-08-30. |
 | Remote access | Authenticated, auditable, least-privilege control | **Blocked for non-technical users** | SSH/Tailscale plus OPS is acceptable for assisted production. No remote operations API or operator UI exists yet. |
 | Emergency handling | Idempotent remote stop and documented local fallback | **Pass for assisted use** | `emergency-stop` exposes the existing bounded shutdown path, keeps backend services warm, and has documented timeout, verification, repeat, and local-m1max fallback behavior. Live execution is covered by release validation rather than a separate human gate. |
 
@@ -128,7 +128,16 @@ detached supervisor monitors those signals, terminates a stale child, inspects a
 performs bounded robot cleanup, retains terminal status, and retires the active state pointer. The
 initial `180 s` startup, `5 s` heartbeat-file, and `8 s` source/event-loop thresholds are
 configurable. Four retained healthy m1max runs had maximum audio and video gaps of `0.484 s` and
-`4.216 s`; a controlled live interruption remains required.
+`4.216 s`.
+
+**Controlled media-loss acceptance (2026-08-30):** run `official-live-20260830-085651` was allowed
+to reach `ready` with advancing audio/video, then robot media was deliberately released through the
+daemon API at `1788094639.854`. Both source sequences stopped; the supervisor recorded
+`media_liveness_fault` / `audio_stale`, and the runner closed its artifacts `8.843 s` after
+injection. The terminal record and bounded cleanup completed after `12.586 s`, with no forced kill.
+No runner or replacement session remained; robot media was released, motors were disabled, no move
+was active, and Hermes/S2S remained healthy. Aggregate status retained the fault as
+`degraded` / `stopped_faulted`, as designed.
 
 **Startup-liveness correction (2026-08-30):** non-ready phases now receive the full startup grace
 before the supervisor reports `startup_stalled`; the strict heartbeat-file threshold begins after
@@ -164,10 +173,10 @@ Recovery has two policy modes:
    parent/recovery link. Limit attempts and use backoff. Any repeated liveness failure must fall
    back to fail-stop; parallel runners and in-place partial media reconstruction are forbidden.
 
-Acceptance requires offline starvation tests plus one controlled live WebRTC interruption. Status
-must fault within the configured bound; fail-stop must leave no live runner and finalize artifacts;
-restart mode must create one healthy replacement run with separate artifacts and no duplicate
-policy speech caused by stale state.
+Fail-stop acceptance now includes offline starvation tests and controlled live robot-media loss.
+Status faulted within the configured bound, left no live runner, and finalized artifacts. Bounded
+restart remains deferred and was not exercised; if later approved, it must create one healthy
+replacement run with separate artifacts and no duplicate policy speech caused by stale state.
 
 Run `official-live-20260806-114813` used the clean release with raw audio, video, vision capture,
 Grounding DINO door observations, and Rerun streaming disabled.
@@ -195,6 +204,9 @@ Frozen release `4c28a3e` completed release and startup acceptance on 2026-08-30:
   new finding.
 - Two ordinary OPS starts reached `ready` with advancing microphone and camera heartbeats; both
   normal stops closed artifacts, released media, disabled motors, and left Hermes/S2S healthy.
+- Controlled media-loss run `official-live-20260830-085651` faulted on `audio_stale`, closed
+  artifacts, completed cleanup without a forced kill, retained a diagnosable terminal status, and
+  did not create a replacement physical run.
 
 The non-live release build at `749ee18` completed on 2026-08-06:
 
