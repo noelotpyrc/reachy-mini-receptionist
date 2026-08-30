@@ -14,7 +14,7 @@ import click
 
 from .perception import GESTURE_RUNNING_MODES, WAVE_DETECTION_MODES
 from .events import JsonlEventSink
-from .visitor_trigger_profiles import DEFAULT_VISITOR_TRIGGER_PROFILE, VISITOR_TRIGGER_PROFILE_NAMES
+from .visitor_trigger_profiles import LEGACY_VISITOR_TRIGGER_PROFILE, VISITOR_TRIGGER_PROFILE_NAMES
 
 
 class _EmptyPersonDetector:
@@ -284,7 +284,7 @@ def handle_replay_command(args: Any) -> int:
     "--visitor-trigger-profile",
     envvar="RECEPTION_VISITOR_TRIGGER_PROFILE",
     type=click.Choice(VISITOR_TRIGGER_PROFILE_NAMES),
-    default=DEFAULT_VISITOR_TRIGGER_PROFILE,
+    default=LEGACY_VISITOR_TRIGGER_PROFILE,
     show_default=True,
     help="Versioned greet/goodbye trigger implementation.",
 )

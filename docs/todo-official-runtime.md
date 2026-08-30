@@ -298,6 +298,12 @@ without stacked greet/goodbye policy speech.
 **Steps:** tune wave-chat thinking cue, greet/goodbye pulse, startup ready cue; keep
 movement **non-overlapping with robot speech** (overlap reproduced choppiness in earlier
 live tests — see `docs/live-test-log.md` 06-14/06-15).
+**Deferred movement-verification telemetry:** log each antenna's requested target and timestamp,
+sample both reported positions before/during/after the cue, and classify each side as
+`reached` / `stalled` / `bus_fault` / `unknown` using bounded target-error and timeout rules.
+Also retain daemon control-loop and per-motor hardware-error status with the cue. This is encoder
+feedback, not proof that a loose physical antenna attachment moved; keep visual confirmation for
+that case. Treat this as a later reliability/diagnosis improvement, not a current promotion gate.
 **Done when:** movement reads as natural per live feedback, with no speech-overlap choppiness.
 **Constraints:** live + user present — confirm first. Diagnose timing from #6's run summary,
 not from guesses.

@@ -18,6 +18,7 @@ from reachy_mini_brain.official_runtime.visitor_trigger_profiles import (
     DOOR_V2_20260809,
     DOOR_V3_20260825,
     DOOR_V4_20260827,
+    LEGACY_VISITOR_TRIGGER_PROFILE,
     VISITOR_V1_20260802,
     resolve_visitor_trigger_profile,
 )
@@ -389,13 +390,14 @@ def test_approach_tracker_bridges_unambiguous_bytetrack_gaps(monkeypatch) -> Non
 
 
 def test_versioned_profile_metadata_contains_complete_evaluated_configuration() -> None:
-    legacy = resolve_visitor_trigger_profile(DEFAULT_VISITOR_TRIGGER_PROFILE).metadata(smooth=2)
+    legacy = resolve_visitor_trigger_profile(LEGACY_VISITOR_TRIGGER_PROFILE).metadata(smooth=2)
     visitor = resolve_visitor_trigger_profile(VISITOR_V1_20260802).metadata()
     door_v1 = resolve_visitor_trigger_profile(DOOR_V1_20260805).metadata()
     door_v2 = resolve_visitor_trigger_profile(DOOR_V2_20260809).metadata()
     door_v3 = resolve_visitor_trigger_profile(DOOR_V3_20260825).metadata()
     door_v4 = resolve_visitor_trigger_profile(DOOR_V4_20260827).metadata()
 
+    assert DEFAULT_VISITOR_TRIGGER_PROFILE == DOOR_V4_20260827
     assert legacy == {
         "name": "legacy",
         "implementation": "legacy_area_v1",
@@ -457,7 +459,7 @@ def test_profile_can_switch_to_visitor_and_roll_back_to_legacy(monkeypatch) -> N
             return detections
 
     monkeypatch.setitem(sys.modules, "supervision", types.SimpleNamespace(ByteTrack=FakeByteTrack))
-    legacy_profile = resolve_visitor_trigger_profile(DEFAULT_VISITOR_TRIGGER_PROFILE)
+    legacy_profile = resolve_visitor_trigger_profile(LEGACY_VISITOR_TRIGGER_PROFILE)
     visitor_profile = resolve_visitor_trigger_profile(VISITOR_V1_20260802)
 
     first = build_approach_tracker((100, 100), profile=legacy_profile)
@@ -478,7 +480,7 @@ def test_legacy_profile_preserves_original_area_trigger_behavior(monkeypatch) ->
     monkeypatch.setitem(sys.modules, "supervision", types.SimpleNamespace(ByteTrack=FakeByteTrack))
     tracker = build_approach_tracker(
         (100, 100),
-        profile=resolve_visitor_trigger_profile(DEFAULT_VISITOR_TRIGGER_PROFILE),
+        profile=resolve_visitor_trigger_profile(LEGACY_VISITOR_TRIGGER_PROFILE),
     )
     events = []
     for index, area in enumerate([0.04, 0.08, 0.11, 0.06, 0.05]):

@@ -40,7 +40,7 @@ from .robot_io import ReachyAudioSink, ReachyAudioSource, ReachyCameraFrameProvi
 from .s2s_realtime import S2SRealtimeHandler
 from .stream_runtime import CompositeRuntimeObserver, OfficialStyleStreamRuntime
 from .visitor_trigger_profiles import (
-    DEFAULT_VISITOR_TRIGGER_PROFILE,
+    LEGACY_VISITOR_TRIGGER_PROFILE,
     VISITOR_TRIGGER_PROFILE_NAMES,
     resolve_visitor_trigger_profile,
 )
@@ -114,7 +114,7 @@ def _instruction_provenance(instructions: str, *, source: str) -> dict[str, Any]
     "--visitor-trigger-profile",
     envvar="RECEPTION_VISITOR_TRIGGER_PROFILE",
     type=click.Choice(VISITOR_TRIGGER_PROFILE_NAMES),
-    default=DEFAULT_VISITOR_TRIGGER_PROFILE,
+    default=LEGACY_VISITOR_TRIGGER_PROFILE,
     show_default=True,
     help="Versioned greet/goodbye trigger implementation.",
 )

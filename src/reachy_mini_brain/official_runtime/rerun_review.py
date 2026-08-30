@@ -922,7 +922,6 @@ def _derive_turns(rows: list[TimelineRow]) -> list[ConversationTurn]:
             for row in rows
             if row.ts >= transcript_row.ts and (next_transcript is None or row.ts < next_transcript.ts)
         ]
-        following = [row for row in rows if row.ts >= transcript_row.ts]
         thinking = _first(turn_window, _is_thinking_started)
         first_audio = _first(turn_window, _is_audio_started)
         response_id = _response_id_from_row(first_audio)
@@ -1156,7 +1155,7 @@ def _render_video_to_rerun(rr: Any, review: RunReview) -> None:
                     else _nominal_video_ts(entry, review, decoded_frames)
                 )
                 _rr_set_time(rr, frame_ts)
-                _rr_log_image(rr, "camera/image", _video_frame_to_rgb(cv2, frame))
+                _rr_log_video_frame(rr, "camera/image", cv2, frame)
                 decoded_frames += 1
         finally:
             release = getattr(cap, "release", None)
@@ -1320,6 +1319,21 @@ def _rr_log_image(rr: Any, entity: str, frame: Any) -> None:
     image = getattr(rr, "Image", None)
     value = image(frame) if callable(image) else frame
     rr.log(entity, value)
+
+
+def _rr_log_video_frame(rr: Any, entity: str, cv2: Any, frame: Any) -> None:
+    encoded_image = getattr(rr, "EncodedImage", None)
+    imencode = getattr(cv2, "imencode", None)
+    if callable(encoded_image) and callable(imencode):
+        quality_key = getattr(cv2, "IMWRITE_JPEG_QUALITY", 1)
+        ok, encoded = imencode(".jpg", frame, [quality_key, 80])
+        if ok:
+            rr.log(
+                entity,
+                encoded_image(contents=encoded.tobytes(), media_type="image/jpeg"),
+            )
+            return
+    _rr_log_image(rr, entity, _video_frame_to_rgb(cv2, frame))
 
 
 def _int_or_none(value: Any) -> int | None:

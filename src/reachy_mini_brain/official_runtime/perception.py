@@ -19,7 +19,7 @@ from .events import EventSink, RuntimeEvent
 from .inference_scheduler import inference_guard
 from .visitor_triggers import HeightSignalConfig, TrackBox, VisitorTriggerConfig, VisitorTriggerEngine
 from .visitor_trigger_profiles import (
-    DEFAULT_VISITOR_TRIGGER_PROFILE,
+    LEGACY_VISITOR_TRIGGER_PROFILE,
     VisitorTriggerProfile,
     resolve_visitor_trigger_profile,
 )
@@ -508,7 +508,7 @@ class PerceptionPipeline:
         wave_detection_mode: str = "open_palm",
         event_sink: EventSink | None = None,
         clock: Callable[[], float] = time.time,
-        visitor_trigger_profile: str = DEFAULT_VISITOR_TRIGGER_PROFILE,
+        visitor_trigger_profile: str = LEGACY_VISITOR_TRIGGER_PROFILE,
         observation_mode: str = "runtime",
         observation_run_id: str | None = None,
         track_trail_window_s: float = 3.0,

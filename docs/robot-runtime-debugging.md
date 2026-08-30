@@ -30,6 +30,28 @@ of every 20ms. This can make playback sound choppy even when the WAV, robot audi
 good enough. Robot-side runtime state, movement/wobbling, and network jitter can still be secondary
 contributors, but check sender pacing first.
 
+## Ambient Noise And Server VAD
+
+An August 28, 2026 comparison suggests elevated ambient noise can disrupt server-VAD segmentation even
+when the recorded speech remains intelligible to STT:
+
+- `official-live-20260828-134642` recorded the later user phrases, and direct Parakeet transcription
+  recovered them, but the live backend emitted only one speech-start/stop pair and one final transcript.
+- After the nearby window was closed, `official-live-20260828-142205` used the same runtime setup and
+  emitted 11 complete speech-start/stop and transcript cycles.
+- The failed run's low-level input-audio floor was approximately 6-7 dB higher than the quiet repeat.
+- Replaying the failed input through the unchanged VAD reproduced the missed turns; resetting the VAD
+  state during an offline experiment recovered additional segments.
+
+This is evidence for a noise-sensitive, stateful VAD failure mode, not yet proof that ambient noise is
+the sole cause. Keep the raw input WAV and realtime events, compare per-frame VAD probabilities under
+controlled noisy and quiet conditions, and confirm that direct STT can recover any allegedly missed
+speech before changing VAD thresholds or reset behavior.
+
+The failed run's two `session.created` events were expected: policy greet/goodbye TTS used the startup
+connection, so the runtime opened a fresh S2S connection at the visitor-conversation boundary. The
+second connection successfully handled the opener and first user turn; it was not a failed reconnect.
+
 ## Runtime Access Layers
 
 ### 1. Daemon REST API

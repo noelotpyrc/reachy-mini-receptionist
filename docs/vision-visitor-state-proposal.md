@@ -145,9 +145,9 @@ Offline acceptance on 2026-08-09 removed both false events from frames `130-220`
 
 ### Presence-Overlap Greet and Direct Goodbye Contract
 
-The opt-in `door-v4-20260827` profile changes the trigger contract while retaining the v3
-sequential door observer and the v2 close-person protections. Earlier profiles remain unchanged as
-rollback targets.
+The `door-v4-20260827` profile changes the trigger contract while retaining the v3 sequential door
+observer and the v2 close-person protections. It became the managed-runtime default on 2026-08-28;
+earlier profiles remain unchanged as explicit rollback targets.
 
 1. **Greet:** the first eligible observation of a logical person track arms a `1.5 s` candidate.
    Three consecutive observations with person-door overlap of at least `0.10` emit

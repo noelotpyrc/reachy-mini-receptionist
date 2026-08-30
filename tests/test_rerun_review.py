@@ -201,6 +201,56 @@ def test_render_review_to_rerun_places_video_frames_on_sidecar_timestamps(monkey
     assert "camera/warnings" not in [call[1] for call in calls if call[0] == "log"]
 
 
+def test_render_review_to_rerun_jpeg_encodes_video_frames(monkeypatch, tmp_path: Path) -> None:
+    run_root = _make_synthetic_video_run(tmp_path)
+    review = load_run_review(run_root)
+    calls: list[tuple[str, object]] = []
+
+    class FakeCapture:
+        def __init__(self, path: str) -> None:
+            self.frames = ["bgr-0", "bgr-1"]
+
+        def read(self) -> tuple[bool, object | None]:
+            if not self.frames:
+                return False, None
+            return True, self.frames.pop(0)
+
+        def release(self) -> None:
+            return None
+
+    class Encoded:
+        def __init__(self, value: bytes) -> None:
+            self.value = value
+
+        def tobytes(self) -> bytes:
+            return self.value
+
+    fake_rerun = types.SimpleNamespace(
+        init=lambda *args, **kwargs: None,
+        set_time=lambda *args, **kwargs: None,
+        log=lambda entity, value: calls.append((entity, value)),
+        TextLog=lambda text: ("text", text),
+        Scalars=lambda value: ("scalars", value),
+        Image=lambda frame: ("image", frame),
+        EncodedImage=lambda **kwargs: ("encoded", kwargs),
+    )
+    fake_cv2 = types.SimpleNamespace(
+        VideoCapture=FakeCapture,
+        IMWRITE_JPEG_QUALITY=7,
+        imencode=lambda extension, frame, options: (True, Encoded(f"jpeg-{frame}".encode())),
+    )
+    monkeypatch.setitem(sys.modules, "rerun", fake_rerun)
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+    render_review_to_rerun(review)
+
+    image_values = [value for entity, value in calls if entity == "camera/image"]
+    assert image_values == [
+        ("encoded", {"contents": b"jpeg-bgr-0", "media_type": "image/jpeg"}),
+        ("encoded", {"contents": b"jpeg-bgr-1", "media_type": "image/jpeg"}),
+    ]
+
+
 def test_render_review_to_rerun_falls_back_to_capture_timestamps_and_warns(monkeypatch, tmp_path: Path) -> None:
     run_root = _make_synthetic_video_run_with_capture_fallback(tmp_path)
     review = load_run_review(run_root)

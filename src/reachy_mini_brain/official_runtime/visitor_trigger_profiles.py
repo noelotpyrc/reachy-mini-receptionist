@@ -14,14 +14,15 @@ from .door_policy import (
 from .visitor_triggers import HeightSignalConfig, VisitorTriggerConfig
 
 
-DEFAULT_VISITOR_TRIGGER_PROFILE = "legacy"
+LEGACY_VISITOR_TRIGGER_PROFILE = "legacy"
 VISITOR_V1_20260802 = "visitor-v1-20260802"
 DOOR_V1_20260805 = "door-v1-20260805"
 DOOR_V2_20260809 = "door-v2-20260809"
 DOOR_V3_20260825 = "door-v3-20260825"
 DOOR_V4_20260827 = "door-v4-20260827"
+DEFAULT_VISITOR_TRIGGER_PROFILE = DOOR_V4_20260827
 VISITOR_TRIGGER_PROFILE_NAMES = (
-    DEFAULT_VISITOR_TRIGGER_PROFILE,
+    LEGACY_VISITOR_TRIGGER_PROFILE,
     VISITOR_V1_20260802,
     DOOR_V1_20260805,
     DOOR_V2_20260809,
@@ -79,8 +80,8 @@ class VisitorTriggerProfile:
 
 
 _PROFILES = {
-    DEFAULT_VISITOR_TRIGGER_PROFILE: VisitorTriggerProfile(
-        name=DEFAULT_VISITOR_TRIGGER_PROFILE,
+    LEGACY_VISITOR_TRIGGER_PROFILE: VisitorTriggerProfile(
+        name=LEGACY_VISITOR_TRIGGER_PROFILE,
         implementation="legacy_area_v1",
         parameters=dict(_LEGACY_PARAMETERS),
     ),
