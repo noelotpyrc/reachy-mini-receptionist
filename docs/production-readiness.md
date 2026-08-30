@@ -124,9 +124,16 @@ detect:
 live child publishes microphone, camera, and event-loop heartbeats independent of recording. A
 detached supervisor monitors those signals, terminates a stale child, inspects artifact closure,
 performs bounded robot cleanup, retains terminal status, and retires the active state pointer. The
-initial `120 s` startup, `5 s` heartbeat-file, and `8 s` source/event-loop thresholds are
+initial `180 s` startup, `5 s` heartbeat-file, and `8 s` source/event-loop thresholds are
 configurable. Four retained healthy m1max runs had maximum audio and video gaps of `0.484 s` and
 `4.216 s`; a controlled live interruption remains required.
+
+**Startup-liveness correction (2026-08-30):** non-ready phases now receive the full startup grace
+before the supervisor reports `startup_stalled`; the strict heartbeat-file threshold begins after
+`ready`. This prevents synchronous native model initialization from bypassing startup grace. The
+heartbeat writer also retries filesystem failures instead of terminating its thread, logs the first
+and every tenth consecutive failure, and reports cumulative write errors in its next successful
+snapshot. The default startup grace is `180 s`, based on a measured valid startup of `113.2 s`.
 
 **Normal-stop correction (2026-08-27):** when a timed input source ends, the live runtime now enters
 `stopping` before its bounded output-drain and artifact-finalization period. The supervisor continues

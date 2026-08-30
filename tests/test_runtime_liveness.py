@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,77 @@ def test_supervisor_allows_startup_grace_before_first_heartbeat() -> None:
         supervisor_started_monotonic=0.0,
         thresholds=thresholds,
     ) == "heartbeat_missing"
+
+
+def test_supervisor_allows_stale_starting_heartbeat_until_startup_deadline() -> None:
+    heartbeat = {
+        "updated_monotonic": 1.0,
+        "phase": "starting",
+    }
+    thresholds = HealthThresholds(startup_grace_s=120.0, heartbeat_stale_s=5.0)
+
+    assert evaluate_heartbeat(
+        heartbeat,
+        now_monotonic=119.0,
+        supervisor_started_monotonic=0.0,
+        thresholds=thresholds,
+    ) is None
+    assert evaluate_heartbeat(
+        heartbeat,
+        now_monotonic=121.0,
+        supervisor_started_monotonic=0.0,
+        thresholds=thresholds,
+    ) == "startup_stalled:starting"
+
+
+def test_supervisor_faults_on_stale_ready_heartbeat() -> None:
+    heartbeat = {
+        "updated_monotonic": 100.0,
+        "phase": "ready",
+        "event_loop_age_s": 0.1,
+        "audio": {"expected": False, "sequence": 0, "age_s": None},
+        "video": {"expected": False, "sequence": 0, "age_s": None},
+    }
+
+    assert evaluate_heartbeat(
+        heartbeat,
+        now_monotonic=106.0,
+        supervisor_started_monotonic=0.0,
+        thresholds=HealthThresholds(heartbeat_stale_s=5.0),
+    ) == "heartbeat_stale"
+
+
+def test_heartbeat_writer_recovers_from_transient_filesystem_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "heartbeat.json"
+    original_write_text = Path.write_text
+    attempts = 0
+
+    def flaky_write_text(target: Path, data: str, *args, **kwargs) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary write failure")
+        return original_write_text(target, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", flaky_write_text)
+    writer = HeartbeatWriter(
+        path,
+        RuntimeLiveness(run_id="live-test", audio_expected=False, video_expected=False),
+        interval_s=0.01,
+    )
+    writer.start()
+    deadline = time.monotonic() + 1.0
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    writer.close()
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert attempts >= 2
+    assert payload["heartbeat_writer"]["write_error_count"] == 1
+    assert "temporary write failure" in payload["heartbeat_writer"]["last_write_error"]
 
 
 def test_supervisor_faults_on_stale_required_source_only() -> None:

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeLiveness:
@@ -114,11 +118,15 @@ class HeartbeatWriter:
         self.interval_s = interval_s
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._status_lock = threading.Lock()
+        self._write_error_count = 0
+        self._consecutive_write_errors = 0
+        self._last_write_error: str | None = None
+        self._last_write_error_at: float | None = None
 
     def start(self) -> None:
         if self._thread is not None:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._write()
         self._thread = threading.Thread(
             target=self._run,
@@ -138,11 +146,45 @@ class HeartbeatWriter:
         while not self._stop.wait(self.interval_s):
             self._write()
 
-    def _write(self) -> None:
-        payload = json.dumps(self.liveness.snapshot(), indent=2) + "\n"
+    def _write(self) -> bool:
+        snapshot = self.liveness.snapshot()
+        snapshot["heartbeat_writer"] = self._writer_status()
+        payload = json.dumps(snapshot, indent=2) + "\n"
         temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
-        temporary.write_text(payload, encoding="utf-8")
-        os.replace(temporary, self.path)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(payload, encoding="utf-8")
+            os.replace(temporary, self.path)
+        except OSError as exc:
+            self._record_write_error(exc)
+            return False
+        with self._status_lock:
+            self._consecutive_write_errors = 0
+        return True
+
+    def _writer_status(self) -> dict[str, Any]:
+        with self._status_lock:
+            return {
+                "write_error_count": self._write_error_count,
+                "last_write_error": self._last_write_error,
+                "last_write_error_at": self._last_write_error_at,
+            }
+
+    def _record_write_error(self, exc: OSError) -> None:
+        with self._status_lock:
+            self._write_error_count += 1
+            self._consecutive_write_errors += 1
+            error_count = self._write_error_count
+            consecutive = self._consecutive_write_errors
+            self._last_write_error = repr(exc)
+            self._last_write_error_at = time.time()
+        if consecutive == 1 or consecutive % 10 == 0:
+            logger.warning(
+                "heartbeat write failed (%d total, %d consecutive): %r",
+                error_count,
+                consecutive,
+                exc,
+            )
 
 
 async def pulse_event_loop(liveness: RuntimeLiveness, *, interval_s: float = 0.5) -> None:

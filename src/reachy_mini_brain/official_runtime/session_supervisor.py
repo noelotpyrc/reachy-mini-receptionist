@@ -18,7 +18,7 @@ from .env import clean_gstreamer_environment
 
 @dataclass(frozen=True)
 class HealthThresholds:
-    startup_grace_s: float = 120.0
+    startup_grace_s: float = 180.0
     heartbeat_stale_s: float = 5.0
     source_stale_s: float = 8.0
     event_loop_stale_s: float = 8.0
@@ -39,12 +39,6 @@ def evaluate_heartbeat(
             return "heartbeat_missing"
         return None
 
-    updated = _number(heartbeat.get("updated_monotonic"))
-    if updated is None:
-        return "heartbeat_invalid"
-    if now_monotonic - updated > thresholds.heartbeat_stale_s:
-        return "heartbeat_stale"
-
     phase = str(heartbeat.get("phase") or "")
     if phase == "failed":
         return f"runtime_failed:{heartbeat.get('fault') or 'unknown'}"
@@ -54,6 +48,12 @@ def evaluate_heartbeat(
         if startup_age > thresholds.startup_grace_s:
             return f"startup_stalled:{phase or 'unknown'}"
         return None
+
+    updated = _number(heartbeat.get("updated_monotonic"))
+    if updated is None:
+        return "heartbeat_invalid"
+    if now_monotonic - updated > thresholds.heartbeat_stale_s:
+        return "heartbeat_stale"
 
     loop_age = _number(heartbeat.get("event_loop_age_s"))
     if loop_age is None or loop_age > thresholds.event_loop_stale_s:

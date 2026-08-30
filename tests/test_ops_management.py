@@ -249,12 +249,14 @@ def test_ops_config_defaults_to_door_v4(monkeypatch):
 
 
 def test_ops_config_uses_baselined_media_liveness_thresholds(monkeypatch):
+    monkeypatch.delenv("MEDIA_STARTUP_GRACE_S", raising=False)
     monkeypatch.delenv("MEDIA_HEARTBEAT_STALE_S", raising=False)
     monkeypatch.delenv("MEDIA_SOURCE_STALE_S", raising=False)
     monkeypatch.delenv("EVENT_LOOP_STALE_S", raising=False)
 
     config = ops_core.OpsConfig.from_env()
 
+    assert config.media_startup_grace_s == 180.0
     assert config.media_heartbeat_stale_s == 5.0
     assert config.media_source_stale_s == 8.0
     assert config.event_loop_stale_s == 8.0

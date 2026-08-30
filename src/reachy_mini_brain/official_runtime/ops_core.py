@@ -89,7 +89,7 @@ class OpsConfig:
     rerun_jpeg_quality: int = 80
     rerun_queue_size: int = 3
     media_heartbeat_interval_s: float = 1.0
-    media_startup_grace_s: float = 120.0
+    media_startup_grace_s: float = 180.0
     media_heartbeat_stale_s: float = 5.0
     media_source_stale_s: float = 8.0
     event_loop_stale_s: float = 8.0
@@ -172,7 +172,7 @@ class OpsConfig:
             rerun_jpeg_quality=int(os.environ.get("RECEPTION_RERUN_JPEG_QUALITY", "80")),
             rerun_queue_size=int(os.environ.get("RECEPTION_RERUN_QUEUE_SIZE", "3")),
             media_heartbeat_interval_s=float(os.environ.get("MEDIA_HEARTBEAT_INTERVAL_S", "1")),
-            media_startup_grace_s=float(os.environ.get("MEDIA_STARTUP_GRACE_S", "120")),
+            media_startup_grace_s=float(os.environ.get("MEDIA_STARTUP_GRACE_S", "180")),
             media_heartbeat_stale_s=float(os.environ.get("MEDIA_HEARTBEAT_STALE_S", "5")),
             media_source_stale_s=float(os.environ.get("MEDIA_SOURCE_STALE_S", "8")),
             event_loop_stale_s=float(os.environ.get("EVENT_LOOP_STALE_S", "8")),
