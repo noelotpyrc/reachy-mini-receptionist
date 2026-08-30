@@ -497,7 +497,7 @@ def start_backend(config: OpsConfig) -> ActionResult:
 
 def stop_backend(config: OpsConfig) -> ActionResult:
     service = launchd_service_status(config.s2s_service_label)
-    if service["status"] == "loaded":
+    if config.require_managed_services and service["status"] == "loaded":
         completed = _launchctl("bootout", _launchd_target(config.s2s_service_label))
         stopped = _find_pids(BACKEND_PATTERN)
         return ActionResult(

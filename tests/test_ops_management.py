@@ -1058,12 +1058,50 @@ def test_backend_stop_terminates_matching_backend_pids(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     monkeypatch.setattr(ops_core, "_find_pids", lambda pattern: [101, 202])
     monkeypatch.setattr(ops_core, "_terminate_pids", lambda pids: pids)
+    monkeypatch.setattr(
+        ops_core,
+        "launchd_service_status",
+        lambda label: {"label": label, "status": "loaded"},
+    )
+    monkeypatch.setattr(
+        ops_core,
+        "_launchctl",
+        lambda *args: (_ for _ in ()).throw(AssertionError("launchctl must not be used")),
+    )
 
     result = ops_core.stop_backend(config)
 
     assert result.status == "ok"
     assert result.changed is True
     assert result.data["stopped_pids"] == [101, 202]
+
+
+def test_managed_backend_stop_boots_out_launchd_service(tmp_path, monkeypatch):
+    config = ops_core.OpsConfig(
+        **{**make_config(tmp_path).__dict__, "require_managed_services": True}
+    )
+    monkeypatch.setattr(
+        ops_core,
+        "launchd_service_status",
+        lambda label: {"label": label, "status": "loaded"},
+    )
+    monkeypatch.setattr(ops_core, "_find_pids", lambda pattern: [303])
+
+    class Completed:
+        returncode = 0
+        stderr = ""
+
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        ops_core,
+        "_launchctl",
+        lambda *args: calls.append(args) or Completed(),
+    )
+
+    result = ops_core.stop_backend(config)
+
+    assert result.status == "ok"
+    assert calls == [("bootout", ops_core._launchd_target(config.s2s_service_label))]
 
 
 def test_s2s_backend_setup_script_contract() -> None:
