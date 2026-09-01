@@ -4,7 +4,7 @@
 
 **Current phase:** assisted production acceptance
 
-**Updated:** 2026-08-30
+**Updated:** 2026-09-01
 
 This document is the promotion checklist for running the receptionist in the clinic for an extended
 period without a developer onsite. It owns pass/block status. Detailed implementation and operating
@@ -24,7 +24,7 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 - Recovery and rollback: pre-removal source is tagged `legacy-daemon-last` at `260e2f2`; the previous
   clean release at `612ea43` and the dirty deployment checkout remain intact.
 - S2S backend: `speech-to-speech==0.2.10`, fork SHA `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`,
-  listening only on `127.0.0.1:8765`.
+  listening only on `127.0.0.1:8765`, managed by launchd as `ProcessType=Interactive`.
 - Agent wrapper: production Hermes profile on `127.0.0.1:8642`; clinic context remains outside Git.
 - Direct provider/model: OpenRouter with `openai/gpt-5.6-luna` as the configured direct model.
 - Policy speech: fixed greet/goodbye text uses deterministic TTS and does not invoke an LLM.
@@ -62,6 +62,22 @@ The operator web UI, run-until-stopped mode, and recorder-sidecar hard-kill enha
 follow-up work rather than blockers for that assisted shift.
 
 ## Latest Acceptance Evidence
+
+### S2S launchd scheduling regression (2026-09-01)
+
+The S2S service was initially installed with launchd `ProcessType=Background` on 2026-08-29. That
+classification applies resource limits intended for non-user-requested work. It reduced the unchanged
+Qwen3-TTS/MLX stack from its June foreground baseline of roughly `1.9-2.5x` realtime to
+`0.7-0.84x`; long responses accumulated about `1.1-1.2 s` of modeled audio-supply deficit and could
+sound choppy. Restarting the background-class service did not improve throughput.
+
+A controlled test changed only the installed S2S process type to `Interactive` and repeated the same
+30 exact-text generations with robot and vision workloads disabled. All 30 transcripts matched,
+first-audio latency fell from roughly `485 ms` to `154-160 ms`, measured delivery rose to
+`2.72-2.91x`, and every sample had zero modeled supply deficit. Qwen's backend RTF returned to
+`2.3-2.6x`, consistent with the earlier foreground baseline. The S2S LaunchAgent therefore uses
+`Interactive`; Hermes and maintenance jobs remain `Background`. Full-stack acceptance must still
+verify that short Qwen bursts do not materially stall vision consumers.
 
 ### GStreamer uv startup incident (2026-08-25)
 

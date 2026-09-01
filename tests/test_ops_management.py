@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import subprocess
 import sys
 import time
@@ -1160,6 +1161,16 @@ def test_production_installer_preserves_loaded_service_definitions() -> None:
     assert text.index('/usr/bin/cmp -s "$rendered" "$installed"') < text.index(
         'active_tmp="$CONFIG_DIR/active-release.tmp.$$"'
     )
+
+
+def test_launchd_process_types_match_service_latency_requirements() -> None:
+    with Path("config/launchd/com.reachy.reception.s2s.plist.in").open("rb") as stream:
+        s2s = plistlib.load(stream)
+    with Path("config/launchd/com.reachy.reception.hermes.plist.in").open("rb") as stream:
+        hermes = plistlib.load(stream)
+
+    assert s2s["ProcessType"] == "Interactive"
+    assert hermes["ProcessType"] == "Background"
 
 
 def test_hermes_profile_sync_script_contract() -> None:

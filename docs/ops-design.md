@@ -57,6 +57,9 @@ across runs; only restart it to change model/voice/config or when wedged.
   - launcher: `scripts/m1max/run_s2s_backend.sh`
 - The backend package is currently Hugging Face `speech-to-speech==0.2.10`, exposed locally as
   `ws://127.0.0.1:8765/v1/realtime`.
+- The managed S2S LaunchAgent uses `ProcessType=Interactive`. Qwen/MLX is user-requested,
+  latency-sensitive work; `Background` throttling was measured at `0.7-0.8x` realtime versus about
+  `2.5x` with the interactive policy. Hermes and maintenance LaunchAgents remain `Background`.
 - `setup_s2s_backend.sh` creates or refreshes the backend runtime venv with Python 3.12+ (using uv
   when needed), verifies the backend CLI and Parakeet STT import, and does not delete logs/runtime
   artifacts.

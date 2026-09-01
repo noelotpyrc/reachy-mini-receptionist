@@ -309,6 +309,13 @@ Production Hermes and S2S are launchd-managed non-physical services. Their defin
 restarted. `reception-prod status` requires both service definitions plus live Hermes/S2S checks.
 `reception-prod backend restart` deliberately unloads and reloads the managed S2S service.
 
+S2S uses launchd `ProcessType=Interactive` because Qwen/MLX generation is latency-sensitive work
+requested directly by a visitor. Do not change it to `Background`: a controlled 30-response test on
+2026-09-01 reduced Qwen throughput from about `2.5x` realtime to `0.7-0.8x`, causing the audio stream
+to fall behind playback. Hermes and maintenance jobs remain `Background`; only S2S receives the
+interactive resource policy. The service remains launchd-managed and consumes no additional model
+compute while idle.
+
 Create or update the managed backend runtime venv from this repo:
 
 ```bash
@@ -340,6 +347,7 @@ Current backend contract:
 - LLM slot: `responses-api` through the local Hermes wrapper on `127.0.0.1:8642`
 - Direct model path: OpenRouter `openai/gpt-5.6-luna`
 - TTS: `qwen3`, voice `Sohee`
+- launchd process type: `Interactive` (required for realtime Qwen/MLX throughput)
 
 ## Recording Retention
 
