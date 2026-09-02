@@ -17,6 +17,7 @@ from reachy_mini_brain.official_runtime import (
     AntennaCueController,
     AntennaPulseMove,
     CapabilityRegistry,
+    CompositeEventSink,
     CompositeRuntimeObserver,
     ConversationCuePolicy,
     ConversationCuePolicySettings,
@@ -59,6 +60,7 @@ from reachy_mini_brain.official_runtime.live_app import (
     _play_cached_policy_speech,
     _register_handler_conversation_session,
     _register_handler_policy_speech,
+    _run_policy_tick_loop,
     _run_scripted_playback_wav,
 )
 from reachy_mini_brain.official_runtime.benchmark_backends import _summarize_run
@@ -827,6 +829,78 @@ def test_reception_policy_idle_tick_closes_conversation():
         assert close.data["reason"] == "idle_timeout"
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("advance_s", "refresh_activity", "expected_reason"),
+    (
+        (2.1, False, "idle_timeout"),
+        (10.1, True, "max_duration"),
+    ),
+)
+def test_policy_tick_loop_drives_reception_timeout(
+    advance_s, refresh_activity, expected_reason
+):
+    async def run():
+        clock = _Clock()
+        recorded = InMemoryEventSink()
+        policy_sink = _AsyncPolicyEventSink()
+        event_sink = CompositeEventSink(recorded, policy_sink)
+        context = RuntimeContext(event_sink=event_sink)
+        policy = ReceptionPolicy(
+            ReceptionPolicySettings(
+                cooldown_s=0.0,
+                conversation_idle_timeout_s=2.0,
+                conversation_max_duration_s=10.0,
+                clock=clock,
+            )
+        )
+        engine = PolicyEngine([policy], context=context)
+        policy_sink.bind(engine, asyncio.get_running_loop())
+
+        await engine.start()
+        await engine.handle_event(RuntimeEvent(kind="vision.wave", source="test"))
+        assert policy.conversation_active is True
+        clock.advance(advance_s)
+        if refresh_activity:
+            await engine.handle_event(
+                RuntimeEvent(
+                    kind="backend.transcript.final",
+                    source="test",
+                    data={"transcript": "Still talking"},
+                )
+            )
+
+        stop_event = asyncio.Event()
+        tick_task = asyncio.create_task(
+            _run_policy_tick_loop(
+                event_sink=event_sink,
+                stop_event=stop_event,
+                interval_s=0.001,
+            )
+        )
+        try:
+            async def wait_until_closed():
+                while policy.conversation_active:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(wait_until_closed(), timeout=0.2)
+        finally:
+            stop_event.set()
+            await tick_task
+
+        await policy_sink.flush()
+        await engine.stop()
+        await policy_sink.drain()
+        return recorded
+
+    events = asyncio.run(run())
+
+    assert "runtime.tick" in events.kinds()
+    close = next(
+        event for event in events.events if event.kind == "policy.conversation_closed"
+    )
+    assert close.data["reason"] == expected_reason
 
 
 def test_perception_pipeline_accepts_injected_detector_and_writes_events(tmp_path):

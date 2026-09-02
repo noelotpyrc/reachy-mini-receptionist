@@ -54,6 +54,7 @@ DEFAULT_PROFILE_INSTRUCTIONS = PROJECT_ROOT / "profiles" / "clinic_receptionist"
 DEFAULT_POLICY_AUDIO_CACHE_DIR = PROJECT_ROOT / "artifacts" / "policy-audio-cache" / "sohee"
 DEFAULT_DOOR_POLICY_PIPELINES = PROJECT_ROOT / "config" / "vision" / "door-policy-v1.json"
 VISION_RUNTIME_MODES = ("serial-v1", "broker-v1")
+POLICY_TICK_INTERVAL_S = 1.0
 
 
 def _load_backend_instructions(
@@ -80,6 +81,26 @@ def _instruction_provenance(instructions: str, *, source: str) -> dict[str, Any]
         "instructions_sha256": hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
         "instructions_chars": len(instructions),
     }
+
+
+async def _run_policy_tick_loop(
+    *,
+    event_sink: EventSink,
+    stop_event: asyncio.Event,
+    interval_s: float = POLICY_TICK_INTERVAL_S,
+) -> None:
+    """Emit the clock events used by reception conversation timeouts."""
+
+    if interval_s <= 0:
+        raise ValueError("policy tick interval must be positive")
+
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_s)
+        except TimeoutError:
+            event_sink.emit(
+                RuntimeEvent(kind="runtime.tick", source="official_runtime.clock")
+            )
 
 
 @click.command()
@@ -718,11 +739,16 @@ async def _run_live(
     )
     stop_callbacks.append(runtime.stop)
     vision_task: asyncio.Task[None] | None = None
+    policy_tick_task: asyncio.Task[None] | None = None
     vision_ready = asyncio.Event()
 
     runtime_error: BaseException | None = None
     try:
         await policy_engine.start()
+        policy_tick_task = asyncio.create_task(
+            _run_policy_tick_loop(event_sink=event_sink, stop_event=stop_event),
+            name="official-runtime-policy-ticks",
+        )
         if (
             perception
             or (vision_runtime == "broker-v1" and gestures)
@@ -793,6 +819,8 @@ async def _run_live(
             liveness.set_phase("stopping")
         stop_event.set()
         runtime.stop()
+        if policy_tick_task is not None:
+            await policy_tick_task
         if scripted_flow_task is not None and not scripted_flow_task.done():
             scripted_flow_task.cancel()
             try:
