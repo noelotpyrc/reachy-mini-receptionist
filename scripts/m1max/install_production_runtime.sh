@@ -8,6 +8,20 @@ LIB_DIR="${RECEPTION_RUNTIME_LIB_DIR:-$HOME/.local/lib/reachy-reception}"
 BIN_DIR="${RECEPTION_RUNTIME_BIN_DIR:-$HOME/.local/bin}"
 STATE_DIR="${RECEPTION_RUNTIME_STATE_DIR:-$HOME/.local/state/reachy-reception}"
 AGENT_DIR="$HOME/Library/LaunchAgents"
+SERVICE_STOP_TIMEOUT_S="${RECEPTION_SERVICE_STOP_TIMEOUT_S:-30}"
+
+wait_for_service_unloaded() {
+  local target="$1"
+  local waited=0
+  while /bin/launchctl print "$target" >/dev/null 2>&1; do
+    if [[ "$waited" -ge "$SERVICE_STOP_TIMEOUT_S" ]]; then
+      printf 'Timed out waiting for launchd service to unload: %s\n' "$target" >&2
+      return 1
+    fi
+    /bin/sleep 1
+    waited=$((waited + 1))
+  done
+}
 
 usage() {
   cat <<'EOF'
@@ -107,6 +121,7 @@ for label in \
       exit 75
     fi
     /bin/launchctl bootout "$target"
+    wait_for_service_unloaded "$target"
   fi
   /usr/bin/install -m 600 "$rendered" "$installed"
 done
@@ -122,10 +137,11 @@ if [[ "$ENABLE_SERVICES" == "1" ]]; then
     com.reachy.reception.hermes \
     com.reachy.reception.recording-retention; do
     target="gui/$UID/$label"
-    if ! /bin/launchctl print "$target" >/dev/null 2>&1; then
+    if /bin/launchctl print "$target" >/dev/null 2>&1; then
+      /bin/launchctl kickstart -k "$target"
+    else
       /bin/launchctl bootstrap "gui/$UID" "$AGENT_DIR/$label.plist"
     fi
-    /bin/launchctl kickstart -k "$target"
   done
 fi
 

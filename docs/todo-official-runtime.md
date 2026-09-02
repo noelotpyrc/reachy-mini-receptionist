@@ -294,6 +294,15 @@ that case. Treat this as a later reliability/diagnosis improvement, not a curren
 **Constraints:** live + user present — confirm first. Diagnose timing from #6's run summary,
 not from guesses.
 
+### 7c. Chat endpointing robustness  `[ ]`
+**Status:** accepted limitation for assisted production; deferred as a future improvement.
+
+Investigate noise-sensitive server-VAD state and the case where progressive Parakeet text is
+non-empty but final transcription is empty, which can make conversation cues appear to restart while
+the same backend session remains connected. Use retained raw input and event artifacts to compare
+VAD probabilities, final-transcript outcomes, and cue transitions before changing thresholds, reset
+behavior, or empty-final handling. See [`robot-runtime-debugging.md`](robot-runtime-debugging.md).
+
 ### 8. Backend context & model experiments  `[ ]`
 **Status:** paused on 2026-08-06 for production preparation. The deployed Hermes/profile-owned
 context path, GPT-5.6 Luna direct fallback, session mapping, read-only reference tools, latency

@@ -307,7 +307,10 @@ robot tests unless:
 Production Hermes and S2S are launchd-managed non-physical services. Their definitions use
 `KeepAlive`; the physical runner is never installed as a service and is never automatically
 restarted. `reception-prod status` requires both service definitions plus live Hermes/S2S checks.
-`reception-prod backend restart` deliberately unloads and reloads the managed S2S service.
+It also reads the installed S2S plist and reports degraded unless `ProcessType` is exactly
+`Interactive`. `reception-prod backend restart` deliberately unloads and reloads the managed S2S
+service; it waits for launchd unload, backend-process exit, and port closure before starting again.
+If that bounded transition fails, restart stops without attempting a competing start.
 
 S2S uses launchd `ProcessType=Interactive` because Qwen/MLX generation is latency-sensitive work
 requested directly by a visitor. Do not change it to `Background`: a controlled 30-response test on
@@ -315,6 +318,10 @@ requested directly by a visitor. Do not change it to `Background`: a controlled 
 to fall behind playback. Hermes and maintenance jobs remain `Background`; only S2S receives the
 interactive resource policy. The service remains launchd-managed and consumes no additional model
 compute while idle.
+
+Release activation uses the same lifecycle boundary when a loaded LaunchAgent definition changes:
+wait for `bootout` to disappear from launchd before installing/bootstraping the replacement. A newly
+bootstrapped `RunAtLoad` service is not immediately kickstarted again.
 
 Create or update the managed backend runtime venv from this repo:
 

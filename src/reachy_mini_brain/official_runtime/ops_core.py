@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import signal
 import shutil
 import socket
@@ -44,6 +45,8 @@ DEFAULT_HERMES_HEALTH_URL = "http://127.0.0.1:8642/health"
 DEFAULT_PROVIDER_HEALTH_URL = "https://openrouter.ai/api/v1/key"
 DEFAULT_S2S_SERVICE_LABEL = "com.reachy.reception.s2s"
 DEFAULT_HERMES_SERVICE_LABEL = "com.reachy.reception.hermes"
+REQUIRED_S2S_PROCESS_TYPE = "Interactive"
+LAUNCHD_STOP_TIMEOUT_S = 15.0
 
 
 class OpsError(RuntimeError):
@@ -359,11 +362,25 @@ def backend_status(config: OpsConfig) -> ActionResult:
     port_live = _port_open(config.s2s_host, config.s2s_port)
     pids = _find_pids(BACKEND_PATTERN)
     service = launchd_service_status(config.s2s_service_label)
+    process_type = launchd_service_process_type(
+        config.s2s_service_label,
+        expected=REQUIRED_S2S_PROCESS_TYPE,
+    )
     status = "ok" if port_live else "stopped"
     if pids and not port_live:
         status = "degraded"
     if config.require_managed_services and service["status"] != "loaded":
         status = "degraded"
+    if config.require_managed_services and process_type["status"] != "ok":
+        status = "degraded"
+    errors: list[str] = []
+    if config.require_managed_services and service["status"] != "loaded":
+        errors.append(f"required launchd service is not loaded: {config.s2s_service_label}")
+    if config.require_managed_services and process_type["status"] != "ok":
+        errors.append(
+            "required launchd ProcessType mismatch: "
+            f"expected {REQUIRED_S2S_PROCESS_TYPE}, got {process_type.get('actual') or 'missing'}"
+        )
     return ActionResult(
         action="backend.status",
         status=status,
@@ -375,6 +392,11 @@ def backend_status(config: OpsConfig) -> ActionResult:
                 service["status"],
                 {"label": config.s2s_service_label},
             ),
+            Verification(
+                "managed_process_type",
+                process_type["status"] if config.require_managed_services else "not_required",
+                process_type,
+            ),
         ),
         data={
             "host": config.s2s_host,
@@ -382,12 +404,9 @@ def backend_status(config: OpsConfig) -> ActionResult:
             "port_live": port_live,
             "pids": pids,
             "managed_service": service,
+            "managed_process_type": process_type,
         },
-        errors=(
-            (f"required launchd service is not loaded: {config.s2s_service_label}",)
-            if config.require_managed_services and service["status"] != "loaded"
-            else ()
-        ),
+        errors=tuple(errors),
     )
 
 
@@ -404,6 +423,18 @@ def start_backend(config: OpsConfig) -> ActionResult:
                 errors=(
                     "backend port is held by an unmanaged process; stop it before enabling the production service",
                 ),
+            )
+        if (
+            config.require_managed_services
+            and status_before.data["managed_process_type"]["status"] != "ok"
+        ):
+            return ActionResult(
+                action="backend.start",
+                status="failed",
+                changed=False,
+                machine_verification=status_before.machine_verification,
+                data=status_before.data,
+                errors=status_before.errors,
             )
         return ActionResult(
             action="backend.start",
@@ -498,21 +529,56 @@ def start_backend(config: OpsConfig) -> ActionResult:
 def stop_backend(config: OpsConfig) -> ActionResult:
     service = launchd_service_status(config.s2s_service_label)
     if config.require_managed_services and service["status"] == "loaded":
+        requested = _find_pids(BACKEND_PATTERN)
         completed = _launchctl("bootout", _launchd_target(config.s2s_service_label))
-        stopped = _find_pids(BACKEND_PATTERN)
+        if completed.returncode != 0:
+            return ActionResult(
+                action="backend.stop",
+                status="failed",
+                changed=False,
+                errors=(completed.stderr.strip() or "launchctl bootout failed",),
+            )
+        stopped_state = _wait_for_managed_backend_stopped(
+            config,
+            timeout_s=LAUNCHD_STOP_TIMEOUT_S,
+        )
+        remaining = stopped_state["pids"]
+        stopped = [pid for pid in requested if pid not in remaining]
+        stop_ok = (
+            stopped_state["service_status"] != "loaded"
+            and not stopped_state["port_live"]
+            and not remaining
+        )
         return ActionResult(
             action="backend.stop",
-            status="ok" if completed.returncode == 0 else "failed",
-            changed=completed.returncode == 0,
+            status="ok" if stop_ok else "failed",
+            changed=True,
             machine_verification=(
                 Verification(
                     "managed_service_unloaded",
-                    "ok" if completed.returncode == 0 else "failed",
-                    {"label": config.s2s_service_label},
+                    "ok" if stopped_state["service_status"] != "loaded" else "failed",
+                    {
+                        "label": config.s2s_service_label,
+                        "status": stopped_state["service_status"],
+                    },
+                ),
+                Verification(
+                    "tcp_port_closed",
+                    "ok" if not stopped_state["port_live"] else "failed",
+                    {"host": config.s2s_host, "port": config.s2s_port},
+                ),
+                Verification(
+                    "process_terminated",
+                    "ok" if not remaining else "failed",
+                    {"remaining_pids": remaining},
                 ),
             ),
-            data={"requested_pids": stopped, "stopped_pids": stopped},
-            errors=((completed.stderr.strip() or "launchctl bootout failed",) if completed.returncode else ()),
+            data={"requested_pids": requested, "stopped_pids": stopped, **stopped_state},
+            errors=(
+                ()
+                if stop_ok
+                else ("managed backend did not fully stop before timeout",)
+            ),
         )
     pids = _find_pids(BACKEND_PATTERN)
     stopped = _terminate_pids(pids)
@@ -526,7 +592,10 @@ def stop_backend(config: OpsConfig) -> ActionResult:
 
 
 def restart_backend(config: OpsConfig) -> list[ActionResult]:
-    return [stop_backend(config), start_backend(config)]
+    stopped = stop_backend(config)
+    if stopped.status != "ok":
+        return [stopped]
+    return [stopped, start_backend(config)]
 
 
 def launchd_service_status(label: str) -> dict[str, Any]:
@@ -549,6 +618,31 @@ def launchd_service_status(label: str) -> dict[str, Any]:
             except ValueError:
                 pid = None
     return {"label": label, "status": "loaded", "state": state, "pid": pid}
+
+
+def launchd_service_process_type(label: str, *, expected: str) -> dict[str, Any]:
+    """Read the installed LaunchAgent scheduling class used by production status."""
+
+    plist_path = _launch_agent_path(label)
+    result: dict[str, Any] = {
+        "label": label,
+        "path": str(plist_path),
+        "expected": expected,
+        "actual": None,
+    }
+    if not plist_path.is_file():
+        return {**result, "status": "missing"}
+    try:
+        with plist_path.open("rb") as stream:
+            payload = plistlib.load(stream)
+    except (OSError, plistlib.InvalidFileException) as exc:
+        return {**result, "status": "invalid", "error": str(exc)}
+    actual = payload.get("ProcessType")
+    return {
+        **result,
+        "status": "ok" if actual == expected else "mismatch",
+        "actual": actual,
+    }
 
 
 def external_services_status(config: OpsConfig) -> ActionResult:
@@ -1871,6 +1965,31 @@ def _start_launchd_service(label: str, plist_path: Path) -> dict[str, Any] | Non
             f"could not kickstart {label}: {kickstart.stderr.strip() or kickstart.stdout.strip()}"
         )
     return {"label": label, "mode": "launchd", "plist": str(plist_path)}
+
+
+def _wait_for_managed_backend_stopped(
+    config: OpsConfig,
+    *,
+    timeout_s: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        service = launchd_service_status(config.s2s_service_label)
+        port_live = _port_open(config.s2s_host, config.s2s_port)
+        pids = _find_pids(BACKEND_PATTERN)
+        if service["status"] != "loaded" and not port_live and not pids:
+            return {
+                "service_status": service["status"],
+                "port_live": False,
+                "pids": pids,
+            }
+        if time.monotonic() >= deadline:
+            return {
+                "service_status": service["status"],
+                "port_live": port_live,
+                "pids": pids,
+            }
+        time.sleep(0.1)
 
 
 def _require_physical_authorization(action: str, authorized: bool) -> None:

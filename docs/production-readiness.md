@@ -1,8 +1,8 @@
 # Production Readiness
 
-**Status:** not yet approved for unattended clinic production
+**Status:** approved for assisted clinic production; not yet approved for unattended production
 
-**Current phase:** assisted production acceptance
+**Current phase:** assisted production operation
 
 **Updated:** 2026-09-01
 
@@ -16,11 +16,11 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 ## Current Baseline
 
-- Active production candidate: immutable release `4c28a3e`, selected by
+- Active production release: the immutable revision selected by
   `/Users/leon/.config/reachy-reception/active-release`, validated by `reception-prod` before every
   command. It uses Python `3.12.13`, Reachy SDK `1.10.0`, and the lock-enforced environment.
-- The live-validated `87d35ba` frozen release remains the first release-level rollback target.
-- The older `b7520a0` frozen release remains available as a second release-level fallback.
+- The live-validated `7b2600e` frozen release remains the first release-level rollback target.
+- The older `87d35ba` and `b7520a0` frozen releases remain available as additional fallbacks.
 - Recovery and rollback: pre-removal source is tagged `legacy-daemon-last` at `260e2f2`; the previous
   clean release at `612ea43` and the dirty deployment checkout remain intact.
 - S2S backend: `speech-to-speech==0.2.10`, fork SHA `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`,
@@ -40,9 +40,9 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 | Area | Gate | Status | Evidence / remaining work |
 | --- | --- | --- | --- |
-| Release | Immutable product revision, reproducible venv, documented rollback | **Pass / activated** | `reception-prod` resolves one private active-release file, rejects mutable/dirty/mismatched releases, and loads one private production config. Frozen release `87d35ba` is the first rollback target; `b7520a0` remains an older fallback. |
+| Release | Immutable product revision, reproducible venv, documented rollback | **Pass / activated** | `reception-prod` resolves one private active-release file, rejects mutable/dirty/mismatched releases, and loads one private production config. Live-validated frozen release `7b2600e` is the first rollback target. |
 | Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Backend setup script, runtime metadata, Hermes text/integration tests, deterministic policy-TTS benchmark, and read-only Hermes/provider health checks are complete. |
-| Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Physical runner restart must remain operator-authorized. |
+| Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Managed S2S restart now waits for complete launchd unload, process exit, and port closure before starting. Physical runner restart remains operator-authorized. |
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Accepted for first production pass** | Door v4 and the current chat backend are frozen at the user-accepted behavior; further tuning is deferred rather than a launch blocker. |
 | Long-run behavior | Multi-hour run with conversations and no wedged subsystems | **Pass for assisted use** | Recent two-hour and shorter recorded runs completed cleanly with advancing broker/media counters and finalized artifacts. Policy/chat quality is accepted separately for the first pass. |
 | Startup | Bounded, observable transition to ready | **Pass / activated** | Frozen release `4c28a3e` reached ready in `112.301 s` on its first ordinary start and `9.827 s` on its second, with advancing audio/video, zero heartbeat-writer errors, and clean shutdown. |
@@ -50,16 +50,16 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 | Recording integrity | Audio/video/capture finalize and retain diagnosable timing | **Accepted limitation** | Fixed-`5 FPS` MKVs play faster than wall time, but frame order is intact and JSONL sidecars retain the timing source of truth used by replay/Rerun. Use MKVs only for qualitative review; map a reported player position to frame index and then sidecar `ts`. |
 | Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Pass for assisted use** | Controlled media loss in `official-live-20260830-085651` finalized the enabled artifacts and preserved the terminal fault. If a hard kill prevents runner cleanup, the detached supervisor retains interrupted status and open artifact paths. A recorder sidecar remains a deferred enhancement for hard-kill finalization. |
 | Privacy | Approved raw-data policy, access boundaries, and retention | **Pass / active** | Production records audio and derived vision diagnostics but defaults raw MKV video off. Audio/video older than 30 days are reported daily for reviewed cleanup; no automatic deletion is allowed. Artifacts remain private to the local operator account. |
-| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Pass / accepted** | Aggregate status validates the OpenRouter key without a model call and reports Hermes, S2S, launchd, disk headroom, recording age, runner heartbeats, and media faults. Controlled robot-media loss faulted and cleaned up within the configured bound on 2026-08-30. |
-| Supervision | Services recover safely after machine/process or media failure | **Pass / fail-stop accepted** | Hermes and S2S launchd `KeepAlive` restart was verified on 2026-08-29. Controlled media loss stopped and cleaned up the physical runner without automatic restart on 2026-08-30. |
+| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Pass / accepted** | Aggregate status validates the OpenRouter key without a model call and reports Hermes, S2S, launchd, the required S2S `ProcessType=Interactive`, disk headroom, recording age, runner heartbeats, and media faults. Controlled robot-media loss faulted and cleaned up within the configured bound on 2026-08-30. |
+| Supervision | Services recover safely after machine/process or media failure | **Pass / fail-stop accepted** | Hermes and S2S launchd `KeepAlive` restart was verified on 2026-08-29. LaunchAgent replacement now waits for unload before bootstrap, closing the observed activation race. Controlled media loss stopped and cleaned up the physical runner without automatic restart on 2026-08-30. |
 | Remote access | Authenticated, auditable, least-privilege control | **Blocked for non-technical users** | SSH/Tailscale plus OPS is acceptable for assisted production. No remote operations API or operator UI exists yet. |
 | Emergency handling | Idempotent remote stop and documented local fallback | **Pass for assisted use** | `emergency-stop` exposes the existing bounded shutdown path, keeps backend services warm, and has documented timeout, verification, repeat, and local-m1max fallback behavior. Controlled media loss exercised the same bounded fail-stop and cleanup path. |
 
-All non-shift gates required for assisted production now pass, are accepted with a documented
-limitation, or are explicitly deferred outside this pass. The remaining promotion work is one
-assisted clinic shift followed by evidence review and an explicit promote-or-rollback decision.
-The operator web UI, run-until-stopped mode, and recorder-sidecar hard-kill enhancement remain
-follow-up work rather than blockers for that assisted shift.
+All gates required for assisted production pass, are accepted with a documented limitation, or are
+explicitly deferred outside this pass. Run `official-live-20260901-170248` and the operator's audio
+acceptance completed the assisted promotion review. The operator web UI, run-until-stopped mode,
+chat endpointing robustness, and recorder-sidecar hard-kill enhancement remain follow-up work and
+are not blockers for assisted operation.
 
 ## Latest Acceptance Evidence
 
@@ -76,8 +76,31 @@ A controlled test changed only the installed S2S process type to `Interactive` a
 first-audio latency fell from roughly `485 ms` to `154-160 ms`, measured delivery rose to
 `2.72-2.91x`, and every sample had zero modeled supply deficit. Qwen's backend RTF returned to
 `2.3-2.6x`, consistent with the earlier foreground baseline. The S2S LaunchAgent therefore uses
-`Interactive`; Hermes and maintenance jobs remain `Background`. Full-stack acceptance must still
-verify that short Qwen bursts do not materially stall vision consumers.
+`Interactive`; Hermes and maintenance jobs remain `Background`.
+
+**Full-stack acceptance:** two-hour run `official-live-20260901-170248` exercised the production
+robot, broker-v1 vision stack, Hermes conversation path, and Qwen TTS from frozen release `7b2600e`.
+It completed normally with 12 completed responses and one canceled response. For the 12 completed
+generations, backend Qwen RTF was `1.71-2.02` with P50 `1.83`; all 13 delivered audio streams stayed
+above realtime. While audio was being generated, the retained policy-frame gaps had P95 `0.418 s`
+and max `0.540 s`. Gesture processing completed all `80,578` published frames with zero drops or
+failures; the latest-frame policy consumer completed `33,983` frames at `4.707 FPS`, and the policy
+event sink dropped zero of `359,499` events. Artifacts closed, heartbeat writes had zero errors,
+and bounded robot cleanup succeeded. The operator confirmed that playback was smooth. This closes
+the full-stack scheduling acceptance for assisted production.
+
+### Launchd activation race (2026-09-01)
+
+Replacing a loaded LaunchAgent definition exposed a lifecycle race: `launchctl bootout` returned
+before the old S2S job disappeared from `launchctl print`. The installer therefore observed the old
+job as loaded, skipped bootstrap, and then attempted to kickstart a target that finished unloading
+between those operations. The active release changed while S2S remained unloaded.
+
+The installer now waits for the old target to disappear before replacing/bootstraping its plist,
+and it does not immediately kickstart a newly bootstrapped `RunAtLoad` job. OPS backend restart also
+waits for launchd unload, backend-process exit, and port closure, and stops without starting a new
+job if that transition times out. Production status reads the installed S2S plist and reports
+degraded unless `ProcessType` is exactly `Interactive`.
 
 ### GStreamer uv startup incident (2026-08-25)
 
@@ -273,7 +296,9 @@ Complete these in order. Stop and diagnose when a gate fails.
 8. Verify bounded media fail-stop and physical cleanup without automatic restart. Accepted in
    `official-live-20260830-085651`. **Complete.**
 9. Run one assisted clinic shift with remote status checks and the tested emergency-stop procedure.
-10. Review evidence and explicitly promote or roll back.
+   Run `official-live-20260901-170248` completed normally after two hours. **Complete.**
+10. Review evidence and explicitly promote or roll back. Audio playback was accepted by the operator;
+    retained media, vision, TTS, and cleanup evidence passed. **Promoted for assisted production.**
 
 ## Remote Operations Roadmap
 

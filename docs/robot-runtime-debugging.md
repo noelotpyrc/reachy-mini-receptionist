@@ -48,6 +48,14 @@ the sole cause. Keep the raw input WAV and realtime events, compare per-frame VA
 controlled noisy and quiet conditions, and confirm that direct STT can recover any allegedly missed
 speech before changing VAD thresholds or reset behavior.
 
+A separate observed edge case can make a conversation appear to stop and restart even though the
+same backend session remains connected: progressive Parakeet output contains recognizable words,
+but final transcription returns empty, and the runtime's cue path treats that completion as a new
+thinking transition. Noise-sensitive endpointing and empty-final cue behavior are accepted
+limitations for the first assisted production pass. A future improvement should replay retained raw
+input, measure VAD probabilities and empty-final frequency, then evaluate bounded VAD-state reset and
+empty-final cue suppression. Do not change thresholds or reset behavior without that comparison.
+
 The failed run's two `session.created` events were expected: policy greet/goodbye TTS used the startup
 connection, so the runtime opened a fresh S2S connection at the visitor-conversation boundary. The
 second connection successfully handled the opener and first user turn; it was not a failed reconnect.

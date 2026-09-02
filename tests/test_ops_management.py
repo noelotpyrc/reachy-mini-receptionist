@@ -422,6 +422,52 @@ def test_required_managed_backend_rejects_missing_launchd_service(tmp_path, monk
     assert "required launchd service is unavailable" in result.errors[0]
 
 
+def test_required_managed_backend_rejects_wrong_process_type(tmp_path, monkeypatch):
+    config = ops_core.OpsConfig(
+        **{**make_config(tmp_path).__dict__, "require_managed_services": True}
+    )
+    monkeypatch.setattr(ops_core, "_port_open", lambda *args, **kwargs: True)
+    monkeypatch.setattr(ops_core, "_find_pids", lambda pattern: [123])
+    monkeypatch.setattr(
+        ops_core,
+        "launchd_service_status",
+        lambda label: {"label": label, "status": "loaded", "state": "running"},
+    )
+    monkeypatch.setattr(
+        ops_core,
+        "launchd_service_process_type",
+        lambda label, *, expected: {
+            "label": label,
+            "status": "mismatch",
+            "expected": expected,
+            "actual": "Background",
+        },
+    )
+
+    result = ops_core.start_backend(config)
+
+    assert result.status == "failed"
+    assert result.data["managed_process_type"]["actual"] == "Background"
+    assert result.errors == (
+        "required launchd ProcessType mismatch: expected Interactive, got Background",
+    )
+
+
+def test_launchd_process_type_reads_installed_plist(tmp_path, monkeypatch):
+    plist_path = tmp_path / "com.reachy.reception.s2s.plist"
+    with plist_path.open("wb") as stream:
+        plistlib.dump({"Label": "test", "ProcessType": "Interactive"}, stream)
+    monkeypatch.setattr(ops_core, "_launch_agent_path", lambda label: plist_path)
+
+    result = ops_core.launchd_service_process_type(
+        ops_core.DEFAULT_S2S_SERVICE_LABEL,
+        expected="Interactive",
+    )
+
+    assert result["status"] == "ok"
+    assert result["actual"] == "Interactive"
+
+
 def test_recording_retention_cli_is_report_only(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     old_audio = config.artifact_root / "audio" / "old.wav"
@@ -1117,6 +1163,13 @@ def test_managed_backend_stop_boots_out_launchd_service(tmp_path, monkeypatch):
         lambda label: {"label": label, "status": "loaded"},
     )
     monkeypatch.setattr(ops_core, "_find_pids", lambda pattern: [303])
+    waits: list[float] = []
+    monkeypatch.setattr(
+        ops_core,
+        "_wait_for_managed_backend_stopped",
+        lambda config, *, timeout_s: waits.append(timeout_s)
+        or {"service_status": "not_loaded", "port_live": False, "pids": []},
+    )
 
     class Completed:
         returncode = 0
@@ -1133,6 +1186,47 @@ def test_managed_backend_stop_boots_out_launchd_service(tmp_path, monkeypatch):
 
     assert result.status == "ok"
     assert calls == [("bootout", ops_core._launchd_target(config.s2s_service_label))]
+    assert waits == [ops_core.LAUNCHD_STOP_TIMEOUT_S]
+
+
+def test_managed_backend_stop_waits_for_service_and_port(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    service_states = iter(("loaded", "not_loaded", "not_loaded"))
+    port_states = iter((True, True, False))
+    pid_states = iter(([303], [303], []))
+    monkeypatch.setattr(
+        ops_core,
+        "launchd_service_status",
+        lambda label: {"label": label, "status": next(service_states)},
+    )
+    monkeypatch.setattr(ops_core, "_port_open", lambda host, port: next(port_states))
+    monkeypatch.setattr(ops_core, "_find_pids", lambda pattern: next(pid_states))
+    monkeypatch.setattr(ops_core.time, "sleep", lambda seconds: None)
+
+    result = ops_core._wait_for_managed_backend_stopped(config, timeout_s=1.0)
+
+    assert result == {
+        "service_status": "not_loaded",
+        "port_live": False,
+        "pids": [],
+    }
+
+
+def test_backend_restart_stops_after_failed_managed_shutdown(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    stopped = ops_core.ActionResult(
+        action="backend.stop",
+        status="failed",
+        errors=("still stopping",),
+    )
+    monkeypatch.setattr(ops_core, "stop_backend", lambda config: stopped)
+    monkeypatch.setattr(
+        ops_core,
+        "start_backend",
+        lambda config: (_ for _ in ()).throw(AssertionError("backend must not restart")),
+    )
+
+    assert ops_core.restart_backend(config) == [stopped]
 
 
 def test_s2s_backend_setup_script_contract() -> None:
@@ -1161,6 +1255,12 @@ def test_production_installer_preserves_loaded_service_definitions() -> None:
     assert text.index('/usr/bin/cmp -s "$rendered" "$installed"') < text.index(
         'active_tmp="$CONFIG_DIR/active-release.tmp.$$"'
     )
+    assert 'wait_for_service_unloaded "$target"' in text
+    assert text.index('wait_for_service_unloaded "$target"') < text.index(
+        '/usr/bin/install -m 600 "$rendered" "$installed"'
+    )
+    bootstrap = '/bin/launchctl bootstrap "gui/$UID" "$AGENT_DIR/$label.plist"'
+    assert text.index('/bin/launchctl kickstart -k "$target"') < text.index(bootstrap)
 
 
 def test_launchd_process_types_match_service_latency_requirements() -> None:
