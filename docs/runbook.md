@@ -32,9 +32,9 @@ Product/controller repo:
 - Active production release: the single frozen path in
   `/Users/leon/.config/reachy-reception/active-release`; inspect it through `reception-prod status`
   rather than selecting a checkout manually.
-- Current live-validated assisted release:
-  `/Users/leon/projects/reachy_mini_receptionist_release_4c28a3e_frozen` at `4c28a3e`
-- First release-level rollback:
+- Current live-validated assisted release and first release-level rollback:
+  `/Users/leon/projects/reachy_mini_receptionist_release_7b2600e_frozen` at `7b2600e`
+- Older release-level rollback:
   `/Users/leon/projects/reachy_mini_receptionist_release_87d35ba_frozen` at `87d35ba`
 - Older frozen fallback:
   `/Users/leon/projects/reachy_mini_receptionist_release_b7520a0_frozen` at `b7520a0`
