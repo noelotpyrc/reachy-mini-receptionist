@@ -1,6 +1,6 @@
 # S2S main migration and client agent integration
 
-Date: 2026-09-02
+Date: 2026-09-03
 Status: backend migration validated; client integration implemented for offline acceptance
 Audience: backend, receptionist-runtime, and operations maintainers
 
@@ -69,6 +69,28 @@ not change the active release pointer, production venv, launchd definitions,
 production service, or port 8765. A second fully loaded model stack may still
 compete for unified memory and compute, so check m1max resources before starting
 staging alongside production.
+
+### 2.2 Isolated staging smoke (2026-09-03)
+
+The migration runtime was installed on m1max in the staging directory above
+without changing the active receptionist release or the production backend.
+Acceptance evidence:
+
+- Python `3.12.13`, `speech-to-speech==0.2.12`, and fork commit `aaa7c75` were
+  recorded in the staging runtime metadata;
+- `uv pip check` passed for all 124 installed packages;
+- Parakeet, the direct OpenRouter Responses backend, and Qwen3 TTS initialized,
+  and the Realtime server listened only on `127.0.0.1:8766`;
+- one greet and one goodbye `tts.create` request produced exact transcripts and
+  nonempty audio, with first audio at 222 ms and 147 ms respectively;
+- production remained on frozen receptionist release `7840866`, S2S `0.2.10`,
+  and port `8765` throughout the smoke;
+- the warmed staging process used approximately 5.7 GB RSS, so it was stopped
+  after the smoke and must not remain running alongside production unattended.
+
+This smoke proves isolated installation, startup, and deterministic TTS. It does
+not complete the text/audio turn, tool-loop, WAV replay, or live acceptance
+gates in section 8.
 
 ## 3. Backend decisions
 
