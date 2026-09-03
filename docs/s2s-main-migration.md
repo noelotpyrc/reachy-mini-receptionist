@@ -88,9 +88,28 @@ Acceptance evidence:
 - the warmed staging process used approximately 5.7 GB RSS, so it was stopped
   after the smoke and must not remain running alongside production unattended.
 
-This smoke proves isolated installation, startup, and deterministic TTS. It does
-not complete the text/audio turn, tool-loop, WAV replay, or live acceptance
-gates in section 8.
+This smoke proves isolated installation, startup, and deterministic TTS. It did
+not by itself complete the text/audio turn, tool-loop, WAV replay, or live
+acceptance gates in section 8.
+
+### 2.3 Text-only profile and history check (2026-09-03)
+
+The local product client connected through an SSH tunnel to staging port `8766`
+and ran two `input_text` turns on one Realtime WebSocket. Each
+`response.create` requested `output_modalities: ["text"]`, so VAD, STT, and TTS
+did not participate.
+
+- Turn 1 used the fictional Lakeside profile to answer its weekday hours.
+- Turn 2 recalled the visitor name supplied in turn 1 and combined it with the
+  profile's second-floor location fact.
+- Both responses completed and emitted only text-output lifecycle events.
+- End-to-end turn times were 1.074 s and 2.421 s.
+- The report recorded profile ID, source IDs, character count, and hash without
+  recording the composed instructions.
+
+This passes the basic profile injection and backend-local `Chat` continuity
+gate. Tool execution, cancellation/revision behavior, audio turns, and WAV
+replay remain separate acceptance steps.
 
 ## 3. Backend decisions
 
@@ -368,8 +387,9 @@ existing protected artifact path.
 - Offline client tests cover private overlays, reference confinement, bounded
   tool failures, sequential output ordering, follow-up generation, cancellation,
   and session teardown.
-- Integration, WAV replay, live acceptance, Smart Turn evaluation, and promotion
-  remain pending.
+- Basic text-only profile and backend-local history integration passed on
+  2026-09-03. Tool, cancellation/revision, audio, WAV replay, live acceptance,
+  Smart Turn evaluation, and promotion remain pending.
 
 The opt-in client profile is configured with:
 

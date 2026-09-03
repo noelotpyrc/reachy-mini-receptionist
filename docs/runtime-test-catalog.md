@@ -61,6 +61,28 @@ Source: [Hermes profile sync](../scripts/m1max/sync_hermes_profile.sh).
 
 ## 2. Profile Text Behavior
 
+### S2S text-only profile and history smoke
+
+[test_s2s_text_profile.py](../scripts/m1max/test_s2s_text_profile.py) composes the
+tracked fictional profile, sends two text-only turns over one Realtime
+WebSocket, and checks profile facts, backend-local conversation continuity, and
+the absence of audio events. With migration staging bound to m1max localhost
+port `8766`, expose it temporarily to this development machine:
+
+```bash
+ssh -N -L 18766:127.0.0.1:8766 leon@100.127.86.67
+
+.venv/bin/python scripts/m1max/test_s2s_text_profile.py \
+  --url ws://127.0.0.1:18766/v1/realtime \
+  --profile-dir profiles/clinic_receptionist \
+  --profile-id lakeside-test \
+  --output artifacts/s2s-main-migration/<run-id>.json
+```
+
+Run the harness from the product environment, not the backend-only venv. The
+report contains the synthetic prompts and answers and records only safe profile
+provenance, not the composed instruction text.
+
 ### Staging behavior suite
 
 Use profile-specific text cases to check approved facts, supported and
