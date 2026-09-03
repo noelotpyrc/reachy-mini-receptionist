@@ -228,10 +228,11 @@ if sys.version_info < (3, 12):
 PY
 fi
 
-run "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
 if [[ -n "$UV_BIN" ]]; then
+  run "$UV_BIN" pip install --python "$VENV_PYTHON" --upgrade pip setuptools wheel
   run "$UV_BIN" pip install --python "$VENV_PYTHON" --upgrade "$INSTALL_SPEC"
 else
+  run "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
   run "$VENV_PYTHON" -m pip install --upgrade "$INSTALL_SPEC"
 fi
 

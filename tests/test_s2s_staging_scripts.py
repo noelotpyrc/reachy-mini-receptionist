@@ -36,6 +36,47 @@ def test_s2s_staging_setup_is_isolated_and_pinned(tmp_path: Path) -> None:
     assert not backend_dir.exists()
 
 
+def test_s2s_setup_bootstraps_unseeded_uv_venv_without_python_pip(
+    tmp_path: Path,
+) -> None:
+    backend_dir = tmp_path / "staging-backend"
+    uv_calls = tmp_path / "uv-calls.txt"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$UV_CALLS\"\n"
+        "if [[ \"$1\" == venv ]]; then\n"
+        "  mkdir -p \"${@: -1}/bin\"\n"
+        "  cp \"$PYTHON\" \"${@: -1}/bin/python\"\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/m1max/setup_s2s_backend_staging.sh",
+            "--dry-run",
+            "--uv",
+            str(fake_uv),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "S2S_STAGING_BACKEND_DIR": str(backend_dir),
+            "UV_CALLS": str(uv_calls),
+            "PYTHON": sys.executable,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "pip install --python" in result.stderr
+    assert "python -m pip" not in result.stderr
+
+
 def test_s2s_staging_launcher_uses_new_cli_without_hermes_state(
     tmp_path: Path,
 ) -> None:
