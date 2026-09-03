@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 import click
 
+from .agent_profile import AgentProfileError, ComposedAgentProfile, compose_agent_profile
 from .artifacts import ArtifactRecorder
 from .camera import register_camera_capabilities
 from .capabilities import CapabilityRegistry, RuntimeContext
@@ -36,6 +37,7 @@ from .perception import (
 from .policies import PolicyEngine
 from .policy_audio_cache import PolicyAudioCache, load_policy_audio_frame
 from .reception import ReceptionPolicy, ReceptionPolicySettings
+from .realtime_tools import ToolExecutionContext, ToolRegistry, build_reference_tool_registry
 from .robot_io import ReachyAudioSink, ReachyAudioSource, ReachyCameraFrameProvider, ReachyRobotSession
 from .s2s_realtime import S2SRealtimeHandler
 from .stream_runtime import CompositeRuntimeObserver, OfficialStyleStreamRuntime
@@ -51,6 +53,7 @@ load_project_env()
 
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "artifacts" / "official-runtime-live"
 DEFAULT_PROFILE_INSTRUCTIONS = PROJECT_ROOT / "profiles" / "clinic_receptionist" / "instructions.txt"
+DEFAULT_AGENT_PROFILE_PUBLIC_DIR = PROJECT_ROOT / "profiles" / "clinic_receptionist"
 DEFAULT_POLICY_AUDIO_CACHE_DIR = PROJECT_ROOT / "artifacts" / "policy-audio-cache" / "sohee"
 DEFAULT_DOOR_POLICY_PIPELINES = PROJECT_ROOT / "config" / "vision" / "door-policy-v1.json"
 VISION_RUNTIME_MODES = ("serial-v1", "broker-v1")
@@ -209,6 +212,26 @@ async def _run_policy_tick_loop(
     default=False,
     help="Send no application profile prompt because the upstream Hermes profile owns receptionist context.",
 )
+@click.option(
+    "--agent-profile-id",
+    envvar="RECEPTION_AGENT_PROFILE_ID",
+    default="",
+    help="Enable the client-owned profile and read-only reference tools for this profile ID.",
+)
+@click.option(
+    "--agent-profile-public-dir",
+    envvar="RECEPTION_AGENT_PROFILE_PUBLIC_DIR",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=DEFAULT_AGENT_PROFILE_PUBLIC_DIR,
+    show_default=True,
+)
+@click.option(
+    "--agent-profile-private-dir",
+    envvar="RECEPTION_AGENT_PROFILE_PRIVATE_DIR",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Optional private profile overlay outside Git.",
+)
 @click.option("--hf-voice", default="Sohee", show_default=True)
 @click.option("--hf-realtime-ws-url", envvar="HF_REALTIME_WS_URL", default="ws://100.127.86.67:8765/v1/realtime")
 @click.option(
@@ -317,6 +340,9 @@ async def _run_live(
     instructions_file: Path,
     instructions: str | None,
     profile_owned_context: bool,
+    agent_profile_id: str,
+    agent_profile_public_dir: Path,
+    agent_profile_private_dir: Path | None,
     hf_voice: str,
     hf_realtime_ws_url: str,
     policy_audio_cache_dir: Path,
@@ -365,11 +391,38 @@ async def _run_live(
     )
     if rerun_save_path is not None and rerun_save_path.exists():
         raise click.ClickException(f"refusing to overwrite existing Rerun artifact: {rerun_save_path}")
-    backend_instructions, instructions_provenance = _load_backend_instructions(
-        instructions_file=instructions_file,
-        instructions=instructions,
-        profile_owned_context=profile_owned_context,
-    )
+    agent_profile: ComposedAgentProfile | None = None
+    tool_registry: ToolRegistry | None = None
+    if agent_profile_id:
+        if backend != "s2s-local":
+            raise click.ClickException(
+                "client-owned agent profiles currently require --backend s2s-local"
+            )
+        if profile_owned_context:
+            raise click.ClickException(
+                "--agent-profile-id cannot be combined with --profile-owned-context"
+            )
+        if instructions is not None:
+            raise click.ClickException(
+                "--agent-profile-id cannot be combined with --instructions"
+            )
+        try:
+            agent_profile = compose_agent_profile(
+                profile_id=agent_profile_id,
+                public_dir=agent_profile_public_dir,
+                private_dir=agent_profile_private_dir,
+            )
+        except AgentProfileError as exc:
+            raise click.ClickException(f"invalid agent profile: {exc}") from exc
+        backend_instructions = agent_profile.instructions
+        instructions_provenance = agent_profile.provenance()
+        tool_registry = build_reference_tool_registry(agent_profile.reference_store)
+    else:
+        backend_instructions, instructions_provenance = _load_backend_instructions(
+            instructions_file=instructions_file,
+            instructions=instructions,
+            profile_owned_context=profile_owned_context,
+        )
     recorder = ArtifactRecorder(
         artifact_root,
         run_id=run_id,
@@ -412,6 +465,15 @@ async def _run_live(
             "visitor_trigger_profile": resolved_visitor_profile.metadata(smooth=perception_smooth),
             "audio_gate": audio_gate,
             "profile_owned_context": profile_owned_context,
+            "agent_profile": (
+                {
+                    "profile_id": agent_profile.profile_id,
+                    "source_ids": list(agent_profile.source_ids),
+                    "tool_names": tool_registry.names() if tool_registry is not None else [],
+                }
+                if agent_profile is not None
+                else None
+            ),
             "ready_cue": ready_cue,
             "ready_cue_hold": ready_cue_hold,
             "conversation_cues": conversation_cues,
@@ -696,6 +758,8 @@ async def _run_live(
         livekit_dispatch_agent=livekit_dispatch_agent,
         camera_worker=camera_provider,
         reachy_mini=mini,
+        agent_profile=agent_profile,
+        tool_registry=tool_registry,
     )
     _register_handler_policy_speech(capabilities, handler)
     _register_handler_conversation_session(capabilities, handler)
@@ -1448,8 +1512,20 @@ def _build_handler(
     livekit_dispatch_agent: bool,
     camera_worker: Any | None,
     reachy_mini: Any | None,
+    agent_profile: ComposedAgentProfile | None = None,
+    tool_registry: ToolRegistry | None = None,
 ) -> Any:
     if backend == "s2s-local":
+        tool_context = (
+            ToolExecutionContext(
+                profile_id=agent_profile.profile_id,
+                visitor_session_id="pre-session",
+                reference_store=agent_profile.reference_store,
+                event_sink=event_sink,
+            )
+            if agent_profile is not None
+            else None
+        )
         return S2SRealtimeHandler(
             event_sink=event_sink,
             realtime_ws_url=hf_realtime_ws_url,
@@ -1457,6 +1533,8 @@ def _build_handler(
             instructions_source=instructions_source,
             instructions_sha256=instructions_sha256,
             voice=hf_voice,
+            tool_registry=tool_registry,
+            tool_context=tool_context,
         )
     if backend == "livekit":
         config = LiveKitBackendConfig(

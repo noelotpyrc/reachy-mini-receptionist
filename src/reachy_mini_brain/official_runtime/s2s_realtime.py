@@ -14,6 +14,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .events import EventSink, InMemoryEventSink, RuntimeEvent
+from .realtime_tools import (
+    RealtimeToolCoordinator,
+    ToolExecutionContext,
+    ToolRegistry,
+)
 from .stream_runtime import AudioFrame, HandlerOutput
 
 
@@ -47,7 +52,11 @@ class S2SRealtimeHandler:
         instructions_sha256: str | None = None,
         reconnect_settle_s: float = 0.2,
         sleep_factory: SleepFactory = asyncio.sleep,
+        tool_registry: ToolRegistry | None = None,
+        tool_context: ToolExecutionContext | None = None,
     ) -> None:
+        if (tool_registry is None) != (tool_context is None):
+            raise ValueError("tool_registry and tool_context must be configured together")
         self.realtime_ws_url = realtime_ws_url
         self.instructions = instructions
         self.instructions_source = instructions_source
@@ -61,6 +70,8 @@ class S2SRealtimeHandler:
         self.connect_factory = connect_factory
         self.reconnect_settle_s = max(0.0, reconnect_settle_s)
         self.sleep_factory = sleep_factory
+        self.tool_registry = tool_registry
+        self.tool_context = tool_context
         self._outputs: asyncio.Queue[HandlerOutput] = asyncio.Queue()
         self._connected_event = asyncio.Event()
         self._send_lock = asyncio.Lock()
@@ -71,6 +82,7 @@ class S2SRealtimeHandler:
         self._connection_generation = 0
         self._conversation_generation = 0
         self._session_has_activity = False
+        self._tool_coordinator: RealtimeToolCoordinator | None = None
         self._started = False
 
     async def start_up(self) -> None:
@@ -106,6 +118,10 @@ class S2SRealtimeHandler:
                     await self.sleep_factory(self.reconnect_settle_s)
                 await self._open_connection()
             self._conversation_generation += 1
+            if self._tool_coordinator is not None:
+                self._tool_coordinator.set_visitor_session_id(
+                    f"visitor-{self._conversation_generation}"
+                )
             result = {
                 "conversation_generation": self._conversation_generation,
                 "connection_generation": self._connection_generation,
@@ -118,6 +134,22 @@ class S2SRealtimeHandler:
         connection = await self._connect()
         self._connection = connection
         self._connected_event.clear()
+        if self.tool_registry is not None and self.tool_context is not None:
+
+            async def send_tool_payload(payload: dict[str, Any]) -> None:
+                async with self._send_lock:
+                    if self._connection is not connection:
+                        raise RuntimeError(
+                            "refusing to send a tool result across connections"
+                        )
+                    await connection.send(json.dumps(payload))
+                    self._session_has_activity = True
+
+            self._tool_coordinator = RealtimeToolCoordinator(
+                registry=self.tool_registry,
+                context=self.tool_context,
+                send=send_tool_payload,
+            )
         self._session_task = asyncio.create_task(self._receive_loop(), name="s2s-realtime-session")
         try:
             async with self._send_lock:
@@ -136,6 +168,10 @@ class S2SRealtimeHandler:
         self._record_session_snapshot()
 
     async def _close_connection(self, *, clear_outputs: bool) -> None:
+        tool_coordinator = self._tool_coordinator
+        self._tool_coordinator = None
+        if tool_coordinator is not None:
+            await tool_coordinator.close()
         session_task = self._session_task
         self._session_task = None
         connection = self._connection
@@ -229,6 +265,8 @@ class S2SRealtimeHandler:
             instructions_sha256=self.instructions_sha256,
             reconnect_settle_s=self.reconnect_settle_s,
             sleep_factory=self.sleep_factory,
+            tool_registry=self.tool_registry,
+            tool_context=self.tool_context,
         )
 
     async def _connect(self) -> Any:
@@ -269,6 +307,8 @@ class S2SRealtimeHandler:
         if event_type == "session.created":
             self._connected_event.set()
         self._emit_realtime_event(event)
+        if self._tool_coordinator is not None:
+            self._tool_coordinator.handle_event(event)
 
         if event_type == "conversation.item.input_audio_transcription.completed":
             transcript = _event_text(event)
@@ -327,6 +367,7 @@ class S2SRealtimeHandler:
                 self._record_response_metadata(response_id, _response_metadata(event))
 
     def _session_config(self) -> dict[str, Any]:
+        tools = self.tool_registry.schemas() if self.tool_registry is not None else []
         return {
             "type": "realtime",
             "instructions": self.instructions,
@@ -341,7 +382,7 @@ class S2SRealtimeHandler:
                 },
                 "output": {"format": {"type": "audio/pcm", "rate": None}, "voice": self.voice},
             },
-            "tools": [],
+            "tools": tools,
             "tool_choice": "auto",
         }
 
@@ -362,6 +403,16 @@ class S2SRealtimeHandler:
                     "transcription_model": self.transcription_model,
                     "transcription_language": self.transcription_language,
                     "connection_generation": self._connection_generation,
+                    "profile_id": (
+                        self.tool_context.profile_id
+                        if self.tool_context is not None
+                        else None
+                    ),
+                    "tool_names": (
+                        self.tool_registry.names()
+                        if self.tool_registry is not None
+                        else []
+                    ),
                 },
             )
         )
@@ -400,13 +451,24 @@ def _sha256_text(value: str) -> str:
 
 def _summarize_event(event: dict[str, Any]) -> dict[str, Any]:
     data: dict[str, Any] = {"event_type": event.get("type")}
-    for key in ("event_id", "response_id", "item_id", "output_index", "content_index"):
+    for key in (
+        "event_id",
+        "response_id",
+        "item_id",
+        "output_index",
+        "content_index",
+        "call_id",
+        "name",
+    ):
         if key in event:
             data[key] = event[key]
     response = event.get("response")
     if isinstance(response, dict):
         data["response_id"] = data.get("response_id") or response.get("id")
         data["response_status"] = response.get("status")
+        output_summary = _response_output_summary(response)
+        if output_summary:
+            data["output_summary"] = output_summary
     text = _event_text(event)
     if text:
         data["transcript"] = text
@@ -439,11 +501,51 @@ def _response_metadata(event: dict[str, Any]) -> dict[str, Any]:
         metadata["status"] = response.get("status")
         if isinstance(response.get("metadata"), dict):
             metadata["request_metadata"] = response["metadata"]
+        output_summary = _response_output_summary(response)
+        if output_summary:
+            metadata["output_summary"] = output_summary
+        usage = response.get("usage")
+        if isinstance(usage, dict):
+            metadata["usage"] = _numeric_mapping(usage)
+        status_details = response.get("status_details")
+        if isinstance(status_details, dict):
+            metadata["status_details"] = {
+                key: status_details[key]
+                for key in ("type", "reason", "code")
+                if isinstance(status_details.get(key), (str, int, float, bool))
+            }
     text = _event_text(event)
     if text:
         metadata["text"] = text
         metadata["transcript"] = text
     return metadata
+
+
+def _response_output_summary(response: dict[str, Any]) -> list[dict[str, Any]]:
+    summary = []
+    for output_index, item in enumerate(response.get("output") or []):
+        if not isinstance(item, dict):
+            continue
+        row = {"output_index": output_index, "type": item.get("type")}
+        for key in ("id", "call_id", "name", "status"):
+            if isinstance(item.get(key), (str, int, float, bool)):
+                row[key] = item[key]
+        summary.append(row)
+    return summary
+
+
+def _numeric_mapping(value: dict[str, Any], *, depth: int = 0) -> dict[str, Any]:
+    if depth >= 4:
+        return {}
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if isinstance(item, bool) or isinstance(item, (int, float)):
+            result[str(key)] = item
+        elif isinstance(item, dict):
+            nested = _numeric_mapping(item, depth=depth + 1)
+            if nested:
+                result[str(key)] = nested
+    return result
 
 
 def _event_text(event: dict[str, Any]) -> str:

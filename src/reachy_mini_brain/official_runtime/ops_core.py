@@ -84,6 +84,7 @@ class OpsConfig:
     backend_start_timeout_s: float
     keep_awake: bool
     profile_owned_context: bool = False
+    agent_profile_id: str = ""
     visitor_trigger_profile: str = DEFAULT_VISITOR_TRIGGER_PROFILE
     vision_pipelines_config: Path | None = None
     rerun_mode: str = "off"
@@ -158,6 +159,7 @@ class OpsConfig:
             backend_start_timeout_s=float(os.environ.get("BACKEND_START_TIMEOUT", "45")),
             keep_awake=_env_bool("OPS_KEEP_AWAKE", default=True),
             profile_owned_context=_env_bool("S2S_RESPONSES_CONVERSATION", default=False),
+            agent_profile_id=os.environ.get("RECEPTION_AGENT_PROFILE_ID", "").strip(),
             visitor_trigger_profile=resolve_visitor_trigger_profile(
                 os.environ.get("RECEPTION_VISITOR_TRIGGER_PROFILE", DEFAULT_VISITOR_TRIGGER_PROFILE)
             ).name,
@@ -1187,6 +1189,7 @@ def start_runner(
             "record_audio": config.record_audio if record_audio is None else record_audio,
             "record_video": config.record_video if record_video is None else record_video,
             "profile_owned_context": config.profile_owned_context,
+            "agent_profile_id": config.agent_profile_id or None,
             "visitor_trigger_profile": config.visitor_trigger_profile,
             "vision_pipelines_config": (
                 str(resolved_vision_config) if resolved_vision_config is not None else None
@@ -1647,6 +1650,13 @@ def build_live_command(
         command.extend(["--vision-pipelines-config", str(resolved_vision_config)])
     if config.profile_owned_context:
         command.append("--profile-owned-context")
+    if config.agent_profile_id:
+        if config.profile_owned_context:
+            raise OpsError(
+                "RECEPTION_AGENT_PROFILE_ID cannot be combined with "
+                "S2S_RESPONSES_CONVERSATION=1"
+            )
+        command.extend(["--agent-profile-id", config.agent_profile_id])
     if scripted_policy_flow != "none":
         command.extend(["--scripted-policy-flow", scripted_policy_flow])
         if scripted_policy_gap_s is not None:

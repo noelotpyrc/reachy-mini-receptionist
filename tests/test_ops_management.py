@@ -233,6 +233,62 @@ def test_ops_config_uses_profile_owned_context_for_conversation_mode(monkeypatch
     assert config.profile_owned_context is True
 
 
+def test_build_live_command_records_profile_id_without_private_path(tmp_path):
+    private_path = tmp_path / "private-clinic-profile"
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("RECEPTION_AGENT_PROFILE_PRIVATE_DIR", str(private_path))
+    try:
+        config = ops_core.OpsConfig(
+            **{**make_config(tmp_path).__dict__, "agent_profile_id": "clinic-test"}
+        )
+        command, _ = ops_core.build_live_command(
+            config,
+            run_id="official-live-agent-profile",
+            duration_s=12,
+            perception=True,
+            gestures=True,
+            audio_gate=True,
+            ready_cue=True,
+            warmup_video=True,
+            conversation_cues=True,
+            capture_vision=True,
+            record_audio=True,
+            record_video=False,
+        )
+    finally:
+        monkeypatch.undo()
+
+    profile_index = command.index("--agent-profile-id")
+    assert command[profile_index + 1] == "clinic-test"
+    assert str(private_path) not in command
+
+
+def test_build_live_command_rejects_two_profile_owners(tmp_path):
+    config = ops_core.OpsConfig(
+        **{
+            **make_config(tmp_path).__dict__,
+            "profile_owned_context": True,
+            "agent_profile_id": "clinic-test",
+        }
+    )
+
+    with pytest.raises(ops_core.OpsError, match="cannot be combined"):
+        ops_core.build_live_command(
+            config,
+            run_id="official-live-conflicting-profile",
+            duration_s=12,
+            perception=True,
+            gestures=True,
+            audio_gate=True,
+            ready_cue=True,
+            warmup_video=True,
+            conversation_cues=True,
+            capture_vision=True,
+            record_audio=True,
+            record_video=False,
+        )
+
+
 def test_ops_config_loads_versioned_visitor_trigger_profile(monkeypatch):
     monkeypatch.setenv("RECEPTION_VISITOR_TRIGGER_PROFILE", "visitor-v1-20260802")
 
@@ -1494,6 +1550,9 @@ def test_s2s_backend_launcher_supports_responses_wrapper_endpoint() -> None:
     assert "S2S_RESPONSES_DIRECT_API_KEY" in text
     assert 'export RESPONSES_API_DIRECT_API_KEY="$S2S_RESPONSES_DIRECT_API_KEY"' in text
     assert "--responses_api_direct_api_key" not in text
+    assert '--mode realtime \\' in text
+    assert '--ws_host "$S2S_HOST"' in text
+    assert '--ws_port "$S2S_PORT"' in text
 
 
 def test_live_ops_status_redacts_credential_arguments() -> None:

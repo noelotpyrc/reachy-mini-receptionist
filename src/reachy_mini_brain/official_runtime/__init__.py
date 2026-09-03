@@ -6,6 +6,12 @@ can test the new architecture offline before making it the robot path.
 """
 
 from .artifacts import ArtifactRecorder
+from .agent_profile import (
+    AgentProfileError,
+    ComposedAgentProfile,
+    ReferenceStore,
+    compose_agent_profile,
+)
 from .camera import camera_question, encode_bgr_frame_as_jpeg, register_camera_capabilities, set_head_tracking
 from .capabilities import CapabilityRegistry, RuntimeContext
 from .conversation_cues import ConversationCuePolicy, ConversationCuePolicySettings
@@ -18,6 +24,14 @@ from .perception import ApproachTracker, GestureDetector, PerceptionPipeline, Pe
 from .policies import PolicyEngine, RulePolicy
 from .policy_audio_cache import PolicyAudioCache
 from .reception import ReceptionPolicy, ReceptionPolicySettings
+from .realtime_tools import (
+    MemoryStore,
+    RealtimeToolCoordinator,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolRegistry,
+    build_reference_tool_registry,
+)
 from .robot_io import ReachyAudioSink, ReachyAudioSource, ReachyCameraFrameProvider, ReachyRobotSession
 from .s2s_realtime import S2SRealtimeHandler
 from .stream_runtime import CompositeRuntimeObserver, OfficialStyleStreamRuntime
@@ -25,11 +39,13 @@ from .wav_replay import WavAudioSink, WavAudioSource, run_wav_replay
 
 __all__ = [
     "CapabilityRegistry",
+    "AgentProfileError",
     "ArtifactRecorder",
     "AntennaPulseMove",
     "AntennaCueController",
     "camera_question",
     "CompositeEventSink",
+    "ComposedAgentProfile",
     "ConversationCuePolicy",
     "ConversationCuePolicySettings",
     "DEFAULT_ENV_PATH",
@@ -38,6 +54,7 @@ __all__ = [
     "LiveKitBackendConfig",
     "LiveKitRealtimeHandler",
     "LiveKitRoomBridge",
+    "MemoryStore",
     "OfficialStyleStreamRuntime",
     "ApproachTracker",
     "PolicyEngine",
@@ -58,12 +75,19 @@ __all__ = [
     "ReachyAudioSource",
     "ReachyCameraFrameProvider",
     "ReachyRobotSession",
+    "RealtimeToolCoordinator",
+    "ReferenceStore",
     "RulePolicy",
     "RuntimeContext",
     "RuntimeEvent",
     "S2SRealtimeHandler",
+    "ToolDefinition",
+    "ToolExecutionContext",
+    "ToolRegistry",
     "WavAudioSink",
     "WavAudioSource",
     "load_project_env",
+    "build_reference_tool_registry",
+    "compose_agent_profile",
     "run_wav_replay",
 ]
