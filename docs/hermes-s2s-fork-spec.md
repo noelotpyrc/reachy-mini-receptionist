@@ -4,6 +4,11 @@ Date: 2026-07-03; deployment status updated 2026-08-06
 Status: implemented, tested, committed, and deployed; backend feature development paused for production preparation
 Audience: implementing agent. Read this whole doc before coding.
 
+> Migration note (2026-09-02): this document remains the deployed rollback and
+> Hermes-compatibility reference. The approved migration to a pinned upstream
+> `main`, including client-owned profiles, tools, and the long-term-memory
+> boundary, is specified in [`s2s-main-migration.md`](s2s-main-migration.md).
+
 ## 1. Goal
 
 Make the local S2S backend session-aware when its LLM slot points at the Hermes

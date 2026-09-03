@@ -23,10 +23,14 @@ research document disagree, follow the active specification.
 
 - [`todo-official-runtime.md`](todo-official-runtime.md) - engineering work queue. Production
   readiness now determines priority; backend feature experiments are paused.
+- [`s2s-main-migration.md`](s2s-main-migration.md) - approved migration from the frozen S2S fork
+  to a pinned upstream `main`, including client-side profile composition, tool execution, and the
+  long-term-memory extension boundary.
 - [`vision-visitor-state-proposal.md`](vision-visitor-state-proposal.md) - implemented door/person
   greet-goodbye policy and its remaining live acceptance.
 - [`hermes-s2s-fork-spec.md`](hermes-s2s-fork-spec.md) - deployed Hermes session integration and
-  deterministic policy-speech contract. Backend feature development is currently frozen.
+  deterministic policy-speech contract. This remains the production rollback and compatibility
+  reference during the migration.
 - [`two-profile-architecture.md`](two-profile-architecture.md) - proposed owner assistant and
   patient receptionist split, structured session store, and human-gated learning loop. Not
   implemented.
