@@ -17,7 +17,9 @@ STAGING_VOICE="${S2S_STAGING_VOICE:-Sohee}"
 STAGING_MODEL_NAME="${S2S_STAGING_MODEL_NAME:-openai/gpt-5.6-luna}"
 STAGING_RESPONSES_BASE_URL="${S2S_STAGING_RESPONSES_BASE_URL:-https://openrouter.ai/api/v1}"
 STAGING_LOG_LEVEL="${S2S_STAGING_LOG_LEVEL:-info}"
+STAGING_LOG_TRANSCRIPTS="${S2S_STAGING_LOG_TRANSCRIPTS:-0}"
 STAGING_NUM_PIPELINES="${S2S_STAGING_NUM_PIPELINES:-1}"
+STAGING_EVENT_TRACE_DIR="${S2S_STAGING_EVENT_TRACE_DIR:-}"
 
 if nc -z "$STAGING_HOST" "$STAGING_PORT" >/dev/null 2>&1; then
   echo "Staging S2S backend port already listening on ${STAGING_HOST}:${STAGING_PORT}; not starting a duplicate backend." >&2
@@ -35,12 +37,20 @@ elif [[ -z "${OPENAI_API_KEY:-}" ]]; then
   exit 2
 fi
 
-exec "$BACKEND_DIR/.venv/bin/speech-to-speech" \
+cli_args=(
   serve \
   --host "$STAGING_HOST" \
   --port "$STAGING_PORT" \
   --num_pipelines "$STAGING_NUM_PIPELINES" \
-  --log_level "$STAGING_LOG_LEVEL" \
+  --log_level "$STAGING_LOG_LEVEL"
+)
+if [[ "$STAGING_LOG_TRANSCRIPTS" == "1" ]]; then
+  cli_args+=(--log_transcripts)
+fi
+if [[ -n "$STAGING_EVENT_TRACE_DIR" ]]; then
+  cli_args+=(--event_trace_dir "$STAGING_EVENT_TRACE_DIR")
+fi
+cli_args+=(
   --thresh 0.6 \
   --stt parakeet-tdt \
   --llm_backend responses-api \
@@ -57,3 +67,6 @@ exec "$BACKEND_DIR/.venv/bin/speech-to-speech" \
   --qwen3_tts_language auto \
   --qwen3_tts_non_streaming_mode true \
   --qwen3_tts_mlx_quantization 6bit
+)
+
+exec "$BACKEND_DIR/.venv/bin/speech-to-speech" "${cli_args[@]}"

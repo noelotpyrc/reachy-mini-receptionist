@@ -9,6 +9,10 @@ S2S_HOST="${S2S_HOST:-127.0.0.1}"
 S2S_PORT="${S2S_PORT:-8765}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 UV_BIN="${UV_BIN:-}"
+EXPECTED_MLX_VERSION="${S2S_EXPECTED_MLX_VERSION:-}"
+EXPECTED_MLX_AUDIO_VERSION="${S2S_EXPECTED_MLX_AUDIO_VERSION:-}"
+EXPECTED_MLX_LM_VERSION="${S2S_EXPECTED_MLX_LM_VERSION:-}"
+EXPECTED_MLX_METAL_VERSION="${S2S_EXPECTED_MLX_METAL_VERSION:-}"
 
 DRY_RUN=0
 CHECK_RUNNING=1
@@ -41,6 +45,10 @@ Environment:
   S2S_PORT=8765
   PYTHON_BIN=python3.12
   UV_BIN=/Users/leon/.local/bin/uv
+  S2S_EXPECTED_MLX_VERSION=0.31.1
+  S2S_EXPECTED_MLX_AUDIO_VERSION=0.4.2
+  S2S_EXPECTED_MLX_LM_VERSION=0.31.1
+  S2S_EXPECTED_MLX_METAL_VERSION=0.31.1
 EOF
 }
 
@@ -184,6 +192,9 @@ fi
 log "backend_dir=$BACKEND_DIR"
 log "speech-to-speech==$BACKEND_VERSION"
 log "speech-to-speech fork=$BACKEND_FORK_URL@$BACKEND_FORK_SHA"
+if [[ -n "$EXPECTED_MLX_VERSION$EXPECTED_MLX_AUDIO_VERSION$EXPECTED_MLX_LM_VERSION$EXPECTED_MLX_METAL_VERSION" ]]; then
+  log "expected macOS dependencies: mlx==$EXPECTED_MLX_VERSION mlx-audio==$EXPECTED_MLX_AUDIO_VERSION mlx-lm==$EXPECTED_MLX_LM_VERSION mlx-metal==$EXPECTED_MLX_METAL_VERSION"
+fi
 if [[ -n "$PYTHON_BIN" ]]; then
   log "python=$PYTHON_BIN"
 else
@@ -242,7 +253,12 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
-"$VENV_PYTHON" - "$BACKEND_VERSION" <<'PY'
+"$VENV_PYTHON" - \
+  "$BACKEND_VERSION" \
+  "$EXPECTED_MLX_VERSION" \
+  "$EXPECTED_MLX_AUDIO_VERSION" \
+  "$EXPECTED_MLX_LM_VERSION" \
+  "$EXPECTED_MLX_METAL_VERSION" <<'PY'
 import importlib.metadata as metadata
 import sys
 
@@ -250,6 +266,25 @@ expected = sys.argv[1]
 actual = metadata.version("speech-to-speech")
 if actual != expected:
     raise SystemExit(f"speech-to-speech version mismatch: expected {expected}, got {actual}")
+
+if sys.platform == "darwin":
+    expected_dependencies = {
+        "mlx": sys.argv[2],
+        "mlx-audio": sys.argv[3],
+        "mlx-lm": sys.argv[4],
+        "mlx-metal": sys.argv[5],
+    }
+    mismatches = []
+    for package_name, expected_version in expected_dependencies.items():
+        if not expected_version:
+            continue
+        actual_version = metadata.version(package_name)
+        if actual_version != expected_version:
+            mismatches.append(
+                f"{package_name}=={actual_version} (expected {expected_version})"
+            )
+    if mismatches:
+        raise SystemExit("Backend dependency mismatch: " + ", ".join(mismatches))
 
 from speech_to_speech.STT.parakeet_tdt_handler import ParakeetTDTSTTHandler  # noqa: F401
 PY
@@ -264,6 +299,7 @@ fi
 "$VENV_PYTHON" - "$INFO_PATH" "$BACKEND_VERSION" "$BACKEND_CLI" "$BACKEND_FORK_URL" "$BACKEND_FORK_SHA" <<'PY'
 from __future__ import annotations
 
+import importlib.metadata as metadata
 import json
 import platform
 import sys
@@ -283,6 +319,11 @@ payload = {
     "python_version": platform.python_version(),
     "platform": platform.platform(),
 }
+if sys.platform == "darwin":
+    payload["darwin_dependencies"] = {
+        package_name: metadata.version(package_name)
+        for package_name in ("mlx", "mlx-audio", "mlx-lm", "mlx-metal")
+    }
 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 

@@ -1,7 +1,7 @@
 # S2S main migration and client agent integration
 
 Date: 2026-09-03
-Status: backend migration validated; client integration implemented for offline acceptance
+Status: staging migration and full 12-turn replay passed; live acceptance pending
 Audience: backend, receptionist-runtime, and operations maintainers
 
 ## 1. Goal
@@ -37,8 +37,10 @@ The target also supports:
 
 - Upstream migration candidate: `huggingface/speech-to-speech`
   `e34312cf47cd0159ee82f0d34b02e72353b7752e`.
-- Validated fork migration commit:
-  `aaa7c75e1f16a6ccdcd902ea94af92e325ebd455` (`speech-to-speech==0.2.12`).
+- Current validated fork migration candidate:
+  `2e4449c345c305e4ee6b9761f86c1849bbf3cb08` (`speech-to-speech==0.2.12`).
+  It adds the accepted structured lifecycle trace to the functional baseline
+  validated at `db1aeb000cbe53d23e65f49cc76e8b378e01a6d4`.
 - Current backend rollback point: fork branch `reachy/conversation-state` at
   `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`.
 - The migration branch must be based on the exact upstream SHA, not a moving
@@ -56,7 +58,7 @@ The migration must not reuse the managed production backend directory or port.
 | Runtime | Directory | Port | Package | Service ownership |
 | --- | --- | --- | --- | --- |
 | Production | `/Users/leon/projects/speech_to_speech_backend` | `8765` | `0.2.10` / `a963ca6` | managed launchd service |
-| Migration staging | `/Users/leon/projects/speech_to_speech_backend_migration` | `8766` | `0.2.12` / `aaa7c75` | manual test process only |
+| Migration staging | `/Users/leon/projects/speech_to_speech_backend_migration` | `8766` | `0.2.12` / `2e4449c` | manual test process only |
 
 Production continues to use `setup_s2s_backend.sh`, `run_s2s_backend.sh`, and
 the legacy `--mode realtime` CLI until promotion is approved. Migration staging
@@ -76,7 +78,7 @@ The migration runtime was installed on m1max in the staging directory above
 without changing the active receptionist release or the production backend.
 Acceptance evidence:
 
-- Python `3.12.13`, `speech-to-speech==0.2.12`, and fork commit `aaa7c75` were
+- Python `3.12.13`, `speech-to-speech==0.2.12`, and fork commit `db1aeb0` were
   recorded in the staging runtime metadata;
 - `uv pip check` passed for all 124 installed packages;
 - Parakeet, the direct OpenRouter Responses backend, and Qwen3 TTS initialized,
@@ -111,6 +113,203 @@ This passes the basic profile injection and backend-local `Chat` continuity
 gate. Tool execution, cancellation/revision behavior, audio turns, and WAV
 replay remain separate acceptance steps.
 
+### 2.4 Reference-tool integration check (2026-09-03)
+
+The first attempt exposed an ambiguous client test-tool contract rather than an
+S2S defect: the model supplied a natural-language topic to
+`reference_catalog`, while the client implemented that filter as one literal
+substring. The model-facing catalog tool was simplified to accept only `{}` and
+return the complete allowlisted on-demand catalog. `reference_read` still
+requires an exact enum-constrained ID from that catalog.
+
+The rerun passed against isolated staging:
+
+- tool order was `reference_catalog`, then `reference_read`;
+- both tool results were submitted and each requested one follow-up response;
+- all three provider responses completed;
+- the final answer correctly identified East Lot C and the parking permit from
+  reception;
+- elapsed time was 14.878 seconds, including downstream response processing;
+- provider-request tracing confirmed that every follow-up contained the
+  cumulative tool call/output pairs and both tool schemas.
+
+This passes the sequential read-only tool-loop integration gate. It does not
+test cancellation/revision, audio input, WAV replay, or live robot behavior.
+
+For an isolated diagnostic run, set both variables when launching staging:
+
+```bash
+S2S_STAGING_LOG_LEVEL=debug \
+S2S_STAGING_LOG_TRANSCRIPTS=1 \
+bash scripts/m1max/run_s2s_backend_staging.sh
+```
+
+The migrated backend also has an opt-in structured lifecycle trace:
+
+```bash
+S2S_STAGING_EVENT_TRACE_DIR=/Users/leon/projects/reachy_mini_receptionist_deploy/artifacts/s2s-backend-trace \
+bash scripts/m1max/run_s2s_backend_staging.sh
+```
+
+This writes owner-only JSONL files and exposes writer health under
+`/v1/pool.event_trace`. Transcript bodies remain absent unless
+`S2S_STAGING_LOG_TRANSCRIPTS=1` is also set; hashes and sizes are retained by
+default so adjacent payload boundaries can still be compared.
+
+`S2S_STAGING_LOG_TRANSCRIPTS` is off by default. When enabled, full provider
+text and tool payloads are sensitive. The manual staging launcher writes its
+ordinary logs only to its attached terminal; the structured trace is retained
+only when `S2S_STAGING_EVENT_TRACE_DIR` is set. The retention report must cover
+that directory before production enablement. Embedded audio and image data are
+always omitted from provider-payload lineage.
+
+### 2.5 First reviewed audio-turn replay (2026-09-03)
+
+The product replay client streamed reviewed fixture turn 1 through one explicit
+visitor conversation on the isolated migration backend. The replay used the
+tracked fictional Lakeside profile and the same client-owned reference-tool
+registry as the live runtime.
+
+- Parakeet produced the exact reviewed transcript: `Hey, nice to meet you.`
+- The model welcomed the visitor to Lakeside Family Clinic and asked how it
+  could help.
+- The selected response ended with status `completed`.
+- Qwen3 TTS produced 118,272 PCM16 samples, or 7.392 seconds of audio.
+- Transcript completion to first audio was 1.762 seconds; transcript completion
+  to `response.done` was 4.375 seconds.
+- Production remained available on port 8765 while staging used port 8766, and
+  staging was stopped after the test.
+
+Evidence is in
+`artifacts/s2s-main-migration/audio-turn1-20260903-0001/`. This passes the first
+audio-turn plumbing check. Multi-turn replay, semantic continuity across all 12
+turns, cancellation/revision behavior under audio input, and live acceptance
+remain separate gates.
+
+### 2.6 Full 12-turn replay blocked by TTS output (2026-09-03)
+
+Run `artifacts/s2s-main-migration/full-12turn-20260903-0001/` replayed all 12
+reviewed WAVs in one fresh visitor session. STT, model text, state continuity,
+and response lifecycles completed, but the run failed audio acceptance:
+
+- all 12 final responses had status `completed`, nonempty audio, and no
+  `hf.realtime.error` event;
+- Mike was retained through the session, profile behavior was appropriate, and
+  turn 3 reproduced the documented `Too starty.` STT limitation;
+- turns 1 and 3 through 10 produced approximately 28.4-28.8 seconds of Qwen
+  output for short replies;
+- the backend independently logged those same Qwen generation durations, so
+  the repeated ceiling was not introduced by the replay collector;
+- turns 3 through 10 contained approximately 21-27 seconds of low-level
+  trailing audio after the apparent speech ended, while turn 1 remained
+  acoustically active through the generation limit;
+- transcript-to-first-audio P50 was 1.388 seconds, but the invalid long outputs
+  raised transcript-to-response-done P50 to 11.617 seconds.
+
+The staging process was stopped and production remained available on port
+8765. Do not promote the migration candidate until Qwen termination is isolated
+and the 12-turn replay is repeated successfully. The current replay harness
+rejects empty output but does not automatically classify excessive duration or
+trailing low-level audio; this run was stopped by evidence review.
+
+### 2.7 Accepted macOS MLX dependency baseline (2026-09-04)
+
+The repeated Qwen output ceiling was isolated with the same fixed
+`tts.create` text in 30-request runs. The request text was:
+`Nice to meet you, too. Welcome to Lakeside Family Clinic. How can I help?`
+
+| S2S source | macOS MLX stack | Exact transcripts | 360-token cap hits | Result |
+| --- | --- | ---: | ---: | --- |
+| Production `0.2.10` fork | `mlx-audio 0.4.2`, MLX `0.31.1` | 30/30 | 0/30 | varied 4.288-9.088 s outputs |
+| Migration `0.2.12` fork | `mlx-audio 0.4.7`, MLX `0.32.0` | 30/30 | 30/30 | identical 28.768 s outputs |
+| Migration `0.2.12` fork | `mlx-audio 0.4.2`, MLX `0.31.1` | 30/30 | 0/30 | varied 5.024-9.088 s outputs |
+
+The migration fork therefore freezes the accepted Darwin dependency family:
+
+```text
+mlx==0.31.1
+mlx-audio==0.4.2
+mlx-lm==0.31.1
+mlx-metal==0.31.1
+```
+
+`mlx-audio 0.4.2` also resolves `pyloudnorm 0.2.0` transitively. The fork's
+`pyproject.toml` and macOS install smoke must agree on these versions. The
+upstream repository ignores `uv.lock`, so the package declaration is the
+versioned resolver contract. The m1max staging setup independently verifies the
+installed versions and writes them into `runtime-info.json`.
+
+This establishes the updated dependency family as the ownership boundary of
+the regression; it does not isolate one package within that family. Do not
+advance these pins as part of an upstream merge without rerunning the fixed-text
+cap test, Parakeet/Qwen startup checks, the 12-turn WAV replay, and the selected
+STT/TTS stress checks.
+
+Evidence is under:
+
+- `artifacts/s2s-main-migration/qwen-version-ab-20260903/frozen-0210-mlx042-r3/`;
+- `artifacts/s2s-main-migration/qwen-version-ab-20260903/migration-0212-mlx047-r1/`;
+- `artifacts/s2s-main-migration/qwen-version-ab-20260903/migration-0212-mlx042-r1/`.
+
+The dependency blocker is resolved. Section 2.8 records the successful full
+replay on this accepted stack.
+
+### 2.8 Accepted full 12-turn replay (2026-09-04)
+
+Run `artifacts/s2s-main-migration/full-12turn-20260904-0001/` replayed the same
+reviewed `stable-v2` WAV fixture through one fresh visitor session on fork
+commit `db1aeb0` and the accepted MLX dependency baseline from section 2.7.
+
+- all 12 selected turns completed with matching assistant transcript, audio
+  completion, `response.done`, and nonempty decoded PCM;
+- the event artifact contains 12 final response lifecycles and no
+  `hf.realtime.error` events;
+- all 12 output WAVs were distinct, ranging from 2.144 to 18.208 seconds, with
+  a median of 6.496 seconds and no 28.768-second generation-cap result;
+- transcript-to-first-audio latency had a 1.557-second median and 3.136-second
+  maximum;
+- transcript-to-response-done latency had a 4.104-second median and
+  8.275-second maximum;
+- turn 3 reproduced the known `Too starty.` STT limitation;
+- revised inputs on turns 2 and 9 cancelled stale generations and produced the
+  complete final transcripts;
+- the session retained Mike's name and the Lakeside profile through turn 12.
+
+Production remained available on port 8765 throughout the replay. The isolated
+staging process on port 8766 was stopped afterward. This passes the full
+12-turn WAV replay gate. Live robot acceptance, Smart Turn evaluation, and
+promotion remain pending.
+
+### 2.9 Structured trace turn-1 validation (2026-09-04)
+
+The reviewed turn-1 WAV was replayed through the isolated migration backend
+after adding the explicit internal/public response mapping. The backend trace
+contained one `public_response.created` and one
+`public_response.completed` event. Both records carried the same pair:
+
+```text
+response_key=f07c834d35274b4bbd29d114cd21a4a8
+response_id=resp_81d031fbd49c490ca99fcd2b766c9dc3
+```
+
+The client `response.created`, all 32 audio deltas, and `response.done` used
+that same public response ID. The backend and client also recorded the same
+session ID. Payload lineage was complete: the STT hash matched through LLM
+enqueue, the assistant-text hash matched across LLM sentence output, output
+processing, TTS enqueue, and Qwen input, and Qwen's 159,744 PCM bytes matched
+the backend transport and client output.
+
+The backend JSONL had 46 contiguous, unique sequences and event IDs. Captured
+writer health reported an empty queue, zero dropped events, and zero write
+errors. No error, cancellation, stale-discard, or tool event was expected or
+observed in this single normal turn. Evidence is under
+`artifacts/s2s-main-migration/event-trace-turn1-20260904-155442/`.
+
+The replay report's negative `input_done_to_transcript_s` is not a backend
+trace gap: `input_done_ts` means the end of streaming the complete 2.8-second
+fixture, while VAD endpointed and transcribed its 1.78-second speech segment
+before the fixture's trailing silence finished streaming.
+
 ## 3. Backend decisions
 
 ### 3.1 Preserve the current cascade
@@ -121,6 +320,7 @@ Start the migrated server with the same selected functional components:
 - LLM backend: `responses-api`;
 - production model: the configured GPT-5.6 Luna route;
 - TTS: `qwen3`, Sohee, with the accepted m1max settings;
+- macOS MLX dependencies: the frozen versions in section 2.7;
 - transport: Realtime WebSocket;
 - pipeline count: one unless separately evaluated.
 
@@ -331,6 +531,12 @@ Preserve the current application-level event, audio, manifest, audio-review,
 and Rerun artifact contracts. Adapt parsers only where upstream event shapes
 changed.
 
+The backend-side implementation is specified in
+[`s2s-backend-event-trace.md`](s2s-backend-event-trace.md). That trace is the
+source of truth for internal stage transitions and payload lineage; the
+application artifacts remain the source of truth for client-visible Realtime
+events and robot-sink delivery.
+
 For response lifecycle, retain or add:
 
 - connection generation, visitor session, turn, revision, response, item, and
@@ -379,8 +585,10 @@ existing protected artifact path.
 
 ### 7.1 Current implementation status
 
-- Steps 1-5 are complete on fork commit
-  `aaa7c75e1f16a6ccdcd902ea94af92e325ebd455`.
+- Steps 1-5 are complete on the functional baseline
+  `db1aeb000cbe53d23e65f49cc76e8b378e01a6d4`. The current candidate
+  `2e4449c345c305e4ee6b9761f86c1849bbf3cb08` adds the validated structured
+  backend lifecycle trace without changing that data path.
 - Step 6 preserves all raw Realtime event types and adds content-free
   `response.done` output/usage summaries for artifacts.
 - Steps 7-10 are implemented behind the opt-in client profile configuration.
@@ -388,8 +596,13 @@ existing protected artifact path.
   tool failures, sequential output ordering, follow-up generation, cancellation,
   and session teardown.
 - Basic text-only profile and backend-local history integration passed on
-  2026-09-03. Tool, cancellation/revision, audio, WAV replay, live acceptance,
-  Smart Turn evaluation, and promotion remain pending.
+  2026-09-03. The sequential reference-tool integration also passed on that
+  date. Reviewed WAV turn 1 also passed through STT, the profiled model request,
+  and TTS with a completed nonempty response. The first full 12-turn attempt
+  exposed the newer MLX stack's repeated 28-second Qwen outputs. The migration
+  fork now freezes the validated MLX versions from section 2.7, and the repeated
+  full replay passed as recorded in section 2.8. Live acceptance, Smart Turn
+  evaluation, and promotion remain pending.
 
 The opt-in client profile is configured with:
 
@@ -418,6 +631,8 @@ recorded.
 - The historical revised-turn gap cannot recur: valid current-generation text
   and audio both reach the client.
 - `tts.create` returns exact text and nonempty audio without an LLM request.
+- The installed Darwin MLX family matches the frozen versions in section 2.7,
+  and the fixed-text cap regression test completes without a limit hit.
 - Optional Hermes mode passes its existing state-continuity tests while disabled
   mode remains unchanged.
 

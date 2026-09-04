@@ -26,6 +26,8 @@ research document disagree, follow the active specification.
 - [`s2s-main-migration.md`](s2s-main-migration.md) - approved migration from the frozen S2S fork
   to a pinned upstream `main`, including client-side profile composition, tool execution, and the
   long-term-memory extension boundary.
+- [`s2s-backend-event-trace.md`](s2s-backend-event-trace.md) - structured backend lifecycle and
+  payload-lineage trace contract for the migrated VAD/STT/LLM/TTS pipeline.
 - [`vision-visitor-state-proposal.md`](vision-visitor-state-proposal.md) - implemented door/person
   greet-goodbye policy and its remaining live acceptance.
 - [`hermes-s2s-fork-spec.md`](hermes-s2s-fork-spec.md) - deployed Hermes session integration and
