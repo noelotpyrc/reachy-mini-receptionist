@@ -129,6 +129,14 @@ def test_reference_tools_expose_only_catalog_ids(tmp_path):
 
     schemas = registry.schemas()
     assert registry.names() == ["reference_catalog", "reference_read"]
+    catalog_schema = next(
+        schema for schema in schemas if schema["name"] == "reference_catalog"
+    )
+    assert catalog_schema["parameters"] == {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
     read_schema = next(schema for schema in schemas if schema["name"] == "reference_read")
     assert read_schema["parameters"]["properties"]["reference_id"]["enum"] == [
         "clinic.parking"

@@ -1,0 +1,13 @@
+version: 1
+references:
+  clinic.overflow_parking:
+    path: overflow_parking.md
+    title: Overflow parking procedure
+    summary: Location and permit requirement for visitor overflow parking.
+    delivery: on_demand
+    tags:
+      - parking
+      - overflow
+      - permit
+    audience: visitor
+    max_bytes: 4096

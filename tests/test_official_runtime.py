@@ -2186,6 +2186,8 @@ def test_s2s_realtime_handler_sends_session_and_audio_without_official_app():
     assert snapshot["instructions_sha256"] == hashlib.sha256(b"You are a clinic receptionist.").hexdigest()
     assert snapshot["instructions_chars"] == len("You are a clinic receptionist.")
     assert "hf.realtime.session.created" in events.kinds()
+    session_created = next(event for event in events.events if event.kind == "hf.realtime.session.created")
+    assert session_created.data["backend_session_id"] == "sess-1"
 
 
 def test_profile_owned_context_sends_empty_realtime_instructions_without_audio(tmp_path):

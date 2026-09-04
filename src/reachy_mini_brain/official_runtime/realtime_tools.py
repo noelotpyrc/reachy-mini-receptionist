@@ -289,29 +289,21 @@ def build_reference_tool_registry(reference_store: ReferenceStore) -> ToolRegist
     registry = ToolRegistry()
 
     async def catalog(
-        context: ToolExecutionContext, arguments: dict[str, Any]
+        context: ToolExecutionContext, _arguments: dict[str, Any]
     ) -> dict[str, Any]:
-        return await asyncio.to_thread(
-            context.reference_store.catalog,
-            str(arguments.get("topic", "")),
-        )
+        return await asyncio.to_thread(context.reference_store.catalog)
 
     registry.register(
         ToolDefinition(
             name="reference_catalog",
             description=(
-                "List approved on-demand visitor-safe references. Use this when "
-                "the needed information is not already in the profile context."
+                "Return the complete catalog of approved on-demand visitor-safe "
+                "references. Call with an empty object when the needed information "
+                "is not already in the profile context."
             ),
             parameters={
                 "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "maxLength": 128,
-                        "description": "Optional topic used to filter reference metadata.",
-                    }
-                },
+                "properties": {},
                 "additionalProperties": False,
             },
             callback=catalog,

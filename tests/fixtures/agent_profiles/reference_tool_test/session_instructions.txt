@@ -1,0 +1,4 @@
+# Session behavior
+
+Use reference tools only when the requested fact is absent from the supplied
+profile context.

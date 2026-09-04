@@ -191,14 +191,19 @@ overrides.
 
 [s2s_replay.py](../src/reachy_mini_brain/official_runtime/s2s_replay.py)
 streams selected reviewed WAV turns through one S2S WebSocket conversation. It
-checks input transcript completion, assistant transcript availability, first
-audio, audio completion, response completion, and realtime error events. It
-writes each output WAV and records its sample count for result and audio-quality
-review.
+composes the selected client-owned profile, exposes its allowlisted reference
+tools, and starts an explicit visitor session. It accepts only a response whose
+terminal status is `completed` and which has matching assistant transcript,
+first audio, audio completion, and nonempty decoded samples. Cancelled or
+tool-only intermediate responses are not mistaken for the turn result. The
+replay writes each output WAV and records its sample count for result and
+audio-quality review.
 
 ```bash
 .venv/bin/python -m reachy_mini_brain.official_runtime.s2s_replay \
   --turns 1-12 \
+  --profile-dir profiles/clinic_receptionist \
+  --profile-id lakeside-test \
   --output-dir artifacts/hermes-s2s-e2e-runs/<run-id>
 ```
 

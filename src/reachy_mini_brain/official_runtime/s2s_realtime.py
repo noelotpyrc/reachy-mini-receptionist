@@ -462,6 +462,9 @@ def _summarize_event(event: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in event:
             data[key] = event[key]
+    session = event.get("session")
+    if isinstance(session, dict) and isinstance(session.get("id"), str):
+        data["backend_session_id"] = session["id"]
     response = event.get("response")
     if isinstance(response, dict):
         data["response_id"] = data.get("response_id") or response.get("id")

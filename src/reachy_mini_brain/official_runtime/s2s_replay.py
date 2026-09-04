@@ -16,8 +16,10 @@ from typing import Any
 import click
 import numpy as np
 
+from .agent_profile import compose_agent_profile
 from .env import PROJECT_ROOT
 from .events import JsonlEventSink, RuntimeEvent
+from .realtime_tools import ToolExecutionContext, build_reference_tool_registry
 from .s2s_realtime import ConnectFactory, S2SRealtimeHandler
 
 
@@ -31,9 +33,8 @@ DEFAULT_MANIFEST = (
 )
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "artifacts" / "hermes-s2s-e2e-runs"
 DEFAULT_WS_URL = "ws://127.0.0.1:8765/v1/realtime"
-DEFAULT_INSTRUCTIONS = (
-    "You are a concise clinic receptionist. Listen to the visitor and answer naturally in one short sentence."
-)
+DEFAULT_PROFILE_DIR = PROJECT_ROOT / "profiles" / "clinic_receptionist"
+DEFAULT_PROFILE_ID = "lakeside-test"
 Sleep = Callable[[float], Awaitable[None]]
 
 
@@ -59,6 +60,16 @@ class ReplayTurnResult:
     input_done_to_transcript_s: float
     transcript_to_first_audio_s: float | None
     transcript_to_response_done_s: float
+
+
+@dataclass(frozen=True)
+class _CompletedAudioResponse:
+    response_id: str
+    transcript_event: RuntimeEvent
+    first_audio_event: RuntimeEvent
+    audio_text_event: RuntimeEvent
+    audio_done_event: RuntimeEvent
+    response_done_event: RuntimeEvent
 
 
 class ReplayEventSink:
@@ -88,7 +99,9 @@ class ReplayEventSink:
                 for index in range(start_index, len(self.events)):
                     event = self.events[index]
                     if event.kind == "hf.realtime.error":
-                        raise RuntimeError(f"S2S realtime error while waiting for {label}: {event.data}")
+                        raise RuntimeError(
+                            f"S2S realtime error while waiting for {label}: {event.data}"
+                        )
                     if predicate(event):
                         return index, event
                 await self._changed.wait()
@@ -112,7 +125,9 @@ class OutputCollector:
             _sample_rate, audio, metadata = output
             response_id = str(metadata.get("response_id") or "")
             if response_id:
-                self.audio_by_response.setdefault(response_id, []).append(np.asarray(audio, dtype="<i2").copy())
+                self.audio_by_response.setdefault(response_id, []).append(
+                    np.asarray(audio, dtype="<i2").copy()
+                )
 
     def audio(self, response_id: str) -> np.ndarray[Any, Any]:
         chunks = self.audio_by_response.get(response_id, [])
@@ -127,7 +142,8 @@ async def run_s2s_replay(
     turn_indexes: Sequence[int],
     output_dir: Path,
     ws_url: str = DEFAULT_WS_URL,
-    instructions: str = DEFAULT_INSTRUCTIONS,
+    profile_dir: Path = DEFAULT_PROFILE_DIR,
+    profile_id: str = DEFAULT_PROFILE_ID,
     frame_duration_ms: int = 20,
     turn_timeout_s: float = 90.0,
     real_time: bool = True,
@@ -139,29 +155,48 @@ async def run_s2s_replay(
     manifest_path = manifest_path.expanduser().resolve()
     output_dir = output_dir.expanduser().resolve()
     if output_dir.exists():
-        raise FileExistsError(f"refusing to overwrite existing replay run: {output_dir}")
+        raise FileExistsError(
+            f"refusing to overwrite existing replay run: {output_dir}"
+        )
     if frame_duration_ms <= 0:
         raise ValueError("frame_duration_ms must be positive")
     selected = _load_selected_turns(manifest_path, turn_indexes)
+    profile = compose_agent_profile(
+        profile_id=profile_id,
+        public_dir=profile_dir,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=False)
     events_path = output_dir / "events.jsonl"
     events_path.write_text("", encoding="utf-8")
     sink = ReplayEventSink(events_path)
+    tool_registry = build_reference_tool_registry(profile.reference_store)
+    tool_context = ToolExecutionContext(
+        profile_id=profile.profile_id,
+        visitor_session_id="pre-session",
+        reference_store=profile.reference_store,
+        event_sink=sink,
+    )
     handler = S2SRealtimeHandler(
         realtime_ws_url=ws_url,
-        instructions=instructions,
+        instructions=profile.instructions,
+        instructions_source=f"profile:{profile.profile_id}",
+        instructions_sha256=profile.sha256,
         event_sink=sink,
         startup_timeout_s=min(turn_timeout_s, 20.0),
         connect_factory=connect_factory,
+        tool_registry=tool_registry,
+        tool_context=tool_context,
     )
     collector = OutputCollector(handler)
     collector_task: asyncio.Task[None] | None = None
     results: list[ReplayTurnResult] = []
     run_started_ts = time.time()
+    conversation_session: dict[str, Any] | None = None
 
     try:
         await handler.start_up()
+        conversation_session = await handler.begin_conversation_session()
         collector_task = asyncio.create_task(collector.run(), name="s2s-replay-output")
         for turn in selected:
             result = await _run_turn(
@@ -187,19 +222,24 @@ async def run_s2s_replay(
         await handler.shutdown()
 
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "completed",
         "manifest": str(manifest_path),
         "manifest_sha256": _sha256_file(manifest_path),
         "ws_url": ws_url,
         "turn_indexes": [result.index for result in results],
         "connection_count": 1,
+        "conversation_session": conversation_session,
+        "profile": profile.provenance(),
+        "registered_tools": tool_registry.names(),
         "started_ts": run_started_ts,
         "done_ts": time.time(),
         "events_jsonl": events_path.name,
         "turns": [asdict(result) for result in results],
     }
-    (output_dir / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "report.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return results
 
 
@@ -231,53 +271,29 @@ async def _run_turn(
     )
     input_done_ts = time.time()
 
-    transcript_index, transcript_event = await sink.wait_for(
-        lambda event: event.kind == "hf.realtime.conversation.item.input_audio_transcription.completed",
+    _transcript_index, _transcript_event = await sink.wait_for(
+        lambda event: (
+            event.kind
+            == "hf.realtime.conversation.item.input_audio_transcription.completed"
+        ),
         start_index=start_index,
         timeout_s=turn_timeout_s,
         label=f"turn {turn_index} input transcript",
     )
-    first_audio_index, first_audio_event = await sink.wait_for(
-        lambda event: event.kind == "hf.realtime.response.output_audio.delta" and bool(_event_response_id(event)),
-        start_index=transcript_index,
+    completed = await _wait_for_completed_audio_response(
+        sink=sink,
+        collector=collector,
+        start_index=start_index,
+        turn_index=turn_index,
         timeout_s=turn_timeout_s,
-        label=f"turn {turn_index} first output audio",
-    )
-    transcript_index, transcript_event = next(
-        (index, sink.events[index])
-        for index in range(first_audio_index - 1, start_index - 1, -1)
-        if sink.events[index].kind == "hf.realtime.conversation.item.input_audio_transcription.completed"
-    )
-    response_id = _event_response_id(first_audio_event)
-
-    _audio_text_index, audio_text_event = await sink.wait_for(
-        lambda event: (
-            event.kind == "hf.realtime.response.output_audio_transcript.done"
-            and _event_response_id(event) == response_id
-        ),
-        start_index=transcript_index,
-        timeout_s=turn_timeout_s,
-        label=f"turn {turn_index} assistant transcript",
-    )
-    _audio_done_index, audio_done_event = await sink.wait_for(
-        lambda event: (
-            event.kind == "hf.realtime.response.output_audio.done"
-            and _event_response_id(event) == response_id
-        ),
-        start_index=first_audio_index,
-        timeout_s=turn_timeout_s,
-        label=f"turn {turn_index} output_audio.done",
-    )
-    _response_done_index, response_done_event = await sink.wait_for(
-        lambda event: event.kind == "hf.realtime.response.done" and _event_response_id(event) == response_id,
-        start_index=first_audio_index,
-        timeout_s=turn_timeout_s,
-        label=f"turn {turn_index} response.done",
     )
     sink.raise_for_errors(start_index=start_index)
-    await asyncio.sleep(0)
-
+    response_id = completed.response_id
     audio = collector.audio(response_id)
+    if audio.size == 0:
+        raise RuntimeError(
+            f"turn {turn_index} completed response {response_id!r} produced no decodable audio"
+        )
     output_wav = output_dir / f"turn-{turn_index:02d}-assistant.wav"
     _write_pcm16_mono(output_wav, audio, 16_000)
     response_created_event = next(
@@ -289,6 +305,11 @@ async def _run_turn(
         ),
         None,
     )
+    transcript_event = completed.transcript_event
+    first_audio_event = completed.first_audio_event
+    audio_text_event = completed.audio_text_event
+    audio_done_event = completed.audio_done_event
+    response_done_event = completed.response_done_event
     transcript_ts = transcript_event.ts
     return ReplayTurnResult(
         index=turn_index,
@@ -304,7 +325,9 @@ async def _run_turn(
         input_started_ts=input_started_ts,
         input_done_ts=input_done_ts,
         transcript_done_ts=transcript_ts,
-        response_created_ts=response_created_event.ts if response_created_event is not None else None,
+        response_created_ts=response_created_event.ts
+        if response_created_event is not None
+        else None,
         first_audio_ts=first_audio_event.ts,
         audio_done_ts=audio_done_event.ts,
         response_done_ts=response_done_event.ts,
@@ -312,6 +335,104 @@ async def _run_turn(
         transcript_to_first_audio_s=first_audio_event.ts - transcript_ts,
         transcript_to_response_done_s=response_done_event.ts - transcript_ts,
     )
+
+
+async def _wait_for_completed_audio_response(
+    *,
+    sink: ReplayEventSink,
+    collector: OutputCollector,
+    start_index: int,
+    turn_index: int,
+    timeout_s: float,
+) -> _CompletedAudioResponse:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    cursor = start_index
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"turn {turn_index} did not produce a completed audio response"
+            )
+        response_done_index, response_done_event = await sink.wait_for(
+            lambda event: event.kind == "hf.realtime.response.done",
+            start_index=cursor,
+            timeout_s=remaining,
+            label=f"turn {turn_index} completed audio response",
+        )
+        cursor = response_done_index + 1
+        response_id = _event_response_id(response_done_event)
+        if (
+            not response_id
+            or response_done_event.data.get("response_status") != "completed"
+        ):
+            continue
+
+        response_events = [
+            event
+            for event in sink.events[start_index : response_done_index + 1]
+            if _event_response_id(event) == response_id
+        ]
+        first_audio_event = next(
+            (
+                event
+                for event in response_events
+                if event.kind == "hf.realtime.response.output_audio.delta"
+            ),
+            None,
+        )
+        audio_text_event = next(
+            (
+                event
+                for event in reversed(response_events)
+                if event.kind == "hf.realtime.response.output_audio_transcript.done"
+            ),
+            None,
+        )
+        audio_done_event = next(
+            (
+                event
+                for event in reversed(response_events)
+                if event.kind == "hf.realtime.response.output_audio.done"
+            ),
+            None,
+        )
+        if (
+            first_audio_event is None
+            or audio_text_event is None
+            or audio_done_event is None
+        ):
+            continue
+        transcript_event = next(
+            (
+                event
+                for event in reversed(
+                    sink.events[start_index : response_done_index + 1]
+                )
+                if event.kind
+                == "hf.realtime.conversation.item.input_audio_transcription.completed"
+                and event.ts <= first_audio_event.ts
+            ),
+            None,
+        )
+        if transcript_event is None:
+            continue
+
+        for _attempt in range(10):
+            if collector.audio(response_id).size:
+                break
+            await asyncio.sleep(0)
+        if collector.audio(response_id).size == 0:
+            raise RuntimeError(
+                f"turn {turn_index} completed response {response_id!r} produced no decodable audio"
+            )
+        return _CompletedAudioResponse(
+            response_id=response_id,
+            transcript_event=transcript_event,
+            first_audio_event=first_audio_event,
+            audio_text_event=audio_text_event,
+            audio_done_event=audio_done_event,
+            response_done_event=response_done_event,
+        )
 
 
 async def _stream_wav(
@@ -348,7 +469,9 @@ async def _stream_wav(
     return total_samples, sample_rate
 
 
-def _load_selected_turns(manifest_path: Path, turn_indexes: Sequence[int]) -> list[dict[str, Any]]:
+def _load_selected_turns(
+    manifest_path: Path, turn_indexes: Sequence[int]
+) -> list[dict[str, Any]]:
     if not turn_indexes:
         raise ValueError("at least one explicit turn index is required")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -374,7 +497,9 @@ def _event_response_id(event: RuntimeEvent) -> str:
     return str(event.data.get("response_id") or "")
 
 
-def _write_pcm16_mono(path: Path, audio: np.ndarray[Any, Any], sample_rate: int) -> None:
+def _write_pcm16_mono(
+    path: Path, audio: np.ndarray[Any, Any], sample_rate: int
+) -> None:
     with wave.open(str(path), "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
@@ -417,9 +542,20 @@ def _parse_turns(value: str) -> tuple[int, ...]:
     default=DEFAULT_MANIFEST,
     show_default=True,
 )
-@click.option("--turns", required=True, help="Explicit indexes or ranges, for example 2,3,8 or 1-12.")
+@click.option(
+    "--turns",
+    required=True,
+    help="Explicit indexes or ranges, for example 2,3,8 or 1-12.",
+)
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--ws-url", default=DEFAULT_WS_URL, show_default=True)
+@click.option(
+    "--profile-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=DEFAULT_PROFILE_DIR,
+    show_default=True,
+)
+@click.option("--profile-id", default=DEFAULT_PROFILE_ID, show_default=True)
 @click.option("--frame-duration-ms", default=20, show_default=True)
 @click.option("--turn-timeout-s", default=90.0, show_default=True)
 def cli(
@@ -427,6 +563,8 @@ def cli(
     turns: str,
     output_dir: Path | None,
     ws_url: str,
+    profile_dir: Path,
+    profile_id: str,
     frame_duration_ms: int,
     turn_timeout_s: float,
 ) -> None:
@@ -443,6 +581,8 @@ def cli(
                 turn_indexes=turn_indexes,
                 output_dir=output_dir,
                 ws_url=ws_url,
+                profile_dir=profile_dir,
+                profile_id=profile_id,
                 frame_duration_ms=frame_duration_ms,
                 turn_timeout_s=turn_timeout_s,
             )
