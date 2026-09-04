@@ -67,6 +67,13 @@ env VIRTUAL_ENV="$RELEASE/.release-venv" /Users/leon/.local/bin/uv sync \
 ```
 
 Use a separate `.validation-venv` with the same command plus `--extra dev` for pytest and lint.
+Set `REACHY_REPO="$RELEASE"` when invoking validation commands directly from that non-editable
+environment; the stable `reception-prod` launcher normally supplies this runtime root. For example:
+
+```bash
+REACHY_REPO="$RELEASE" "$RELEASE/.validation-venv/bin/python" -m pytest -q
+```
+
 Record the Git SHA, `uv.lock` hash, Python/uv versions, extras, installed package inventory, and
 non-secret configuration-link provenance before accepting the release.
 

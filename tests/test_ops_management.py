@@ -651,6 +651,8 @@ def test_build_audio_playback_command_uses_live_app_scripted_playback(tmp_path):
         "--no-audio-gate",
         "--no-ready-cue",
         "--no-conversation-cues",
+        "--visitor-trigger-profile",
+        "legacy",
         "--scripted-playback-wav",
         str(config.preflight_wav),
         "--scripted-playback-post-roll-s",

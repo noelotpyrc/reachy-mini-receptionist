@@ -1546,6 +1546,8 @@ def build_audio_playback_command(config: OpsConfig, wav_path: Path, *, run_id: s
         "--no-audio-gate",
         "--no-ready-cue",
         "--no-conversation-cues",
+        "--visitor-trigger-profile",
+        LEGACY_VISITOR_TRIGGER_PROFILE,
         "--scripted-playback-wav",
         str(wav_path),
         "--scripted-playback-post-roll-s",
