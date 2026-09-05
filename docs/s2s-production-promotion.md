@@ -9,6 +9,8 @@ Status: production activated on 2026-09-05; managed non-hardware acceptance pass
 - Backend: `mlx==0.31.1`, `mlx-audio==0.4.2`, `mlx-lm==0.31.1`, `mlx-metal==0.31.1`.
 - Provider: direct OpenRouter `openai/gpt-5.6-luna`, matching the tested staging launcher.
 - Smart Turn disabled; Qwen Sohee voice and existing sentence batching unchanged.
+- September 5 voice tuning: approved moderately brisk delivery instruction;
+  temperature remains the pinned mlx-audio default of 0.9 (see below).
 - launchd S2S `ProcessType=Interactive` retained. No physical runner is started automatically.
 - Real private Acugenie profile: original Hermes personality/base/facts/capabilities,
   shared spoken guidance, organized tool guidance, and runtime NY date context.
@@ -164,3 +166,22 @@ WAVs, and release manifest are retained on m1max under:
 The original rollback snapshot remains at `20260904-d55159e` in the same parent.
 Restore app `7840866` and its saved configuration together for the previous Hermes
 production route. The staging listener and Hermes service were left intact.
+
+## Sohee Delivery Configuration: September 5
+
+The user approved this instruction after reviewing the news-only WAV comparison:
+
+> Speak in a warm, clear conversational voice at a moderately brisk pace, with short natural pauses and consistent delivery.
+
+`S2S_TTS_INSTRUCT` in private `production.env` passes this string as one
+`--qwen3_tts_instruct` argument. An empty value omits that argument and restores
+the previous unconditioned delivery after a managed backend restart. Temperature
+remains 0.9, the verified default of pinned mlx-audio 0.4.2; no dependency patch
+or new sampling override is introduced. Sohee, language auto, sentence batching,
+generation limits, volume, and Interactive scheduling are unchanged. This applies
+to both conversation speech and fixed policy speech through the shared Qwen handler.
+
+Offline evidence: `artifacts/qwen-tts-diagnostics/sohee-tuning-20260905-02/`
+(ignored, also retained on m1max under shared artifacts/diagnosis). Moderately
+brisk news samples lasted 10.272 and 10.688 seconds. This is a delivery preference,
+not a guarantee against the existing generation-limit truncation risk.

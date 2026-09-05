@@ -3,6 +3,46 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+
+@pytest.mark.parametrize("mode", ["serve", "legacy"])
+@pytest.mark.parametrize("instruction", ["", "Speak warmly, with short natural pauses."])
+def test_production_launcher_passes_optional_tts_instruction(
+    tmp_path: Path, mode: str, instruction: str,
+) -> None:
+    backend = tmp_path / "backend"
+    cli = backend / ".venv" / "bin" / "speech-to-speech"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
+    cli.chmod(0o755)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    nc = fake_bin / "nc"
+    nc.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    nc.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "scripts/m1max/run_s2s_backend.sh"],
+        check=False, capture_output=True, text=True,
+        env={
+            "PATH": f"{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin",
+            "BACKEND_DIR": str(backend),
+            "S2S_ENV_LOADED": "1",
+            "S2S_CLI_MODE": mode,
+            "OPENROUTER_API_KEY": "test-only-key",
+            "S2S_TTS_INSTRUCT": instruction,
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    args = result.stdout.splitlines()
+    assert args[args.index("--qwen3_tts_speaker") + 1] == "Sohee"
+    if instruction:
+        assert args.count("--qwen3_tts_instruct") == 1
+        assert args[args.index("--qwen3_tts_instruct") + 1] == instruction
+    else:
+        assert "--qwen3_tts_instruct" not in args
+    assert "test-only-key" not in result.stdout
+
 
 def test_s2s_staging_setup_is_isolated_and_pinned(tmp_path: Path) -> None:
     backend_dir = tmp_path / "staging-backend"

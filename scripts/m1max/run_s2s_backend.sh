@@ -14,6 +14,7 @@ fi
 S2S_HOST="${S2S_HOST:-127.0.0.1}"
 S2S_PORT="${S2S_PORT:-8765}"
 S2S_VOICE="${S2S_VOICE:-Sohee}"
+S2S_TTS_INSTRUCT="${S2S_TTS_INSTRUCT:-}"
 S2S_PROVIDER="${S2S_PROVIDER:-auto}"
 S2S_MODEL_NAME="${S2S_MODEL_NAME:-}"
 S2S_LOG_LEVEL="${S2S_LOG_LEVEL:-info}"
@@ -35,6 +36,10 @@ RESPONSES_BASE_URL_ARGS=()
 RESPONSES_THINKING_ARGS=()
 RESPONSES_CONVERSATION_ARGS=()
 RESPONSES_DIRECT_ARGS=()
+TTS_STYLE_ARGS=()
+if [[ -n "$S2S_TTS_INSTRUCT" ]]; then
+  TTS_STYLE_ARGS=(--qwen3_tts_instruct "$S2S_TTS_INSTRUCT")
+fi
 
 case "$S2S_RESPONSES_CONVERSATION" in
   0|1) ;;
@@ -155,6 +160,7 @@ exec "$BACKEND_DIR/.venv/bin/speech-to-speech" \
   --enable_live_transcription \
   --qwen3_tts_model_name Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
   --qwen3_tts_speaker "$S2S_VOICE" \
+  ${TTS_STYLE_ARGS[@]+"${TTS_STYLE_ARGS[@]}"} \
   --qwen3_tts_language auto \
   --qwen3_tts_non_streaming_mode true \
   --qwen3_tts_mlx_quantization 6bit
