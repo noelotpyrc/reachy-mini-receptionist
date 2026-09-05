@@ -5,8 +5,9 @@ Status: staging and live backend acceptance passed; managed production promoted
 Audience: backend, receptionist-runtime, and operations maintainers
 
 The app/backend/config promotion completed on 2026-09-05. Current production is
-app `37c7042` with backend `2e4449c`, private client-owned profile, and default
-`time-web` tools. See the [promotion record](s2s-production-promotion.md) for managed
+app `ce95a49` with backend `2e4449c`, private client-owned profile, and default
+`time-web` tools. The follow-up app release adds the approved Sohee delivery instruction;
+the backend and dependency pins are unchanged. See the [promotion record](s2s-production-promotion.md) for managed
 acceptance and rollback evidence. The implementation history below retains the
 original migration baseline and staging decisions.
 

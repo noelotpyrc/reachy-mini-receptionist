@@ -303,11 +303,27 @@ the same backend session remains connected. Use retained raw input and event art
 VAD probabilities, final-transcript outcomes, and cue transitions before changing thresholds, reset
 behavior, or empty-final handling. See [`robot-runtime-debugging.md`](robot-runtime-debugging.md).
 
-### 8. Backend context & model experiments  `[ ]`
-**Status:** paused on 2026-08-06 for production preparation. The deployed Hermes/profile-owned
-context path, GPT-5.6 Luna direct fallback, session mapping, read-only reference tools, latency
-tracing, and deterministic policy speech are the frozen baseline. Do not start new backend feature
-or model experiments unless this item is explicitly resumed.
+**2026-09-05 follow-up, still deferred:** `official-live-20260905-103441` missed follow-up speech
+after a news response despite retaining it in the microphone WAV. Replays recognized the first
+phrase but did not reproduce the exact live sequence; the later short fragment remained sensitive
+to preceding audio. No confirmed root cause or VAD change. See the
+[incident evidence and logging limits](robot-runtime-debugging.md#september-5-missed-speech-after-news-playback).
+
+### 7d. TTS generation-limit robustness  `[ ]`
+**Status:** known residual risk; no implementation change approved. The September 5 news
+cutoff is consistent with the pinned mlx-audio internal generation ceiling. Approved brisk
+Sohee delivery at temperature 0.9 does not remove that ceiling. Check complete spoken endings
+in the next assisted run; do not infer audible completeness from transcript/response events.
+See [incident and evidence](robot-runtime-debugging.md#september-5-news-tts-cutoff).
+
+### 8. Backend context & model experiments  `[x]`
+**Status:** production context migration and backend selection completed on 2026-09-05.
+The frozen baseline is S2S 0.2.12 / `2e4449c`, direct GPT-5.6 Luna, private client-owned
+clinic instructions, `time-web` tools, canonical S2S Chat history, lifecycle tracing,
+and fixed-text policy TTS. App `ce95a49` adds the approved brisk Sohee instruction.
+Hermes remains an optional rollback route, not the current context owner. Further
+backend feature/model experiments are paused unless explicitly resumed. See
+[production promotion](s2s-production-promotion.md). Earlier decisions below are historical.
 
 **Goal:** Give the receptionist real clinic context, then decide model/wrapper.
 **Reference:** `docs/archive/research/custom-realtime-backend-research.md` preserves the completed
@@ -331,6 +347,10 @@ tracked profile prompt remains available only for direct-only fallback testing.
 a model/wrapper decision.
 
 ### 9. S2S backend runtime reproducibility  `[x]`
+**Current production:** the migrated 0.2.12 runtime and MLX pins are frozen separately at
+`speech_to_speech_backend_2e4449c_frozen`; setup and verification are described in
+[the migration specification](s2s-main-migration.md). The original 0.2.10 work below
+remains the preserved legacy/rollback path, not the production installation target.
 **Goal:** Keep `/Users/leon/projects/speech_to_speech_backend` as the generic external backend
 runtime folder, but make it reproducible from the product/controller repo instead of relying on
 manual venv state.
@@ -349,9 +369,10 @@ documented commands, and live OPS still uses the same `ws://127.0.0.1:8765/v1/re
 verification, and `runtime-info.json` output. It does not delete logs/model caches/runtime artifacts.
 
 ### 10. Recorder sidecar process  `[ ]`
-**Production relevance:** tracked as a promotion gate in
-[`production-readiness.md`](production-readiness.md). The 2026-08-06 long run also exposed a large
-input-loop versus MKV-duration discrepancy that must be diagnosed before continuous video is trusted.
+**Production relevance:** deferred enhancement, not an assisted-production blocker; see
+[`production-readiness.md`](production-readiness.md). Controlled fail-stop finalization passed.
+Hard-kill recorder isolation remains future work. The MKV playback-time discrepancy is an accepted
+review limitation; sidecar timestamps remain the diagnosis timeline authority.
 
 **Goal:** Decouple artifact persistence from the live runner so audio/video/capture artifacts can
 finalize even if the robot runner crashes or must be killed.

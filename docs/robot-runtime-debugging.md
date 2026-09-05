@@ -60,6 +60,83 @@ The failed run's two `session.created` events were expected: policy greet/goodby
 connection, so the runtime opened a fresh S2S connection at the visitor-conversation boundary. The
 second connection successfully handled the opener and first user turn; it was not a failed reconnect.
 
+### September 5: Missed Speech After News Playback
+
+**Status:** unresolved and deferred by the operator on 2026-09-05. No VAD model, threshold, state-reset,
+or microphone-processing change was approved. Track under [TODO 7c](todo-official-runtime.md).
+
+Run `official-live-20260905-103441`, first chat session
+`session_cc4cb214e99c49ec966bcb889f0524eb`, used app `37c7042` and backend `2e4449c`.
+After the local-news answer, follow-up speech remained in the microphone recording but produced no
+accepted live speech-start event or final transcript. All times below are EDT:
+
+- At `10:44:57.238`, TTS finished generating and released its MLX lock. At `10:44:57.250`, the
+  response completed and the backend explicitly enabled listening. These are generation/transport
+  events, not physical speaker-playback completion.
+- At `10:45:08.709`, VAD discarded one 852 ms segment containing only 256 ms classified as active
+  speech, below its 384 ms minimum. This does not measure the duration of the user's actual speech.
+- No other backend activity, errors, cancellations, or disconnects were logged before the app's
+  `10:45:30.387` idle timeout. Microphone frames continued to be recorded and forwarded until that
+  timeout closed the app audio gate. The backend connection remained open until the next chat.
+- The review app's VAD lane contains accepted public speech events, not rejected candidates or
+  per-frame classification. An empty lane cannot establish that the backend stopped consuming audio.
+
+The original INFO-level log lacks VAD input-consumption summaries (currently DEBUG-only) and
+per-frame speech probabilities. The discard establishes VAD activity at that instant, not continuous
+processing of every forwarded frame. Noise, weakened post-microphone-processing speech, accumulated
+VAD context, framing, and unobserved delivery/processing problems remain hypotheses, not proven causes.
+
+Offline evidence:
+
+- Fresh isolated VAD/STT replay of the 25-second post-cutoff clip recognized `So according to what?`
+  and `Hello?`. Including the preceding playback period in a 42-second clip still recognized the
+  first phrase but rejected the later fragment. Neither replay reconstructed the full live state.
+- A continuous replay from the news request through idle cutoff sent all 2,492 original microphone
+  chunks through the running new backend, preserving relative arrival timing. It recognized
+  `According to what?` and responded; it rejected the later fragment with 128 ms active speech below
+  384 ms. However, the initial STT heard `No cool news` rather than `local news`, so no web search
+  occurred and the response/timing differed. This did not reproduce the exact news-readout failure.
+- m1max's cached Silero model checksum matched official v6.2.1. The upstream README's v5 label is
+  not a reliable runtime version: both loaders use the cached `snakers4/silero-vad:master` resource.
+
+Evidence is retained under `artifacts/diagnosis/official-live-20260905-103441/`, including
+`original-backend-service-snapshot.log`, `microphone/README.md`, and
+`continuous-endpoint-01/README.md`; original artifacts are under `artifacts/official-runtime-live/`.
+Raw artifacts remain outside Git and subject to the existing retention workflow. The separate news
+TTS truncation is not evidence that VAD was deliberately disabled during speech.
+
+### September 5: News TTS Cutoff
+
+**Status:** unresolved generation-limit risk; no limit or dependency change approved.
+The later Sohee instruction change is a delivery preference, not a confirmed fix.
+
+In the same run, response `resp_44b96d6f05954d408f534218612b2e46` included the ending
+"according to New Jersey high school sports" in its text. The operator heard both
+the retained WAV and live speaker stop after "according to New Jersey high".
+Transport reported completion without cancellation/error; retained audio was
+237,568 samples at 16 kHz (14.848 seconds).
+
+The pinned mlx-audio 0.4.2 CustomVoice path caps generation at
+`min(requested_max_tokens, max(75, text_token_count * 6))`. The complete news text,
+including "school sports", had 31 text tokens: the handler's 360-token request
+was reduced to 186 codec steps, about 14.88 seconds at 12.5 steps/second. This close
+match supports a generation-ceiling explanation, but the retained trace does not
+explicitly identify EOS versus limit as the stop reason. It is not evidence that
+the input tokenizer omitted the last words. Increasing the outer limit alone would
+not lift this inner cap.
+
+Subsequent offline voice tests retained the same caps. The operator selected the
+moderately brisk instruction at temperature 0.9; those two news samples lasted
+10.272 and 10.688 seconds. Other settings still reached the ceiling. Shorter audio
+and successful response events do not by themselves prove complete spoken wording.
+See [voice configuration and deployment](s2s-production-promotion.md#sohee-delivery-configuration-september-5).
+
+Original evidence is under `artifacts/diagnosis/official-live-20260905-103441/`;
+voice comparisons are under `artifacts/qwen-tts-diagnostics/sohee-tuning-20260905-01/`
+and `sohee-tuning-20260905-02/`. These private/ignored artifacts remain outside Git.
+This output cutoff and the missed follow-up input are separate observations; neither
+establishes the other's cause.
+
 ## Runtime Access Layers
 
 ### 1. Daemon REST API

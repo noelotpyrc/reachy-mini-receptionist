@@ -2,6 +2,10 @@
 
 Status: production activated on 2026-09-05; managed non-hardware acceptance passed.
 
+Current production: app `ce95a49`, backend `2e4449c`. The September 5 Sohee
+follow-up below supersedes the app/configuration from the original promotion;
+historical deployment evidence retains its original revision labels.
+
 ## Accepted Candidate
 
 - Backend fork: `2e4449c345c305e4ee6b9761f86c1849bbf3cb08`, S2S `0.2.12`.
@@ -185,3 +189,33 @@ Offline evidence: `artifacts/qwen-tts-diagnostics/sohee-tuning-20260905-02/`
 (ignored, also retained on m1max under shared artifacts/diagnosis). Moderately
 brisk news samples lasted 10.272 and 10.688 seconds. This is a delivery preference,
 not a guarantee against the existing generation-limit truncation risk.
+
+### Deployment and Verification
+
+- Activated app `ce95a491ad26a8beefcef57392afea666452bbdd` at
+  `/Users/leon/projects/reachy_mini_receptionist_release_ce95a49_frozen`.
+- Backend `2e4449c`, private profile, tools, SDK, and model dependencies unchanged.
+  The new lockfile-built app environment matched the prior package inventory exactly.
+- Launcher/OPS tests: 73 passed locally and 73 passed on m1max. Shell syntax and
+  targeted Ruff checks passed. The initial remote test invocation used the SSH
+  home directory and failed relative-path lookups; rerunning from the release root
+  passed without code changes.
+- Managed restart verified old process exit and port closure, followed by healthy
+  startup with `ProcessType=Interactive`. Running command arguments contained the
+  exact approved instruction; the installed CustomVoice temperature default was 0.9.
+- Production `tts.create` smoke: greet, goodbye, and news completed, all with exact
+  transcript events and nonempty WAVs. First audio: 231.310, 175.845, and 182.307 ms,
+  respectively. No LLM call or robot playback was used. Transcript equality is not
+  a listening check for omitted spoken words.
+- The pool briefly drained after disconnect, then returned to idle. Trace writer
+  alive, queue empty, zero dropped events and write errors; aggregate health okay.
+- Production configuration SHA-256:
+  `a3591c3a6116ac3a1cf2f591db7103745e6eb31e69ae84b13fff587cc80e904d`.
+
+Evidence and prior `active-release`/`production.env` snapshots are retained privately
+on m1max under
+`/Users/leon/.local/state/reachy-reception/promotions/20260905-ce95a49-sohee`.
+Restore the saved app pointer (`37c7042`) and configuration together, then restart
+managed S2S, to roll back this delivery change. No old release or data was deleted.
+The robot remained stopped. Physical listening of the selected production setting
+is pending the next assisted run; no further model or behavior change is approved.

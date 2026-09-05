@@ -19,8 +19,10 @@ for the exact deployed combination and evidence.
 
 - Active production release: the immutable revision selected by
   `/Users/leon/.config/reachy-reception/active-release`, validated by `reception-prod` before every
-  command. Current app: `37c7042`. It uses Python `3.12.13`, Reachy SDK `1.10.0`, and the
+  command. Current app: `ce95a49`. It uses Python `3.12.13`, Reachy SDK `1.10.0`, and the
   lock-enforced environment.
+- The previous `37c7042` app and its saved production configuration are the immediate
+  rollback for the Sohee delivery change; the backend revision is unchanged.
 - The previous `7840866` frozen release and saved production configuration are the immediate
   rollback target for the Hermes route. The live-validated `7b2600e` remains an older fallback.
 - The older `87d35ba` and `b7520a0` frozen releases remain available as additional fallbacks.
@@ -33,7 +35,9 @@ for the exact deployed combination and evidence.
   Tools default to `time-web`; explicit `none` disables them. The compatibility Hermes service
   on `127.0.0.1:8642` is preserved but is not used or required by the direct production route.
 - Direct provider/model: OpenRouter with `openai/gpt-5.6-luna` as the configured direct model.
-- Policy speech: fixed greet/goodbye text uses deterministic TTS and does not invoke an LLM.
+- Policy speech: fixed greet/goodbye text bypasses the LLM; audio synthesis is still sampled.
+- Shared Qwen voice: Sohee with the approved moderately brisk instruction and the pinned
+  mlx-audio temperature default of `0.9`. Volume and generation limits are unchanged.
 - Visitor policy default: `door-v4-20260827`, using presence-overlap greet and direct
   person-to-door distance-crossing goodbye. `legacy` and door v1-v3 remain explicit rollback
   profiles.
@@ -46,7 +50,7 @@ for the exact deployed combination and evidence.
 
 | Area | Gate | Status | Evidence / remaining work |
 | --- | --- | --- | --- |
-| Release | Immutable product revision, reproducible venv, documented rollback | **Pass / activated** | App `37c7042` and backend `2e4449c` are frozen separately. `reception-prod` rejects mutable/dirty/mismatched releases. Rollback app `7840866`, configuration, launchers, and plists are preserved. |
+| Release | Immutable product revision, reproducible venv, documented rollback | **Pass / activated** | App `ce95a49` and backend `2e4449c` are frozen separately. `reception-prod` rejects mutable/dirty/mismatched releases. App `37c7042` plus saved configuration restores the prior voice delivery; `7840866` plus its configuration restores the Hermes route. |
 | Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Both dependency checks and 375 m1max tests passed. Managed private-profile text, time/web tools, fixed policy TTS, shutdown, restart, and trace health passed on 2026-09-05. |
 | Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Managed S2S restart now waits for complete launchd unload, process exit, and port closure before starting. Physical runner restart remains operator-authorized. |
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Accepted for first production pass** | Door v4 and the current chat backend are frozen at the user-accepted behavior; further tuning is deferred rather than a launch blocker. |
@@ -68,6 +72,31 @@ chat endpointing robustness, and recorder-sidecar hard-kill enhancement remain f
 are not blockers for assisted operation.
 
 ## Latest Acceptance Evidence
+
+### Sohee Delivery Follow-Up (2026-09-05)
+
+App `ce95a49` adds optional instruction forwarding; the backend remains `2e4449c`.
+The new frozen app's package inventory matches `37c7042` exactly. Launcher and OPS
+regressions passed locally and on m1max (73 tests each), along with shell syntax and
+targeted Ruff checks. Managed S2S restarted with Interactive scheduling. Greet,
+goodbye, and news requests completed with nonempty audio and exact transcript events;
+the pool returned to idle, and trace drops/write errors remained zero. These checks
+do not prove physical playback or complete spoken wording.
+
+The operator accepted the brisk news samples offline. Physical listening with this
+setting remains for the next assisted clinic run, planned for September 6. Check
+delivery in ordinary chat and a longer search answer, including its ending and the
+robot's response to follow-up speech. This is not a repeat migration benchmark.
+
+Known residuals: missed post-response speech is unresolved and explicitly deferred
+([incident](robot-runtime-debugging.md#september-5-missed-speech-after-news-playback));
+the news cutoff is consistent with the internal Qwen generation ceiling, which was
+not changed ([incident](robot-runtime-debugging.md#september-5-news-tts-cutoff)).
+The voice instruction is not recorded as a truncation fix. Neither a VAD change nor
+a generation-limit patch is part of this release. Assisted production remains the
+approved scope, not unattended production. See the
+[voice deployment record](s2s-production-promotion.md#sohee-delivery-configuration-september-5)
+for configuration and rollback evidence.
 
 ### Client-Owned Agent Promotion (2026-09-05)
 
