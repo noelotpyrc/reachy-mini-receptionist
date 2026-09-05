@@ -142,11 +142,14 @@ publish "$LATENCY_PLUGIN_SOURCE_DIR/__init__.py" "$LATENCY_PLUGIN_DIR/__init__.p
 
 log "$SOURCE_DIR/HERMES.md + prompt-delivered references -> $CONTEXT_DIR/HERMES.md"
 if [[ "$DRY_RUN" -eq 0 ]]; then
-  "$HERMES_PYTHON" - "$SOURCE_DIR" "$CONTEXT_DIR/HERMES.md" <<'PY'
+  PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+    "$HERMES_PYTHON" - "$SOURCE_DIR" "$CONTEXT_DIR/HERMES.md" <<'PY'
 import sys
 from pathlib import Path
 
 import yaml
+
+from reachy_mini_brain.profile_context import compose_context_document
 
 source_dir = Path(sys.argv[1]).resolve(strict=True)
 destination = Path(sys.argv[2])
@@ -157,7 +160,7 @@ catalog = yaml.safe_load(
 if catalog.get("version") != 1 or not isinstance(catalog.get("references"), dict):
     raise SystemExit("reference catalog must be a version 1 mapping")
 
-sections = [base]
+sections = []
 for reference_id, entry in catalog["references"].items():
     if not isinstance(entry, dict):
         raise SystemExit(f"reference {reference_id!r} must be a mapping")
@@ -182,21 +185,9 @@ for reference_id, entry in catalog["references"].items():
             f"reference {reference_id!r} resolves outside the profile source"
         ) from exc
     content = reference_path.read_text(encoding="utf-8").strip()
-    content_lines = content.splitlines()
-    if (
-        content_lines
-        and content_lines[0].startswith("# ")
-        and content_lines[0][2:].strip().casefold() == title.strip().casefold()
-    ):
-        content_lines = content_lines[1:]
-    content = "\n".join(
-        f"#{line}" if line.startswith("#") else line for line in content_lines
-    ).strip()
-    sections.append(f"## {title.strip()}\n\n{content}")
+    sections.append((title, content))
 
-rendered = "\n\n".join(sections) + "\n"
-if len(rendered) > 20_000:
-    raise SystemExit("generated HERMES.md exceeds the 20,000 character limit")
+rendered = compose_context_document(base, sections)
 destination.write_text(rendered, encoding="utf-8")
 PY
 fi

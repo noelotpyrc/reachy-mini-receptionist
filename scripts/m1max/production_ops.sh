@@ -46,5 +46,6 @@ set +a
 export REACHY_REPO="$RELEASE"
 export OFFICIAL_RUNTIME_PYTHON="$RUNTIME_PYTHON"
 export PYTHONPATH="$RELEASE/src"
+export S2S_ENV_LOADED=1
 
 exec "$RUNTIME_PYTHON" -m reachy_mini_brain.official_runtime.ops_cli "$@"

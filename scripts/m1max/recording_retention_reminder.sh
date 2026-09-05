@@ -22,7 +22,7 @@ fi
 
 due_count="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["data"]["due_file_count"])' "$REPORT")"
 if [[ "$due_count" -gt 0 ]]; then
-  message="$due_count reception recording files are older than the retention window. Review the report before approved cleanup."
+  message="$due_count reception recording/trace files are older than the retention window. Review the report before approved cleanup."
   /usr/bin/osascript -e "display notification \"$message\" with title \"Reachy recording cleanup reminder\"" >/dev/null 2>&1 || true
   printf '%s\n' "$message"
 fi

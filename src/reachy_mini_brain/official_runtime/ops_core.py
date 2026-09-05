@@ -85,6 +85,7 @@ class OpsConfig:
     keep_awake: bool
     profile_owned_context: bool = False
     agent_profile_id: str = ""
+    s2s_cli_mode: str = "legacy"
     visitor_trigger_profile: str = DEFAULT_VISITOR_TRIGGER_PROFILE
     vision_pipelines_config: Path | None = None
     rerun_mode: str = "off"
@@ -111,6 +112,7 @@ class OpsConfig:
     external_health_timeout_s: float = 5.0
     artifact_disk_min_free_gb: float = 20.0
     recording_retention_days: int = 30
+    backend_trace_dir: Path | None = None
     require_managed_services: bool = False
     s2s_service_label: str = DEFAULT_S2S_SERVICE_LABEL
     hermes_service_label: str = DEFAULT_HERMES_SERVICE_LABEL
@@ -160,6 +162,7 @@ class OpsConfig:
             keep_awake=_env_bool("OPS_KEEP_AWAKE", default=True),
             profile_owned_context=_env_bool("S2S_RESPONSES_CONVERSATION", default=False),
             agent_profile_id=os.environ.get("RECEPTION_AGENT_PROFILE_ID", "").strip(),
+            s2s_cli_mode=os.environ.get("S2S_CLI_MODE", "legacy"),
             visitor_trigger_profile=resolve_visitor_trigger_profile(
                 os.environ.get("RECEPTION_VISITOR_TRIGGER_PROFILE", DEFAULT_VISITOR_TRIGGER_PROFILE)
             ).name,
@@ -212,6 +215,10 @@ class OpsConfig:
             ),
             recording_retention_days=int(
                 os.environ.get("RECORDING_RETENTION_DAYS", "30")
+            ),
+            backend_trace_dir=(
+                Path(os.environ["S2S_EVENT_TRACE_DIR"]).expanduser()
+                if os.environ.get("S2S_EVENT_TRACE_DIR") else None
             ),
             require_managed_services=_env_bool(
                 "OPS_REQUIRE_MANAGED_SERVICES", default=False
@@ -362,7 +369,7 @@ class RunnerState:
 
 def backend_status(config: OpsConfig) -> ActionResult:
     port_live = _port_open(config.s2s_host, config.s2s_port)
-    pids = _find_pids(BACKEND_PATTERN)
+    pids = _find_pids(_backend_pattern(config))
     service = launchd_service_status(config.s2s_service_label)
     process_type = launchd_service_process_type(
         config.s2s_service_label,
@@ -531,7 +538,7 @@ def start_backend(config: OpsConfig) -> ActionResult:
 def stop_backend(config: OpsConfig) -> ActionResult:
     service = launchd_service_status(config.s2s_service_label)
     if config.require_managed_services and service["status"] == "loaded":
-        requested = _find_pids(BACKEND_PATTERN)
+        requested = _find_pids(_backend_pattern(config))
         completed = _launchctl("bootout", _launchd_target(config.s2s_service_label))
         if completed.returncode != 0:
             return ActionResult(
@@ -582,7 +589,7 @@ def stop_backend(config: OpsConfig) -> ActionResult:
                 else ("managed backend did not fully stop before timeout",)
             ),
         )
-    pids = _find_pids(BACKEND_PATTERN)
+    pids = _find_pids(_backend_pattern(config))
     stopped = _terminate_pids(pids)
     return ActionResult(
         action="backend.stop",
@@ -661,21 +668,25 @@ def external_services_status(config: OpsConfig) -> ActionResult:
     checks: list[Verification] = []
     data: dict[str, Any] = {"enabled": True}
 
-    hermes = _json_health_request(
-        config.hermes_health_url,
-        timeout_s=config.external_health_timeout_s,
-    )
-    data["hermes"] = hermes
-    hermes_ok = hermes.get("ok") is True and hermes.get("body", {}).get("status") == "ok"
-    checks.append(
-        Verification(
-            "hermes",
-            "ok" if hermes_ok else "failed",
-            {"url": config.hermes_health_url, "http_status": hermes.get("http_status")},
+    data["route"] = "hermes" if config.profile_owned_context else "direct"
+    if config.profile_owned_context:
+        hermes = _json_health_request(
+            config.hermes_health_url,
+            timeout_s=config.external_health_timeout_s,
         )
-    )
-    if not hermes_ok:
-        errors.append(f"Hermes health failed: {hermes.get('error') or hermes.get('http_status')}")
+        data["hermes"] = hermes
+        hermes_ok = hermes.get("ok") is True and hermes.get("body", {}).get("status") == "ok"
+        checks.append(
+            Verification(
+                "hermes",
+                "ok" if hermes_ok else "failed",
+                {"url": config.hermes_health_url, "http_status": hermes.get("http_status")},
+            )
+        )
+        if not hermes_ok:
+            errors.append(f"Hermes health failed: {hermes.get('error') or hermes.get('http_status')}")
+    else:
+        data["hermes"] = {"status": "not_required", "reason": "direct_provider_route"}
 
     provider_key = os.environ.get(config.provider_api_key_env, "")
     if not provider_key:
@@ -707,18 +718,21 @@ def external_services_status(config: OpsConfig) -> ActionResult:
     if not provider_ok:
         errors.append(f"provider authentication failed: {provider.get('error') or provider.get('http_status')}")
 
-    hermes_service = launchd_service_status(config.hermes_service_label)
-    data["hermes_service"] = hermes_service
-    service_ok = hermes_service["status"] == "loaded"
-    checks.append(
-        Verification(
-            "hermes_managed_service",
-            "ok" if service_ok else hermes_service["status"],
-            {"label": config.hermes_service_label},
+    if config.profile_owned_context:
+        hermes_service = launchd_service_status(config.hermes_service_label)
+        data["hermes_service"] = hermes_service
+        service_ok = hermes_service["status"] == "loaded"
+        checks.append(
+            Verification(
+                "hermes_managed_service",
+                "ok" if service_ok else hermes_service["status"],
+                {"label": config.hermes_service_label},
+            )
         )
-    )
-    if config.require_managed_services and not service_ok:
-        errors.append(f"required launchd service is not loaded: {config.hermes_service_label}")
+        if config.require_managed_services and not service_ok:
+            errors.append(f"required launchd service is not loaded: {config.hermes_service_label}")
+    else:
+        data["hermes_service"] = {"status": "not_required", "reason": "direct_provider_route"}
 
     return ActionResult(
         action="external-services.status",
@@ -739,6 +753,7 @@ def storage_status(config: OpsConfig) -> ActionResult:
     retention = recording_retention_report(
         config.artifact_root,
         retention_days=config.recording_retention_days,
+        trace_root=config.backend_trace_dir,
         path_limit=0,
     )
     errors = () if disk_ok else (f"artifact disk free space is below {threshold_gb:g} GiB",)
@@ -785,8 +800,9 @@ def recording_retention_report(
     retention_days: int,
     now_ts: float | None = None,
     path_limit: int = 50,
+    trace_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Report old raw audio/video artifacts; never remove or modify them."""
+    """Report old audio/video and backend traces; never remove or modify them."""
 
     if retention_days < 1:
         raise OpsError("recording retention days must be at least 1")
@@ -794,13 +810,16 @@ def recording_retention_report(
     cutoff = now - retention_days * 86400
     due: list[tuple[float, Path, int]] = []
     scanned = 0
-    for directory_name in ("audio", "video"):
-        directory = artifact_root / directory_name
+    trace_root = trace_root or artifact_root.parent / "s2s-backend-trace"
+    directories = [artifact_root / "audio", artifact_root / "video", trace_root]
+    seen: set[Path] = set()
+    for directory in directories:
         if not directory.exists():
             continue
         for path in directory.rglob("*"):
-            if not path.is_file():
+            if path.is_symlink() or not path.is_file() or path.resolve() in seen:
                 continue
+            seen.add(path.resolve())
             scanned += 1
             stat = path.stat()
             if stat.st_mtime < cutoff:
@@ -809,7 +828,7 @@ def recording_retention_report(
     due_bytes = sum(item[2] for item in due)
     listed = [
         {
-            "path": str(path.relative_to(artifact_root)),
+            "path": str(path.relative_to(artifact_root)) if path.is_relative_to(artifact_root) else str(path.absolute()),
             "modified_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
             "bytes": size,
         }
@@ -817,6 +836,7 @@ def recording_retention_report(
     ]
     return {
         "artifact_root": str(artifact_root),
+        "backend_trace_root": str(trace_root),
         "retention_days": retention_days,
         "cutoff": datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat(),
         "scanned_file_count": scanned,
@@ -1979,6 +1999,12 @@ def _start_launchd_service(label: str, plist_path: Path) -> dict[str, Any] | Non
     return {"label": label, "mode": "launchd", "plist": str(plist_path)}
 
 
+def _backend_pattern(config: OpsConfig) -> str:
+    if config.s2s_cli_mode == "serve":
+        return rf"speech-to-speech serve.*--port {config.s2s_port}( |$)"
+    return BACKEND_PATTERN
+
+
 def _wait_for_managed_backend_stopped(
     config: OpsConfig,
     *,
@@ -1988,7 +2014,7 @@ def _wait_for_managed_backend_stopped(
     while True:
         service = launchd_service_status(config.s2s_service_label)
         port_live = _port_open(config.s2s_host, config.s2s_port)
-        pids = _find_pids(BACKEND_PATTERN)
+        pids = _find_pids(_backend_pattern(config))
         if service["status"] != "loaded" and not port_live and not pids:
             return {
                 "service_status": service["status"],

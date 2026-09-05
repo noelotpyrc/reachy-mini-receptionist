@@ -13,7 +13,12 @@ from typing import Any, Callable
 
 import click
 
-from .agent_profile import AgentProfileError, ComposedAgentProfile, compose_agent_profile
+from .agent_profile import (
+    AgentProfileError,
+    ComposedAgentProfile,
+    compose_agent_profile,
+    with_session_date,
+)
 from .artifacts import ArtifactRecorder
 from .camera import register_camera_capabilities
 from .capabilities import CapabilityRegistry, RuntimeContext
@@ -38,6 +43,7 @@ from .policies import PolicyEngine
 from .policy_audio_cache import PolicyAudioCache, load_policy_audio_frame
 from .reception import ReceptionPolicy, ReceptionPolicySettings
 from .realtime_tools import ToolExecutionContext, ToolRegistry, build_reference_tool_registry
+from .reception_tools import build_reception_tool_registry, with_reception_tool_instructions
 from .robot_io import ReachyAudioSink, ReachyAudioSource, ReachyCameraFrameProvider, ReachyRobotSession
 from .s2s_realtime import S2SRealtimeHandler
 from .stream_runtime import CompositeRuntimeObserver, OfficialStyleStreamRuntime
@@ -216,7 +222,22 @@ async def _run_policy_tick_loop(
     "--agent-profile-id",
     envvar="RECEPTION_AGENT_PROFILE_ID",
     default="",
-    help="Enable the client-owned profile and read-only reference tools for this profile ID.",
+    help="Enable the client-owned profile for this profile ID.",
+)
+@click.option(
+    "--agent-tools",
+    envvar="RECEPTION_AGENT_TOOLS",
+    type=click.Choice(["none", "time-web", "reference-test"]),
+    default="time-web",
+    show_default=True,
+    help="Client profile tools; no tools without a profile. reference-test is test-only.",
+)
+@click.option(
+    "--agent-profile-format",
+    envvar="RECEPTION_AGENT_PROFILE_FORMAT",
+    type=click.Choice(["overlay", "hermes"]),
+    default="overlay",
+    help="hermes requires original private HERMES.md/personality.md sources; no public facts fallback.",
 )
 @click.option(
     "--agent-profile-public-dir",
@@ -341,6 +362,8 @@ async def _run_live(
     instructions: str | None,
     profile_owned_context: bool,
     agent_profile_id: str,
+    agent_tools: str,
+    agent_profile_format: str,
     agent_profile_public_dir: Path,
     agent_profile_private_dir: Path | None,
     hf_voice: str,
@@ -393,6 +416,14 @@ async def _run_live(
         raise click.ClickException(f"refusing to overwrite existing Rerun artifact: {rerun_save_path}")
     agent_profile: ComposedAgentProfile | None = None
     tool_registry: ToolRegistry | None = None
+    if (
+        not agent_profile_id
+        and click.get_current_context().get_parameter_source("agent_tools")
+        == click.core.ParameterSource.DEFAULT
+    ):
+        agent_tools = "none"
+    if agent_tools != "none" and not agent_profile_id:
+        raise click.ClickException("--agent-tools requires --agent-profile-id")
     if agent_profile_id:
         if backend != "s2s-local":
             raise click.ClickException(
@@ -411,12 +442,21 @@ async def _run_live(
                 profile_id=agent_profile_id,
                 public_dir=agent_profile_public_dir,
                 private_dir=agent_profile_private_dir,
+                source_format=agent_profile_format,
             )
+        except AgentProfileError as exc:
+            raise click.ClickException(f"invalid agent profile: {exc}") from exc
+        if agent_tools == "time-web":
+            agent_profile = with_reception_tool_instructions(agent_profile)
+            tool_registry = build_reception_tool_registry()
+        elif agent_tools == "reference-test":
+            tool_registry = build_reference_tool_registry(agent_profile.reference_store)
+        try:
+            agent_profile = with_session_date(agent_profile)
         except AgentProfileError as exc:
             raise click.ClickException(f"invalid agent profile: {exc}") from exc
         backend_instructions = agent_profile.instructions
         instructions_provenance = agent_profile.provenance()
-        tool_registry = build_reference_tool_registry(agent_profile.reference_store)
     else:
         backend_instructions, instructions_provenance = _load_backend_instructions(
             instructions_file=instructions_file,
@@ -468,6 +508,8 @@ async def _run_live(
             "agent_profile": (
                 {
                     "profile_id": agent_profile.profile_id,
+                    "source_format": agent_profile_format,
+                    "tool_selection": agent_tools,
                     "source_ids": list(agent_profile.source_ids),
                     "tool_names": tool_registry.names() if tool_registry is not None else [],
                 }

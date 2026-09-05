@@ -419,6 +419,64 @@ credentials, or unrestricted filesystem paths.
 Frequently needed clinic facts and capabilities belong in the composed
 instructions. Larger optional references remain available through tools.
 
+#### Production profile review (2026-09-04)
+
+The production migration reuses the approved Hermes content rather than
+maintaining a second clinic instruction format:
+
+```text
+SOUL.md
+  + generated HERMES.md (base operating context + prompt-delivered documents)
+  + spoken-response instructions
+  + optional tool usage guidance
+  + runtime local-date context (America/New_York)
+  -> session.instructions
+```
+
+`profile_context.compose_context_document` is the shared renderer used by the
+Hermes sync script and `compose_hermes_agent_profile`. The latter accepts the
+original source directory containing the **base** `HERMES.md`, the deployed
+`SOUL.md`, and an explicit spoken-instruction file. Do not pass the generated
+deployed `HERMES.md` as the base: it already contains the prompt documents.
+Source order and heading formatting match the Hermes sync script. The complete
+S2S instruction string is bounded to 20,000 characters and has content-free
+hash/source provenance. No public fictional-profile fallback is used.
+
+The preview applies `with_session_date` after optional tool guidance. This final
+assembly step adds a clock-derived local date/weekday and timezone, includes it
+in the final hash, and records `runtime:local_date` provenance. The base composer
+and editable profile files stay date-independent. It is a labelled date snapshot;
+`time_now` supplies exact time or an updated date when needed. See
+[Reception Agent Tools](reception-agent-tools.md) for runtime refresh scope.
+
+Local review command (does not contact a backend or change production):
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/compose_s2s_profile.py \
+  --profile-id reachyclinic \
+  --source-dir private/profiles/clinic_receptionist \
+  --soul private/profiles/clinic_receptionist/personality.md \
+  --spoken-instructions profiles/clinic_receptionist/session_instructions.txt \
+  --output private/profiles/clinic_receptionist/S2S_SESSION_INSTRUCTIONS.preview.md
+```
+
+`--soul` accepts the original `personality.md` that Hermes publishes as `SOUL.md`.
+Use that editable source after review changes; the deployed `reachyclinic-hermes`
+snapshot is a comparison baseline, not the authoring copy.
+
+The preview is created owner-only and existing files are never overwritten.
+Private source files, deployed snapshots, and preview output remain Git-ignored.
+The snapshot copies content only, not Hermes credentials, sessions, databases,
+or plugins. Review and approve the text before wiring this composer into live
+startup; the existing test composer and production runtime remain unchanged.
+
+The first-pass tool candidates are now `time_now` and Firecrawl `web_search`,
+implemented locally for testing. See [Reception Agent Tools](reception-agent-tools.md)
+for the shared credential, result bounds, and explicit enablement. The reference
+tools below remain integration-test infrastructure, not automatically enabled
+production functionality. This composer registers no tools; `--tools time-web`
+on the preview command only appends the corresponding usage instructions.
+
 ### 4.2 Tool contract and registry
 
 Add a client-owned tool registry. Each registration contains:

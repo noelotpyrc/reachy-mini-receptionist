@@ -378,6 +378,7 @@ def test_external_health_uses_hermes_and_nonbillable_provider_check(tmp_path, mo
             **make_config(tmp_path).__dict__,
             "extended_health": True,
             "require_managed_services": True,
+            "profile_owned_context": True,
         }
     )
     calls: list[tuple[str, str | None]] = []
@@ -410,6 +411,42 @@ def test_external_health_uses_hermes_and_nonbillable_provider_check(tmp_path, mo
     assert result.data["provider"] == {"ok": True, "http_status": 200}
     assert "secret-provider-key" not in json.dumps(result.to_dict())
     assert "private-label" not in json.dumps(result.to_dict())
+
+
+def test_direct_route_does_not_probe_or_require_hermes(tmp_path, monkeypatch):
+    config = ops_core.OpsConfig(
+        **{**make_config(tmp_path).__dict__, "extended_health": True, "require_managed_services": True}
+    )
+    calls = []
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-only")
+    def request(url, **kwargs):
+        calls.append(url)
+        return {"ok": True, "http_status": 200}
+    monkeypatch.setattr(ops_core, "_json_health_request", request)
+    monkeypatch.setattr(ops_core, "launchd_service_status", lambda *a: pytest.fail("Hermes must not be queried"))
+    result = ops_core.external_services_status(config)
+    assert result.status == "ok"
+    assert calls == [config.provider_health_url]
+    assert result.data["hermes"]["status"] == "not_required"
+
+
+def test_trace_retention_is_report_only_and_supports_external_root(tmp_path):
+    root = tmp_path / "artifacts" / "official-runtime-live"
+    traces = tmp_path / "private-traces"
+    traces.mkdir()
+    old = traces / "backend-trace-old.jsonl"
+    new = traces / "backend-trace-active.jsonl"
+    old.write_text("old trace\n")
+    new.write_text("active trace\n")
+    now = time.time()
+    os.utime(old, (now-31*86400, now-31*86400))
+    report = ops_core.recording_retention_report(root, retention_days=30, now_ts=now, trace_root=traces)
+    assert report["due_file_count"] == 1
+    assert report["scanned_file_count"] == 2
+    assert report["due_files"][0]["path"] == str(old)
+    assert report["deletion_performed"] is False
+    assert old.read_text() == "old trace\n"
+    assert new.exists()
 
 
 def test_external_health_reports_missing_provider_key(tmp_path, monkeypatch):
@@ -1552,7 +1589,7 @@ def test_s2s_backend_launcher_supports_responses_wrapper_endpoint() -> None:
     assert "S2S_RESPONSES_DIRECT_API_KEY" in text
     assert 'export RESPONSES_API_DIRECT_API_KEY="$S2S_RESPONSES_DIRECT_API_KEY"' in text
     assert "--responses_api_direct_api_key" not in text
-    assert '--mode realtime \\' in text
+    assert 'SERVER_ARGS=(--mode realtime' in text
     assert '--ws_host "$S2S_HOST"' in text
     assert '--ws_port "$S2S_PORT"' in text
 

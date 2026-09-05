@@ -88,8 +88,24 @@ if [[ ! -f "$CONFIG_DIR/production.env" ]]; then
   /usr/bin/install -m 600 "$RELEASE/config/production.env.example" "$CONFIG_DIR/production.env"
 fi
 
+# A direct-provider release does not start or require the compatibility Hermes service.
+set -a
+if [[ -f "$RELEASE/.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$RELEASE/.env"
+fi
+# shellcheck disable=SC1090
+source "$CONFIG_DIR/production.env"
+set +a
+SERVICE_SPECS=("com.reachy.reception.s2s:${S2S_PORT:-8765}")
+SERVICE_LABELS=(com.reachy.reception.s2s com.reachy.reception.recording-retention)
+if [[ "${S2S_RESPONSES_CONVERSATION:-0}" == "1" ]]; then
+  SERVICE_SPECS+=("com.reachy.reception.hermes:${HERMES_PORT:-8642}")
+  SERVICE_LABELS+=(com.reachy.reception.hermes)
+fi
+
 if [[ "$ENABLE_SERVICES" == "1" ]]; then
-  for spec in "com.reachy.reception.s2s:8765" "com.reachy.reception.hermes:8642"; do
+  for spec in "${SERVICE_SPECS[@]}"; do
     label="${spec%%:*}"
     port="${spec##*:}"
     if /bin/launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
@@ -102,10 +118,7 @@ if [[ "$ENABLE_SERVICES" == "1" ]]; then
   done
 fi
 
-for label in \
-  com.reachy.reception.s2s \
-  com.reachy.reception.hermes \
-  com.reachy.reception.recording-retention; do
+for label in "${SERVICE_LABELS[@]}"; do
   template="$RELEASE/config/launchd/$label.plist.in"
   rendered="$STATE_DIR/$label.plist"
   /usr/bin/sed "s|@HOME@|$HOME|g" "$template" > "$rendered"
@@ -132,10 +145,7 @@ printf '%s\n' "$RELEASE" > "$active_tmp"
 /bin/mv "$active_tmp" "$CONFIG_DIR/active-release"
 
 if [[ "$ENABLE_SERVICES" == "1" ]]; then
-  for label in \
-    com.reachy.reception.s2s \
-    com.reachy.reception.hermes \
-    com.reachy.reception.recording-retention; do
+  for label in "${SERVICE_LABELS[@]}"; do
     target="gui/$UID/$label"
     if /bin/launchctl print "$target" >/dev/null 2>&1; then
       /bin/launchctl kickstart -k "$target"

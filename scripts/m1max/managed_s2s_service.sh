@@ -22,4 +22,5 @@ export REACHY_REPO="$RELEASE"
 export OFFICIAL_RUNTIME_PYTHON="$RELEASE/.release-venv/bin/python"
 export PYTHONPATH="$RELEASE/src"
 export ENV_FILE="$RELEASE/.env"
+export S2S_ENV_LOADED=1
 exec "$RELEASE/scripts/m1max/run_s2s_backend.sh"

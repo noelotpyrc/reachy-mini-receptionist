@@ -4,6 +4,13 @@ set -euo pipefail
 BACKEND_DIR="${BACKEND_DIR:-/Users/leon/projects/speech_to_speech_backend}"
 ENV_FILE="${ENV_FILE:-/Users/leon/projects/reachy_mini_receptionist_deploy/.env}"
 
+if [[ "${S2S_ENV_LOADED:-0}" != "1" && -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
 S2S_HOST="${S2S_HOST:-127.0.0.1}"
 S2S_PORT="${S2S_PORT:-8765}"
 S2S_VOICE="${S2S_VOICE:-Sohee}"
@@ -22,13 +29,6 @@ S2S_RESPONSES_DIRECT_API_KEY="${S2S_RESPONSES_DIRECT_API_KEY:-}"
 if nc -z "$S2S_HOST" "$S2S_PORT" >/dev/null 2>&1; then
   echo "S2S backend port already listening on ${S2S_HOST}:${S2S_PORT}; not starting a duplicate backend." >&2
   exit 90
-fi
-
-if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
 fi
 
 RESPONSES_BASE_URL_ARGS=()
@@ -102,15 +102,43 @@ else
   S2S_MODEL_NAME="${S2S_MODEL_NAME:-gpt-5.4-mini}"
 fi
 
+if [[ "$S2S_RESPONSES_BASE_URL" == "https://openrouter.ai/api/v1" ]]; then
+  [[ -n "${OPENROUTER_API_KEY:-}" ]] || { echo "Missing OPENROUTER_API_KEY" >&2; exit 2; }
+  export OPENAI_API_KEY="$OPENROUTER_API_KEY"
+  RESPONSES_THINKING_ARGS=(--no_responses_api_disable_thinking)
+fi
+
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   echo "Missing OPENAI_API_KEY. Add OPENAI_API_KEY or OPENROUTER_API_KEY to $ENV_FILE." >&2
   exit 2
 fi
 
+SERVER_ARGS=(--mode realtime --ws_host "$S2S_HOST" --ws_port "$S2S_PORT")
+TRACE_ARGS=()
+case "${S2S_CLI_MODE:-legacy}" in
+  serve)
+    SERVER_ARGS=(serve --host "$S2S_HOST" --port "$S2S_PORT" --no_smart_turn)
+    if [[ -n "${S2S_EVENT_TRACE_DIR:-}" ]]; then
+      mkdir -p "$S2S_EVENT_TRACE_DIR"
+      chmod 700 "$S2S_EVENT_TRACE_DIR"
+      TRACE_ARGS+=(--event_trace_dir "$S2S_EVENT_TRACE_DIR")
+    fi
+    if [[ "${S2S_LOG_TRANSCRIPTS:-0}" == "1" ]]; then
+      TRACE_ARGS+=(--log_transcripts)
+    fi
+    ;;
+  legacy) ;;
+  *) echo "S2S_CLI_MODE must be legacy or serve" >&2; exit 2 ;;
+esac
+
+if [[ -n "${S2S_BACKEND_FORK_SHA:-}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  "$BACKEND_DIR/.venv/bin/python" "$SCRIPT_DIR/verify_s2s_runtime.py"
+fi
+
 exec "$BACKEND_DIR/.venv/bin/speech-to-speech" \
-  --mode realtime \
-  --ws_host "$S2S_HOST" \
-  --ws_port "$S2S_PORT" \
+  "${SERVER_ARGS[@]}" \
+  ${TRACE_ARGS[@]+"${TRACE_ARGS[@]}"} \
   --num_pipelines "$S2S_NUM_PIPELINES" \
   --log_level "$S2S_LOG_LEVEL" \
   --thresh 0.6 \

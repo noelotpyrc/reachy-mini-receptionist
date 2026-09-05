@@ -228,13 +228,14 @@ def latest_run_cmd(ctx: click.Context) -> None:
 @click.option("--days", type=click.IntRange(min=1), default=None)
 @click.pass_context
 def recording_retention_cmd(ctx: click.Context, days: int | None) -> None:
-    """Report raw audio/video files eligible for reviewed cleanup; never delete."""
+    """Report audio/video and backend traces eligible for reviewed cleanup; never delete."""
 
     config = _config(ctx)
     retention_days = days or config.recording_retention_days
     report = ops_core.recording_retention_report(
         config.artifact_root,
         retention_days=retention_days,
+        trace_root=config.backend_trace_dir,
     )
     _emit(
         ctx,

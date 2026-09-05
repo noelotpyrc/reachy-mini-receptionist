@@ -81,6 +81,14 @@ class ToolExecutionResult:
     category: str
 
 
+class ToolError(Exception):
+    """A tool failure with a deliberately content-free, client-safe message."""
+
+    def __init__(self, category: str, message: str) -> None:
+        super().__init__(message)
+        self.category = category
+
+
 class ToolRegistry:
     """Validate and execute only explicitly registered tools."""
 
@@ -228,6 +236,10 @@ class ToolRegistry:
                 duration_ms=round((time.monotonic() - started) * 1000, 3),
             )
             raise
+        except ToolError as exc:
+            return self._error(
+                context, common, started, category=exc.category, message=str(exc)
+            )
         except TimeoutError:
             return self._error(
                 context,

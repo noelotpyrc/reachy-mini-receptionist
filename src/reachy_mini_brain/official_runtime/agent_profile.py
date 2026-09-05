@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import yaml
 
+from reachy_mini_brain.profile_context import compose_context_document
+
 
 MAX_PROFILE_CHARS = 20_000
+DEFAULT_TIMEZONE = "America/New_York"
 MAX_CATALOG_ENTRIES = 128
 MAX_REFERENCE_BYTES = 64 * 1024
 PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -177,14 +182,55 @@ class ComposedAgentProfile:
         }
 
 
+def with_session_date(
+    profile: ComposedAgentProfile, *, now: datetime | None = None
+) -> ComposedAgentProfile:
+    """Append a clock-derived date snapshot to a freshly assembled profile."""
+    instant = now if now is not None else datetime.now(timezone.utc)
+    if instant.utcoffset() is None:
+        raise AgentProfileError("session date requires a timezone-aware clock")
+    local = instant.astimezone(ZoneInfo(DEFAULT_TIMEZONE))
+    instructions = (
+        f"{profile.instructions.rstrip()}\n\n# Current date context\n\n"
+        f"Local date at instruction assembly: {local.date().isoformat()} "
+        f"({local.strftime('%A')}).\n"
+        f"Local timezone: {DEFAULT_TIMEZONE} ({local.tzname()}).\n"
+        "Use this date to interpret requests such as today, latest, and recent. "
+        "This is a date snapshot, not a live clock. Use time_now when available "
+        "for exact time or when the local date may have changed.\n"
+    )
+    if len(instructions) > MAX_PROFILE_CHARS:
+        raise AgentProfileError(
+            f"composed profile exceeds the {MAX_PROFILE_CHARS} character limit"
+        )
+    return replace(
+        profile,
+        instructions=instructions,
+        sha256=hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
+        source_ids=(*profile.source_ids, "runtime:local_date"),
+    )
+
+
 def compose_agent_profile(
     *,
     profile_id: str,
     public_dir: Path,
     private_dir: Path | None = None,
+    source_format: str = "overlay",
 ) -> ComposedAgentProfile:
     """Compose public defaults and private overrides without logging their text."""
 
+    if source_format == "hermes":
+        if private_dir is None:
+            raise AgentProfileError("Hermes-source profiles require a private source directory")
+        return compose_hermes_agent_profile(
+            profile_id=profile_id,
+            source_dir=private_dir,
+            soul_path=private_dir / "personality.md",
+            session_instructions_path=public_dir / "session_instructions.txt",
+        )
+    if source_format != "overlay":
+        raise AgentProfileError(f"unknown profile source format: {source_format!r}")
     if not PROFILE_ID_RE.fullmatch(profile_id):
         raise AgentProfileError(f"invalid profile ID: {profile_id!r}")
     public_root = _resolve_directory(public_dir, label="public profile")
@@ -239,6 +285,65 @@ def compose_agent_profile(
         sha256=hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
         source_ids=tuple(source_ids),
         reference_store=reference_store,
+    )
+
+
+def compose_hermes_agent_profile(
+    *,
+    profile_id: str,
+    source_dir: Path,
+    soul_path: Path,
+    session_instructions_path: Path,
+) -> ComposedAgentProfile:
+    """Assemble existing Hermes sources for S2S without registering any tools.
+
+    source_dir contains the base HERMES.md, not its deployed generated copy.
+    No public-profile fallback is used for this migration path.
+    """
+
+    if not PROFILE_ID_RE.fullmatch(profile_id):
+        raise AgentProfileError(f"invalid profile ID: {profile_id!r}")
+    root = _resolve_directory(source_dir, label="Hermes profile source")
+    base_id = "private:HERMES.md"
+    base_path = _confined_profile_file(root / "HERMES.md", root=root, source_id=base_id)
+    catalog_path = _confined_profile_file(
+        root / "reference_catalog.yaml",
+        root=root,
+        source_id="private:reference_catalog.yaml",
+    )
+    store = ReferenceStore.load(catalog_path, source_scope="private")
+    prompt_sections = store.prompt_sections()
+    try:
+        context = compose_context_document(
+            _read_profile_text(base_path, source_id=base_id),
+            [(title, content) for title, content, _ in prompt_sections],
+        )
+    except ValueError as exc:
+        raise AgentProfileError(str(exc)) from exc
+    soul = _read_profile_text(soul_path, source_id="private:SOUL.md")
+    spoken = _read_profile_text(
+        session_instructions_path, source_id="session:spoken_instructions"
+    )
+    instructions = (
+        f"{soul}\n\n{context.rstrip()}\n\n"
+        f"# Spoken-response instructions\n\n{spoken}\n"
+    )
+    if len(instructions) > MAX_PROFILE_CHARS:
+        raise AgentProfileError(
+            f"composed profile exceeds the {MAX_PROFILE_CHARS} character limit"
+        )
+    return ComposedAgentProfile(
+        profile_id=profile_id,
+        instructions=instructions,
+        sha256=hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
+        source_ids=(
+            "private:SOUL.md",
+            base_id,
+            "private:reference_catalog.yaml",
+            *(source_id for _, _, source_id in prompt_sections),
+            "session:spoken_instructions",
+        ),
+        reference_store=store,
     )
 
 
