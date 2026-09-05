@@ -4,28 +4,34 @@
 
 **Current phase:** assisted production operation
 
-**Updated:** 2026-09-01
+**Updated:** 2026-09-05
 
 This document is the promotion checklist for running the receptionist in the clinic for an extended
 period without a developer onsite. It owns pass/block status. Detailed implementation and operating
 instructions remain in the linked specifications and [runbook](runbook.md).
 
-Backend feature development is paused at the current deployed configuration. Production work may
-make reliability, security, lifecycle, and observability fixes, but should not change the selected
-STT/LLM/TTS behavior without reopening backend evaluation explicitly.
+The approved S2S migration was promoted on 2026-09-05 after staging, live backend acceptance,
+profile/tool review, and managed deployment checks. Further STT/LLM/TTS behavior changes require
+reopening backend evaluation explicitly. See [production promotion](s2s-production-promotion.md)
+for the exact deployed combination and evidence.
 
 ## Current Baseline
 
 - Active production release: the immutable revision selected by
   `/Users/leon/.config/reachy-reception/active-release`, validated by `reception-prod` before every
-  command. It uses Python `3.12.13`, Reachy SDK `1.10.0`, and the lock-enforced environment.
-- The live-validated `7b2600e` frozen release remains the first release-level rollback target.
+  command. Current app: `37c7042`. It uses Python `3.12.13`, Reachy SDK `1.10.0`, and the
+  lock-enforced environment.
+- The previous `7840866` frozen release and saved production configuration are the immediate
+  rollback target for the Hermes route. The live-validated `7b2600e` remains an older fallback.
 - The older `87d35ba` and `b7520a0` frozen releases remain available as additional fallbacks.
 - Recovery and rollback: pre-removal source is tagged `legacy-daemon-last` at `260e2f2`; the previous
   clean release at `612ea43` and the dirty deployment checkout remain intact.
-- S2S backend: `speech-to-speech==0.2.10`, fork SHA `a963ca68b9aa3599b7ea5eeabb9505a68263fbff`,
+- S2S backend: `speech-to-speech==0.2.12`, fork SHA `2e4449c345c305e4ee6b9761f86c1849bbf3cb08`,
   listening only on `127.0.0.1:8765`, managed by launchd as `ProcessType=Interactive`.
-- Agent wrapper: production Hermes profile on `127.0.0.1:8642`; clinic context remains outside Git.
+  Backend pins: MLX `0.31.1`, mlx-audio `0.4.2`, mlx-lm / mlx-metal `0.31.1`.
+- Agent context: client-owned private Hermes-source profile composed into session instructions.
+  Tools default to `time-web`; explicit `none` disables them. The compatibility Hermes service
+  on `127.0.0.1:8642` is preserved but is not used or required by the direct production route.
 - Direct provider/model: OpenRouter with `openai/gpt-5.6-luna` as the configured direct model.
 - Policy speech: fixed greet/goodbye text uses deterministic TTS and does not invoke an LLM.
 - Visitor policy default: `door-v4-20260827`, using presence-overlap greet and direct
@@ -40,8 +46,8 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 
 | Area | Gate | Status | Evidence / remaining work |
 | --- | --- | --- | --- |
-| Release | Immutable product revision, reproducible venv, documented rollback | **Pass / activated** | `reception-prod` resolves one private active-release file, rejects mutable/dirty/mismatched releases, and loads one private production config. Live-validated frozen release `7b2600e` is the first rollback target. |
-| Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Backend setup script, runtime metadata, Hermes text/integration tests, deterministic policy-TTS benchmark, and read-only Hermes/provider health checks are complete. |
+| Release | Immutable product revision, reproducible venv, documented rollback | **Pass / activated** | App `37c7042` and backend `2e4449c` are frozen separately. `reception-prod` rejects mutable/dirty/mismatched releases. Rollback app `7840866`, configuration, launchers, and plists are preserved. |
+| Backend | Reproducible pinned runtime and production smoke | **Pass / frozen** | Both dependency checks and 375 m1max tests passed. Managed private-profile text, time/web tools, fixed policy TTS, shutdown, restart, and trace health passed on 2026-09-05. |
 | Robot lifecycle | Remote start, stop, sleep, and machine verification | **Pass for assisted use** | OPS start/stop lifecycle works and leaves the backend warm. Managed S2S restart now waits for complete launchd unload, process exit, and port closure before starting. Physical runner restart remains operator-authorized. |
 | Visitor behavior | Greet, goodbye, and wave-chat accepted with real visitors | **Accepted for first production pass** | Door v4 and the current chat backend are frozen at the user-accepted behavior; further tuning is deferred rather than a launch blocker. |
 | Long-run behavior | Multi-hour run with conversations and no wedged subsystems | **Pass for assisted use** | Recent two-hour and shorter recorded runs completed cleanly with advancing broker/media counters and finalized artifacts. Policy/chat quality is accepted separately for the first pass. |
@@ -49,8 +55,8 @@ STT/LLM/TTS behavior without reopening backend evaluation explicitly.
 | Session duration | First-class run-until-stopped mode | **Deferred to control app** | Assisted CLI shifts use a deliberate fixed duration, currently eight hours. The reception control app will start an unlimited session that ends through End Reception or Emergency Stop; this is not a blocker for assisted production. |
 | Recording integrity | Audio/video/capture finalize and retain diagnosable timing | **Accepted limitation** | Fixed-`5 FPS` MKVs play faster than wall time, but frame order is intact and JSONL sidecars retain the timing source of truth used by replay/Rerun. Use MKVs only for qualitative review; map a reported player position to frame index and then sidecar `ts`. |
 | Crash recording | Artifacts remain finalized or explicitly interrupted after runner failure | **Pass for assisted use** | Controlled media loss in `official-live-20260830-085651` finalized the enabled artifacts and preserved the terminal fault. If a hard kill prevents runner cleanup, the detached supervisor retains interrupted status and open artifact paths. A recorder sidecar remains a deferred enhancement for hard-kill finalization. |
-| Privacy | Approved raw-data policy, access boundaries, and retention | **Pass / active** | Production records audio and derived vision diagnostics but defaults raw MKV video off. Audio/video older than 30 days are reported daily for reviewed cleanup; no automatic deletion is allowed. Artifacts remain private to the local operator account. |
-| Monitoring | Backend, Hermes, provider, runner, media flow, artifacts, disk, and robot health | **Pass / accepted** | Aggregate status validates the OpenRouter key without a model call and reports Hermes, S2S, launchd, the required S2S `ProcessType=Interactive`, disk headroom, recording age, runner heartbeats, and media faults. Controlled robot-media loss faulted and cleaned up within the configured bound on 2026-08-30. |
+| Privacy | Approved raw-data policy, access boundaries, and retention | **Pass / active** | Production records audio and derived vision diagnostics but defaults raw MKV video off. Audio/video and backend traces older than 30 days are reported daily on m1max for reviewed cleanup; no automatic deletion is allowed. Private profiles and credentials remain outside Git. |
+| Monitoring | Backend, provider, runner, media flow, artifacts, disk, and robot health | **Pass / accepted** | Aggregate status checks OpenRouter authentication, S2S, Interactive scheduling, disk, retention, runner heartbeats, and media faults. Hermes is required only for its compatibility route. Structured backend trace health reports writer status, drops, and errors. Controlled media-loss acceptance remains valid. |
 | Supervision | Services recover safely after machine/process or media failure | **Pass / fail-stop accepted** | Hermes and S2S launchd `KeepAlive` restart was verified on 2026-08-29. LaunchAgent replacement now waits for unload before bootstrap, closing the observed activation race. Controlled media loss stopped and cleaned up the physical runner without automatic restart on 2026-08-30. |
 | Remote access | Authenticated, auditable, least-privilege control | **Blocked for non-technical users** | SSH/Tailscale plus OPS is acceptable for assisted production. No remote operations API or operator UI exists yet. |
 | Emergency handling | Idempotent remote stop and documented local fallback | **Pass for assisted use** | `emergency-stop` exposes the existing bounded shutdown path, keeps backend services warm, and has documented timeout, verification, repeat, and local-m1max fallback behavior. Controlled media loss exercised the same bounded fail-stop and cleanup path. |
@@ -62,6 +68,17 @@ chat endpointing robustness, and recorder-sidecar hard-kill enhancement remain f
 are not blockers for assisted operation.
 
 ## Latest Acceptance Evidence
+
+### Client-Owned Agent Promotion (2026-09-05)
+
+The user accepted the migrated backend's two live runs and subsequent seven-case private
+profile/tool regression. Managed promotion then passed from frozen app `37c7042` and backend
+`2e4449c`: real clinic facts, one time call, one real Firecrawl call, exact greet/goodbye TTS,
+complete shutdown and restart, direct-provider health, and trace retention reporting. Trace
+drops and write errors were zero. The robot runner was not started during deployment checks.
+The migrated real profile and tools have text acceptance; this promotion did not repeat physical
+speaker or live visitor testing. Detailed evidence and rollback paths are in the
+[promotion record](s2s-production-promotion.md#retry-2026-09-05).
 
 ### S2S launchd scheduling regression (2026-09-01)
 

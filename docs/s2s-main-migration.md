@@ -1,8 +1,14 @@
 # S2S main migration and client agent integration
 
-Date: 2026-09-03
-Status: staging migration and full 12-turn replay passed; live acceptance pending
+Date: 2026-09-05
+Status: staging and live backend acceptance passed; managed production promoted
 Audience: backend, receptionist-runtime, and operations maintainers
+
+The app/backend/config promotion completed on 2026-09-05. Current production is
+app `37c7042` with backend `2e4449c`, private client-owned profile, and default
+`time-web` tools. See the [promotion record](s2s-production-promotion.md) for managed
+acceptance and rollback evidence. The implementation history below retains the
+original migration baseline and staging decisions.
 
 ## 1. Goal
 
@@ -53,15 +59,16 @@ The target also supports:
 
 ### 2.1 Staging isolation
 
-The migration must not reuse the managed production backend directory or port.
+Staging remains separate from the managed production backend directory and port.
 
 | Runtime | Directory | Port | Package | Service ownership |
 | --- | --- | --- | --- | --- |
-| Production | `/Users/leon/projects/speech_to_speech_backend` | `8765` | `0.2.10` / `a963ca6` | managed launchd service |
+| Production | `/Users/leon/projects/speech_to_speech_backend_2e4449c_frozen` | `8765` | `0.2.12` / `2e4449c` | managed launchd service |
 | Migration staging | `/Users/leon/projects/speech_to_speech_backend_migration` | `8766` | `0.2.12` / `2e4449c` | manual test process only |
+| Previous production rollback | `/Users/leon/projects/speech_to_speech_backend` | inactive; restore on `8765` | `0.2.10` / `a963ca6` | preserved directory |
 
-Production continues to use `setup_s2s_backend.sh`, `run_s2s_backend.sh`, and
-the legacy `--mode realtime` CLI until promotion is approved. Migration staging
+Promoted production uses `run_s2s_backend.sh` with `S2S_CLI_MODE=serve`; the
+legacy `--mode realtime` path remains available for rollback. Migration staging
 uses `setup_s2s_backend_staging.sh` and `run_s2s_backend_staging.sh`, which pin
 the new SHA, use the `serve` CLI, disable Smart Turn, and intentionally do not
 enable provider-managed Hermes conversation state.

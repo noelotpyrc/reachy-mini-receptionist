@@ -1,6 +1,6 @@
 # Client-Owned Agent Production Promotion
 
-Status: test-isolation correction implemented; repeating m1max validation before production activation.
+Status: production activated on 2026-09-05; managed non-hardware acceptance passed.
 
 ## Accepted Candidate
 
@@ -118,7 +118,49 @@ no reason to stop the real staging server merely to satisfy this unit test.
 ## Retry: 2026-09-05
 
 The mocked dry-run test now passes `--skip-running-check`, matching the other
-isolated setup test. Production setup guards are unchanged. Build a new frozen
-app revision for this correction; reuse the already verified frozen backend
-and preserve the original rollback snapshot. Managed acceptance remains pending
-until the post-switch results are recorded below.
+isolated setup test. Production setup guards are unchanged. The corrected app
+is frozen at `37c7042ae79a5f367bd2637df266e09661c21846`; its local and m1max
+suites both passed: 375 passed, 1 skipped, 36 deselected. The frozen backend
+and original rollback snapshot were reused without modifying the old runtimes.
+
+### Activated Combination
+
+- App: `/Users/leon/projects/reachy_mini_receptionist_release_37c7042_frozen`.
+- Backend: `/Users/leon/projects/speech_to_speech_backend_2e4449c_frozen`.
+- Production endpoint: `ws://127.0.0.1:8765/v1/realtime`.
+- Direct OpenRouter, `openai/gpt-5.6-luna`; Smart Turn disabled.
+- Verified backend package pins and fork SHA as listed above; Interactive scheduling.
+- Private profile: `reachyclinic-v1`, Hermes-source composition, `time-web` tools.
+- Profile with tool guidance, before runtime date: SHA-256
+  `b09a8ed2346247a2490d522f48484fa78a3cfe83c7d2744958387d7f55ad2d4b`.
+- September 5 date-stamped instruction: 6,797 characters, SHA-256
+  `33da4e1f0acc996d06aff04d9df1ceedbb26a480fa8a905797555fe5dcb45fc5`.
+- Existing vision, recording, and shift settings preserved. Backend startup wait
+  configured to 180 seconds for cold model initialization.
+
+### Managed Acceptance Results
+
+| Check | Result |
+| --- | --- |
+| Private composition | Matches the approved local source exactly before date stamping; no Lakeside content; only `time_now` and `web_search` advertised |
+| Clinic facts / small talk | Correct clinic opening hours, then short conversational response; zero tools; 1.235 s / 1.126 s |
+| Local time | One `time_now` call with America/New_York; Saturday and clock time returned; 2.053 s |
+| Web search | One real Firecrawl call, three bounded results, 34-word MVC renewal answer; 3.107 s |
+| Fixed policy TTS | Greet and goodbye both completed with exact transcripts and nonempty WAVs; first audio 208.053 ms / 150.830 ms |
+| Shutdown | Managed job unloaded, process exited, port 8765 closed |
+| Restart | New backend instance ready; Interactive; aggregate status healthy |
+| Trace | Writer alive, queue empty, zero dropped events and write errors before stop and after restart |
+| Health routing | Direct route; OpenRouter authentication HTTP 200; Hermes API and service explicitly not required |
+| Retention | Deployed CLI and daily report include backend trace root; 287 files / 443,192,696 bytes due; no deletion |
+| Robot | Runner remained stopped throughout; no physical speaker playback or robot run |
+
+Text-only output may retain Markdown emphasis; existing backend speech normalization
+handles the audio path. The short MVC answer supplied navigation labels rather than
+a long spoken URL. These checks validate deployment, not a new physical listening test.
+
+Private acceptance evidence, configuration hashes, source hashes, package inventory,
+WAVs, and release manifest are retained on m1max under:
+`/Users/leon/.local/state/reachy-reception/promotions/20260905-37c7042`.
+The original rollback snapshot remains at `20260904-d55159e` in the same parent.
+Restore app `7840866` and its saved configuration together for the previous Hermes
+production route. The staging listener and Hermes service were left intact.
