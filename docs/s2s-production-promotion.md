@@ -1,6 +1,6 @@
 # Client-Owned Agent Production Promotion
 
-Status: implementation and local validation complete; managed m1max acceptance pending.
+Status: test-isolation correction implemented; repeating m1max validation before production activation.
 
 ## Accepted Candidate
 
@@ -82,3 +82,43 @@ profile and backend directories may remain on disk. No deletion is needed.
 Stop on acceptance failures and record whether rollback was necessary. None of
 these checks requires the user to be at the clinic, but they do not establish
 physical speaker quality or replace the later live acceptance of profile/tools.
+
+## Promotion Attempt: 2026-09-04
+
+- App commit `d55159ea37b6a1974863e8bfb1a1987017e5592a` committed and pushed.
+- Local suite: 375 passed, 1 skipped, 36 deselected.
+- New m1max app: `/Users/leon/projects/reachy_mini_receptionist_release_d55159e_frozen`.
+- New backend: `/Users/leon/projects/speech_to_speech_backend_2e4449c_frozen`.
+- New app environment built from `uv.lock`; backend environment reproduced from
+  the tested staging package inventory. Both package consistency checks passed;
+  backend fork/MLX verification passed.
+- Private source profile copied to
+  `/Users/leon/.config/reachy-reception/profiles/reachyclinic-v1`, owner-only.
+- Existing shared Firecrawl key provisioned in m1max's backed-up deployment `.env`.
+- Private rollback snapshot and inventories:
+  `/Users/leon/.local/state/reachy-reception/promotions/20260904-d55159e`.
+
+The m1max suite produced 374 passes, 1 failure, 1 skip, and 36 deselections.
+`test_s2s_setup_bootstraps_unseeded_uv_venv_without_python_pip` invokes the staging
+setup script in dry-run mode but does not pass `--skip-running-check`. The real
+staging listener on port 8766 therefore causes the script to exit with code 3
+before the dry-run assertions. The test passed locally because no backend was
+listening on the local 8766 port.
+
+Stopped before activation. Production `active-release` remains `7840866` and
+production.env was not switched. No robot run was started; staging was left
+running. Managed startup/generation/shutdown, private live-profile validation,
+and the deployed retention report remain pending.
+
+Next correction: make this mocked dry-run test independent of the real staging
+listener using its existing `--skip-running-check` option, then freeze the
+corrected app revision and repeat m1max validation before activation. There is
+no reason to stop the real staging server merely to satisfy this unit test.
+
+## Retry: 2026-09-05
+
+The mocked dry-run test now passes `--skip-running-check`, matching the other
+isolated setup test. Production setup guards are unchanged. Build a new frozen
+app revision for this correction; reuse the already verified frozen backend
+and preserve the original rollback snapshot. Managed acceptance remains pending
+until the post-switch results are recorded below.

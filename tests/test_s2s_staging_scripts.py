@@ -64,6 +64,7 @@ def test_s2s_setup_bootstraps_unseeded_uv_venv_without_python_pip(
             "--dry-run",
             "--uv",
             str(fake_uv),
+            "--skip-running-check",
         ],
         check=False,
         capture_output=True,
