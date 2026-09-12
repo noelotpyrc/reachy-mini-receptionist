@@ -63,7 +63,7 @@ def test_physical_actions_require_authorization_before_robot_calls(tmp_path, mon
     assert calls == []
 
 
-def test_supervisor_robot_cleanup_is_bounded_and_disables_motors(tmp_path, monkeypatch):
+def test_supervisor_robot_cleanup_preserves_shared_media_and_disables_motors(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     calls: list[tuple[str, str, float]] = []
 
@@ -89,11 +89,51 @@ def test_supervisor_robot_cleanup_is_bounded_and_disables_motors(tmp_path, monke
     )
 
     assert result.status == "ok"
+    assert result.data["daemon_media_action"] == "unchanged"
     assert calls == [
         ("GET", "/api/move/running", 0.25),
-        ("POST", "/api/media/release", 0.25),
         ("POST", "/api/move/play/goto_sleep", 0.25),
         ("POST", "/api/motors/set_mode/disabled", 0.25),
+    ]
+
+
+def test_failed_reception_cleanup_does_not_release_or_reacquire_media(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    calls = []
+    monkeypatch.setattr(ops_core, "_robot_get", lambda *args, **kwargs: [{"uuid": "move-1"}])
+
+    def fail_post(config, path, **kwargs):
+        calls.append(path)
+        raise ops_core.OpsError("robot unavailable")
+
+    monkeypatch.setattr(ops_core, "_robot_post", fail_post)
+    result = ops_core.finalize_robot_after_run(config, attempts=2, sleep_fn=lambda _: None)
+
+    assert result.status == "degraded"
+    assert len(result.data["attempts"]) == 2
+    assert result.data["daemon_media_action"] == "unchanged"
+    assert calls == [
+        "/api/move/stop",
+        "/api/move/play/goto_sleep",
+        "/api/motors/set_mode/disabled",
+    ] * 2
+
+
+def test_explicit_sleep_still_releases_shared_media(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    calls = []
+    monkeypatch.setattr(ops_core, "stop_running_moves", lambda config: None)
+    monkeypatch.setattr(ops_core, "_robot_post", lambda config, path, **kwargs: calls.append(path))
+    monkeypatch.setattr(
+        ops_core, "robot_status", lambda config: ops_core.ActionResult(action="robot.status")
+    )
+
+    ops_core.sleep_robot(config, authorized=True, sleep_fn=lambda _: None)
+
+    assert calls == [
+        "/api/media/release",
+        "/api/move/play/goto_sleep",
+        "/api/motors/set_mode/disabled",
     ]
 
 
@@ -1013,7 +1053,8 @@ def test_start_session_composes_resource_primitives_in_order(tmp_path, monkeypat
     assert calls == ["stop_runner", "start_backend", "wake_robot", "start_runner"]
 
 
-def test_stop_session_and_shutdown_are_scoped_to_runner_and_robot(tmp_path, monkeypatch):
+@pytest.mark.parametrize("supervised_cleanup", [False, True])
+def test_stop_session_and_shutdown_have_distinct_media_scope(tmp_path, monkeypatch, supervised_cleanup):
     config = make_config(tmp_path)
     calls: list[str] = []
 
@@ -1021,12 +1062,18 @@ def test_stop_session_and_shutdown_are_scoped_to_runner_and_robot(tmp_path, monk
         ops_core,
         "stop_runner",
         lambda config, *, authorized, include_unmanaged=False: calls.append(f"stop_runner:{include_unmanaged}")
-        or ops_core.ActionResult(action="runner.stop"),
+        or ops_core.ActionResult(action="runner.stop", data={"supervised_cleanup": supervised_cleanup}),
     )
     monkeypatch.setattr(
         ops_core,
         "sleep_robot",
         lambda config, *, authorized: calls.append("sleep_robot") or ops_core.ActionResult(action="robot.sleep"),
+    )
+    monkeypatch.setattr(
+        ops_core,
+        "finalize_robot_after_run",
+        lambda config: calls.append("reception_cleanup")
+        or ops_core.ActionResult(action="robot.finalize_after_run"),
     )
     monkeypatch.setattr(
         ops_core,
@@ -1037,9 +1084,15 @@ def test_stop_session_and_shutdown_are_scoped_to_runner_and_robot(tmp_path, monk
     stop_results = ops_core.stop_session(config, authorized=True)
     shutdown_results = ops_core.shutdown(config, authorized=True)
 
-    assert [result.action for result in stop_results] == ["runner.stop", "robot.sleep"]
+    assert [result.action for result in stop_results] == (
+        ["runner.stop"] if supervised_cleanup else ["runner.stop", "robot.finalize_after_run"]
+    )
     assert [result.action for result in shutdown_results] == ["runner.stop", "robot.sleep"]
-    assert "stop_backend" not in calls
+    assert calls == (
+        ["stop_runner:True"]
+        + ([] if supervised_cleanup else ["reception_cleanup"])
+        + ["stop_runner:True", "sleep_robot"]
+    )
 
 
 def test_emergency_stop_cli_uses_bounded_shutdown_and_requires_confirmation(

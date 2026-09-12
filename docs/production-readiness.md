@@ -256,9 +256,10 @@ the fault reason, and the selected recovery action rather than inferring health 
 Recovery has two policy modes:
 
 1. **Fail-stop (required default):** emit a structured media-liveness fault, stop the runner through
-   the normal lifecycle, finalize or explicitly mark all artifacts interrupted, release media,
-   sleep the robot, and leave backend services warm. The fault remains visible through latest-run
-   status.
+   the normal lifecycle, finalize or explicitly mark all artifacts interrupted, disconnect the
+   reception SDK client, sleep the robot, and leave backend services warm. Preserve shared daemon
+   media; global media release belongs to an explicit robot-wide sleep, shutdown, or emergency
+   action. The fault remains visible through latest-run status.
 2. **Bounded restart (optional, explicit):** only when the shift was started with an approved
    unattended-recovery policy, stop the failed session completely and start a new run ID with a
    parent/recovery link. Limit attempts and use backoff. Any repeated liveness failure must fall
@@ -268,6 +269,17 @@ Fail-stop acceptance now includes offline starvation tests and controlled live r
 Status faulted within the configured bound, left no live runner, and finalized artifacts. Bounded
 restart remains deferred and was not exercised; if later approved, it must create one healthy
 replacement run with separate artifacts and no duplicate policy speech caused by stale state.
+
+**Shared-media cleanup correction (2026-09-12, not deployed):** run
+`official-live-20260912-160041` ended naturally at 16:16:18 EDT with exit code 0,
+closed artifacts, and successful cleanup. The daemon then reported `available: false`,
+`released: true`; the user confirmed the control-app preview hung. Port 8443 was still
+reachable, so port reachability alone does not establish working video. Local runner cleanup
+now leaves shared daemon media unchanged for every supervisor exit and the manual-stop fallback.
+Explicit robot-wide shutdown still releases media even after supervised cleanup. This changes
+the media-release portion of the previously accepted fail-stop behavior, not motor cleanup or
+watchdog thresholds. Deployment and a repeat natural-expiry/preview check remain pending;
+queued-audio behavior after a forced process termination is not newly validated by this fix.
 
 Run `official-live-20260806-114813` used the clean release with raw audio, video, vision capture,
 Grounding DINO door observations, and Rerun streaming disabled.

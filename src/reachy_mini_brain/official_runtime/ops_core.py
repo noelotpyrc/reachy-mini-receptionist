@@ -926,7 +926,7 @@ def finalize_robot_after_run(
     request_timeout_s: float = 2.0,
     sleep_fn=time.sleep,
 ) -> ActionResult:
-    """Best-effort, bounded robot cleanup owned by the session supervisor."""
+    """Bounded reception cleanup; leave shared daemon media to its owner."""
 
     attempts = max(1, attempts)
     all_attempts: list[dict[str, Any]] = []
@@ -954,16 +954,12 @@ def finalize_robot_after_run(
             except OpsError as exc:
                 errors.append(f"stop_move:{uuid}: {exc}")
         goto_sleep_requested = False
-        for label, path in (
-            ("media_release", "/api/media/release"),
-            ("goto_sleep", "/api/move/play/goto_sleep"),
-        ):
-            try:
-                _robot_post(config, path, timeout_s=request_timeout_s)
-                if label == "goto_sleep":
-                    goto_sleep_requested = True
-            except OpsError as exc:
-                errors.append(f"{label}: {exc}")
+        # /api/media/release is daemon-wide, not this runner's SDK disconnect.
+        try:
+            _robot_post(config, "/api/move/play/goto_sleep", timeout_s=request_timeout_s)
+            goto_sleep_requested = True
+        except OpsError as exc:
+            errors.append(f"goto_sleep: {exc}")
         if goto_sleep_requested:
             sleep_fn(3.0)
         try:
@@ -990,7 +986,7 @@ def finalize_robot_after_run(
         machine_verification=(
             Verification("cleanup_requests", status, {"attempts": all_attempts}),
         ),
-        data={"attempts": all_attempts},
+        data={"attempts": all_attempts, "daemon_media_action": "unchanged"},
         errors=tuple(final_errors),
     )
 
@@ -1298,8 +1294,7 @@ def stop_runner(config: OpsConfig, *, authorized: bool, include_unmanaged: bool 
 def shutdown(config: OpsConfig, *, authorized: bool) -> list[ActionResult]:
     _require_physical_authorization("shutdown", authorized)
     stopped = stop_runner(config, authorized=True, include_unmanaged=True)
-    if stopped.data.get("supervised_cleanup"):
-        return [stopped]
+    # Supervised reception cleanup deliberately preserves shared daemon media.
     return [stopped, sleep_robot(config, authorized=True)]
 
 
@@ -1498,7 +1493,7 @@ def stop_session(config: OpsConfig, *, authorized: bool) -> list[ActionResult]:
     stopped = stop_runner(config, authorized=True, include_unmanaged=True)
     if stopped.data.get("supervised_cleanup"):
         return [stopped]
-    return [stopped, sleep_robot(config, authorized=True)]
+    return [stopped, finalize_robot_after_run(config)]
 
 
 def aggregate_status(config: OpsConfig, *, include_robot: bool = False) -> ActionResult:

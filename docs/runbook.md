@@ -485,6 +485,20 @@ viewer may remain open after `stop-session` so the finalized recording stays ava
 If Codex started the run, tell Codex `stop`; Codex should run `stop-session` and report artifact
 pointers.
 
+Reception cleanup, including timer expiry and supervisor fault cleanup, closes the runner's
+SDK client without calling `/api/media/release`. That endpoint releases shared daemon media,
+not an individual consumer, and breaks the control app's preview. Motor cleanup is unchanged:
+stop moves, request the sleep pose, and disable motors. Cleanup reports
+`daemon_media_action: unchanged`; this describes the requested action, not proof that the daemon
+or its stream is healthy. It does not reacquire media that was already released.
+
+Explicit `sleep-robot`, `shutdown`, and `emergency-stop` remain robot-wide actions and release
+shared media. Other clients can lose their streams during those actions. A completed supervisor
+cleanup does not replace the explicit media release requested by shutdown.
+
+The September 12 media-scope correction requires a new release and live preview acceptance;
+the existing frozen `ce95a49` release still releases media after reception ends.
+
 If stopping from a shell:
 
 ```bash

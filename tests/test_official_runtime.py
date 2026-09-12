@@ -1336,6 +1336,34 @@ def test_reachy_robot_session_uses_explicit_network_host(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("media_close_fails", [False, True])
+def test_reachy_robot_session_stop_closes_only_its_client(monkeypatch, media_close_fails):
+    calls = []
+
+    def close_media():
+        calls.append("close_client_media")
+        if media_close_fails:
+            raise RuntimeError("client pipeline close failed")
+
+    def unexpected_robot_post(*args, **kwargs):
+        raise AssertionError("SDK session stop must not send robot-wide commands")
+
+    monkeypatch.setattr(robot, "_post", unexpected_robot_post)
+    monkeypatch.setattr(robot, "_session_active", True)
+    session = ReachyRobotSession()
+    session.mini = types.SimpleNamespace(
+        media_manager=types.SimpleNamespace(close=close_media),
+        client=types.SimpleNamespace(disconnect=lambda: calls.append("disconnect_client")),
+    )
+
+    session.stop()
+    session.stop()
+
+    assert calls == ["close_client_media", "disconnect_client"]
+    assert session.mini is None
+    assert robot._session_active is False
+
+
 def test_reachy_robot_session_reports_startup_milestones(monkeypatch):
     monkeypatch.setattr(robot, "ensure_ready", lambda: None)
     monkeypatch.setattr(robot, "_session_active", False)
