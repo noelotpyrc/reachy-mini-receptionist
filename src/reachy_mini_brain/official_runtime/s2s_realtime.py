@@ -473,7 +473,7 @@ def _summarize_event(event: dict[str, Any]) -> dict[str, Any]:
         if output_summary:
             data["output_summary"] = output_summary
     text = _event_text(event)
-    if text:
+    if text or event.get("type") == "conversation.item.input_audio_transcription.completed":
         data["transcript"] = text
         data["text"] = text
         data["final"] = event.get("type") == "conversation.item.input_audio_transcription.completed"

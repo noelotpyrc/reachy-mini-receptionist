@@ -1,8 +1,103 @@
 # Native Reception Candidate: Prepare And Roll Back
 
-Status: Step 5 offline implementation, September 12, 2026. Not deployed.
-The current production launcher, backend, robot installation and AV-probe listener
-are unchanged. All deployment commands below require a separate approved window.
+Status: First attended candidate run failed, September 13, 2026; not accepted.
+The production launcher, backend and AV-probe listener are unchanged. The robot's
+native app has been upgraded to 0.1.2 with rollback files retained; its configuration
+selects the new `clinic-candidate` service. Only its control listener is running;
+Reception requires official UI Start. After the failed run the service remains
+fault-latched; review/reset is required before another Start.
+
+## September 13 Preparation
+
+- User approved pushing only `native-candidate-20260913` to the m1max bare Git
+  remote and replacing native 0.1.1 with 0.1.2 after retaining rollback files.
+- Candidate source: `ba24fc273c58650e04084995060c07fac32d4a0c`, in
+  `/Users/leon/projects/reachy_mini_receptionist_release_ba24fc2_frozen`.
+  GitHub and production main were not pushed or switched.
+- A fresh Python 3.12.13 `.release-venv` was synced from `uv.lock` with the four
+  production extras. All 126 top-level installed package versions match frozen
+  production `4f0f52e`. Vision, gesture, service and SDK imports passed. Required
+  GStreamer AV element factories are available; the documented optional
+  `libgstpython.dylib` scanner warning also occurred.
+- Native 0.1.2 was installed with `--no-deps` in robot `/venvs/apps_venv`.
+  SDK remains 1.10.0; native import and official entry-point discovery passed.
+  Under robot `~/.config/reachy-mini-reception/`, the 0.1.1 wheel is retained and
+  `config.pre-0.1.2-20260913.json` preserves the prior configuration.
+- Wheel and proposed runtime JSON are staged in `/tmp/reception-native-20260913/`
+  on the local Mac and m1max. Runtime choices match production: private
+  `reachyclinic` profile, `time-web`, door-v4, broker 15 FPS, audio recording on,
+  video recording off, Rerun off. Native Stop owns run duration.
+- User explicitly approved reuse of production `.env`. The service references
+  `/Users/leon/projects/reachy_mini_receptionist_deploy/.env` directly through
+  `--env-file`; its contents were neither copied, displayed nor modified.
+- Bundle: shared `artifacts/official-runtime-live/native-service/native-candidate-20260913/`.
+  Source, wheel, configuration, private-file permissions and TLS validation passed.
+  `com.reachy.reception.native-candidate` is running as Interactive on port 8877,
+  with no automatic restart. The bundle's `started`/`installed` fields describe
+  preparation time, not live deployment status.
+- Robot config now selects `wss://192.168.1.163:8877/reception/control` and
+  `clinic-candidate`. Authenticated TLS connection and WebSocket ping passed from
+  `/venvs/apps_venv`; no Start message was sent and no physical run was created.
+- Final pre-start checks: no official app or CLI reception run active; robot daemon
+  stopped with no reported error; existing S2S PID 55385 unchanged and healthy,
+  Interactive verified, provider authorization HTTP 200, storage healthy.
+  The operator should wake the robot through the official control UI if needed,
+  then Start Reception and confirm Starting -> Ready before testing speech/chat.
+
+## September 13 Interrupted Chat Failure
+
+Run `native-dfac31b9db20433cb0d152114a7388ee`, backend session
+`session_038b4b0bf4964d0ab02c0a873976a615`. Times below are EDT.
+
+- 16:27:31.554: VAD barge-in cancelled the active response and TTS. Cancellation
+  completed; there is no evidence of a stuck LLM request after this interruption.
+- 16:27:32.147 and 16:27:33.156: Parakeet published empty transcripts for turn 8
+  revisions 0 and 1 (1.332 s and 2.132 s input segments). No new LLM request followed.
+- 16:27:33.169: the conversation cue started on the second empty-transcript event.
+  `_summarize_event` omits empty text fields, and `_is_final_user_transcript` treats
+  missing text as a valid turn for this event type. Local reproduction through both
+  functions confirms this bug. The cue waits for audio/runtime completion that
+  never follows an empty transcript. This file is identical to production 4f0f52e.
+- Input forwarding continued: 1,836 microphone frames after the last empty
+  transcript, through 16:28:13.143. Runtime ticks also continued. No further VAD
+  turn events were recorded before shutdown; this alone does not establish why.
+- 16:28:05.129: final published video frame. Capture/consumer summaries report no
+  producer or inference failure. At 16:28:13 the service detected `video_stale`
+  after the eight-second limit and stopped the run. Audio and event-loop activity
+  remained recent. The terminal receipt reports video age 9.032 s after cleanup.
+- 16:28:14: runtime cleanup completed with zero SDK cleanup errors, and the native
+  app deliberately exited with code 1 on the reported service fault. This was a
+  liveness-triggered shutdown, not an unexplained process crash. The thinking cue
+  ran for about 40 seconds and stopped during cleanup.
+
+Unresolved: why STT returned empty text, and why video delivery stopped. Scoped
+robot journals show no corresponding camera/transport error before the stale
+window; control requests and signalling pongs continued. No evidence establishes
+that interruption caused the video loss. Do not attribute either to noise, network
+jitter or compute starvation without further evidence.
+
+Evidence remains on m1max: this run's events/manifest/receipt under the shared
+`official-runtime-live` root, the candidate service logs, and
+`artifacts/s2s-backend-trace/backend-trace-20260913-f119c3721803.jsonl`.
+Raw-log copying locally was permission-blocked; diagnosis used in-place reads.
+No runtime fix, backend restart or new physical run was performed during diagnosis.
+
+Follow-up fix (candidate deployment requires separate verification): final S2S transcript summaries now
+preserve empty text, and the conversation cue requires a nonblank transcript to
+start from a transcript event. Missing/null/empty/whitespace values cannot start
+thinking. The regression reproduces the two empty results around audio completion,
+then checks that a subsequent valid turn starts/stops its cue normally. Full offline
+suite: 497 passed, 1 skipped, 36 deselected; targeted lint and diff checks passed.
+This does not add a generic thinking timeout or change STT/VAD/cancellation.
+
+Relationship to video loss: camera polling runs in the broker's dedicated thread;
+antenna commands are sequential, offloaded from the async loop, with 0.22/0.38 s
+waits. The cue has no camera-disable path. Video continued for approximately
+32 seconds after the erroneous thinking start, and audio/event-loop activity
+continued through the video-stale window. These facts do not establish a causal
+link or prove coincidence. Shared robot/network resource effects remain possible
+but unverified. Per the user's decision, do not investigate the empty STT result
+further for this fix.
 
 ## What The Operator Sees
 

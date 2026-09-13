@@ -146,8 +146,6 @@ def _is_final_user_transcript(event: RuntimeEvent) -> bool:
     text = event.data.get("transcript")
     if text is None:
         text = event.data.get("text")
-    if text is None:
-        return kind != "livekit.room.transcription"
     return isinstance(text, str) and bool(text.strip())
 
 

@@ -326,6 +326,88 @@ def test_conversation_cue_policy_starts_on_transcript_and_stops_on_audio():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("payload", [{}, {"text": None}, {"text": ""}, {"transcript": "  "}])
+@pytest.mark.parametrize("kind", [
+    "hf.realtime.conversation.item.input_audio_transcription.completed",
+    "backend.transcript.final",
+    "gemini.user_transcription_completed",
+    "livekit.room.transcription",
+])
+def test_conversation_cue_requires_nonblank_transcript(kind, payload):
+    async def run():
+        events = InMemoryEventSink()
+        context = RuntimeContext(event_sink=events)
+        registry = CapabilityRegistry()
+        calls = []
+
+        async def start(context, reason=""):
+            calls.append(reason)
+            return True
+
+        registry.register("start_thinking_cue", start)
+        policy = ConversationCuePolicy()
+        await policy.handle_event(RuntimeEvent(kind=kind, source="test", data=payload), context, registry)
+        assert calls == []
+
+    asyncio.run(run())
+
+
+def test_empty_s2s_barge_in_transcripts_do_not_restart_thinking():
+    async def run():
+        events = InMemoryEventSink()
+        handler = S2SRealtimeHandler(
+            realtime_ws_url="ws://127.0.0.1:8765/v1/realtime",
+            instructions="Test receptionist.",
+            event_sink=events,
+        )
+        context = RuntimeContext(event_sink=InMemoryEventSink())
+        registry = CapabilityRegistry()
+        calls = []
+
+        async def start(context, reason=""):
+            calls.append("start")
+            return True
+
+        async def stop(context, reason=""):
+            calls.append("stop")
+            return True
+
+        registry.register("start_thinking_cue", start)
+        registry.register("stop_thinking_cue", stop)
+        policy = ConversationCuePolicy(ConversationCuePolicySettings(min_start_interval_s=0.0))
+
+        async def transcript(text, item_id):
+            before = len(events.events)
+            await handler._handle_event({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": item_id,
+                "transcript": text,
+            })
+            emitted = events.events[before:]
+            for event in emitted:
+                await policy.handle_event(event, context, registry)
+            return emitted
+
+        await transcript("One more question", "previous")
+        await policy.handle_event(RuntimeEvent(kind="assistant.audio.started", source="test"), context, registry)
+        # The first empty result arrives before audio goes idle; the revision follows it.
+        await transcript("", "interruption")
+        await policy.handle_event(RuntimeEvent(kind="assistant.audio.done", source="test"), context, registry)
+        empty_events = await transcript("", "interruption-revised")
+        assert calls == ["start", "stop"]
+        for event in empty_events:
+            assert event.data["transcript"] == ""
+            assert event.data["text"] == ""
+            assert event.data["final"] is True
+
+        await transcript("Can you tell me the time?", "next-valid-turn")
+        assert calls == ["start", "stop", "start"]
+        await policy.handle_event(RuntimeEvent(kind="assistant.audio.started", source="test"), context, registry)
+        assert calls == ["start", "stop", "start", "stop"]
+
+    asyncio.run(run())
+
+
 def test_reception_policy_greets_without_opening_audio_gate():
     async def run():
         events = InMemoryEventSink()
