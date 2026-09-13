@@ -14,7 +14,17 @@ IDENTIFIER = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,95}\Z")
 
 
 class ProtocolError(ValueError):
-    pass
+    def __init__(self, message: str, *, code: str = "control_protocol_error") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+SERVICE_ERRORS = {
+    "cleanup_pending": "Previous run is still cleaning up; wait, then press Start again",
+    "operator_review_required": "Previous run cleanup failed or is unverified; operator review required",
+    "service_closing": "Reception service is shutting down",
+    "control_protocol_error": "Reception service rejected the control request",
+}
 
 
 def identifier(value: Any) -> str:

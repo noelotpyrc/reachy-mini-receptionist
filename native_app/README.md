@@ -60,7 +60,9 @@ The new `reception` mode requires explicit runtime configuration and physical
 authorization. It has not been deployed or approved to replace production.
 
 `/` shows a read-only status page, backed by `/api/reception/status`, through the
-SDK settings server on port 7860. Version 0.1.2 adds configuration, recording flags,
+SDK settings server on port 7860. Version 0.1.3 reports service Start refusals
+(cleanup pending or operator review required) explicitly, without reconnecting.
+Version 0.1.2 added configuration, recording flags,
 health freshness, run identifiers and stale/disconnected states. Connection-setting
 editing and switching configurations during a run are not implemented.
 Start/Stop are the

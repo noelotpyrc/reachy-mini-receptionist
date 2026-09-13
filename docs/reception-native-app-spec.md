@@ -97,7 +97,10 @@ No separate vision microservice, new agent framework, or public shell endpoint.
    flushes the SDK player, then closes this client's media and finalizes artifacts.
    This does not prove that audio already buffered on the daemon has stopped.
 5. Report `stopped` only after the runtime's cleanup finishes. A cleanup timeout
-   reports `faulted` and prevents new sessions until operator review.
+   reports `faulted` and blocks Start while cleanup is pending or unverified.
+   A later explicit Start may recover only after the actual reception worker
+   returns cleanly and the previous controller task ends. Failed cleanup still
+   requires operator review. There is no automatic restart.
 
 User requirement clarified September 11: ordinary Reception Stop must not put
 the robot to sleep. Stop ends reception processing, audio/cues and ownership;
@@ -758,9 +761,15 @@ still prevent simultaneous owners operationally.
 Runtime health reuses startup/event-loop/audio/video thresholds from the existing
 supervisor. The service reads the in-memory liveness snapshot; it does not add
 another filesystem heartbeat writer. Control heartbeats remain a separate lease.
-On runtime error or incomplete cleanup, the service latches `faulted` and refuses
-another Start. There is no automatic reconnect or restart. Review the service
-log and confirm ownership ended before restarting the service or using the CLI.
+On runtime error or incomplete cleanup, the service latches `faulted`. The
+reception runtime records eventual worker completion independently of its async
+wrapper: wrapper cancellation alone does not prove release of robot resources.
+A subsequent explicit Start can clear the latch only when the worker returned
+without errors, with no recorded stop-callback failures, and the controller task ended.
+Pending cleanup refuses Start with `cleanup_pending`; failed or unknown cleanup
+requires operator review. Runtimes without this completion evidence (including
+the AV probe) remain latched. There is no automatic reconnect or restart.
+Review the service log and confirm ownership ended before using the CLI.
 
 ### Limits And Next Gate
 

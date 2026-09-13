@@ -150,6 +150,32 @@ def test_runtime_error_is_publicly_redacted():
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("cleanup", ["pending", "failed", "unknown"])
+def test_client_reports_start_refusal_not_invalid_status(cleanup):
+    async def exercise():
+        service = controller(cleanup_reader=lambda session: {"state": cleanup})
+        run = service.start(object(), START)
+        await asyncio.sleep(0)
+        await service.stop(run, "native_stop")
+        service.fault_latched = True
+        statuses = []
+        server = ControlServer(service, TOKEN)
+        async with server.listen() as listener:
+            with pytest.raises(ProtocolError) as refused:
+                await control_session(
+                    url=endpoint(listener), token=TOKEN, config_id="mock", robot_id="test-robot",
+                    stop_event=threading.Event(), on_status=statuses.append,
+                )
+        code = "cleanup_pending" if cleanup == "pending" else "operator_review_required"
+        assert refused.value.code == code
+        assert "Invalid service status" not in str(refused.value)
+        assert statuses[-1]["reason"] == code
+        assert statuses[-1]["phase"] == "faulted"
+        assert service.active is run
+
+    asyncio.run(exercise())
+
+
 def test_control_client_and_server_start_heartbeat_stop():
     async def exercise():
         service = controller()

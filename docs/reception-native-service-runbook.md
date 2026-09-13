@@ -99,6 +99,77 @@ link or prove coincidence. Shared robot/network resource effects remain possible
 but unverified. Per the user's decision, do not investigate the empty STT result
 further for this fix.
 
+## September 13 Fixed-Candidate Connection Failure
+
+The cue fix was committed as `33f3e08`, pushed to the m1max candidate branch and
+deployed in its own frozen release. Native 0.1.2 and production S2S were unchanged.
+Bundle: `native-service/native-candidate-20260913-33f3e08/`. The 126 dependency
+versions matched the previous candidate; the installed-runtime cue check, required
+AV factories and robot-to-service authenticated TLS/ping checks passed.
+
+Subsequent run: `native-c12931e0894541e3986bf45fc4b53ea6`. Times are EDT.
+
+- 17:27:59.447: final video frame; 17:27:59.781: final microphone frame.
+- 17:28:00.074: m1max Wi-Fi driver reported `APPLE80211_M_ROAMED`. OS link-state
+  details confirm a roam from channel 144 (5 GHz) to channel 6 (2.4 GHz). This
+  coincides with loss of media, native control heartbeat and movement HTTP requests
+  and is the strongest identified explanation for the connection interruption.
+  No m1max sleep or robot kernel/Wi-Fi failure was logged in the inspected window.
+- 17:28:03.409: S2S completed its LLM generation; audio reached the application
+  sink at 17:28:03.659. This does not prove playback on the disconnected robot.
+- 17:28:04-05: native client exited after its three-second heartbeat-response
+  timeout. Service stopped the run with `control_heartbeat_timeout` at 17:28:05.563.
+- Cleanup exceeded the five-second service budget, latching `stop_timeout`.
+  Antenna REST requests were still retrying network failures; the generic movement
+  helper permits 30-second HTTP waits and retries. Runtime artifact closure/SDK
+  cleanup completed around 17:28:32.716, but that does not automatically clear the
+  service latch or replace the earlier stop-timeout receipt.
+- 17:29:17: the second Start received the service's fault-latch refusal. The native
+  client expects a full status response and treats the protocol error envelope as
+  `Invalid service status`, hiding the actionable operator-review reason. No new
+  service run/receipt was created for that refused Start.
+
+This is not a recurrence of the empty-transcript cue bug: the cue started for a
+nonempty transcript, and S2S generated a response. The earlier 16:28 video-only
+failure had no matching OS roam marker in its inspected 20-second window; do not
+retroactively attribute that failure to this roam.
+
+The user deferred network-stability work because the laptop was being carried
+around. The selected fix is manual startup recovery, not changes to Wi-Fi,
+movement retries or cleanup budgets. No timeout relaxation,
+automatic reconnect, service restart or hardware action was performed during this
+diagnosis. At the final check the daemon was stopped and the service fault-latched.
+
+### Manual Start Recovery Fix
+
+Local implementation, not yet deployed:
+
+- Track actual reception-worker completion separately from controller-task
+  completion. A cancelled/timed-out task is not evidence that SDK cleanup ended.
+- While the worker is pending, Start returns `cleanup_pending`. Once the worker
+  returns cleanly (including its event loop/executor shutdown) and the controller
+  task ends, a new explicit Start can clear the latch. No automatic run is started.
+- Worker exceptions or stop-callback failures record `failed`; unknown completion
+  also blocks recovery and requires operator review. Probe/mock runtimes without
+  completion tracking retain the existing fault latch.
+- Status includes `cleanup.state` and `cleanup.finished_at` (wall-clock epoch).
+  Worker completion is logged even after the controller task times out. On a
+  successful recovery attempt, the previous receipt is refreshed with cleanup
+  evidence while retaining its fault phase/reason and original elapsed time.
+- Native 0.1.3 recognizes service error envelopes and displays fixed, safe refusal
+  messages. It does not show arbitrary server error text or reconnect silently.
+
+Deployment requires the matching candidate service and native 0.1.3 wheel; the
+installed 0.1.2 client still mislabels refusal envelopes. Existing production CLI,
+S2S backend, heartbeat thresholds and SDK movement timeouts are unchanged.
+
+Offline verification: 507 passed, 1 skipped, 36 deselected; targeted Ruff and
+`git diff --check` passed. Tests cover both controller cancellation and runtime
+cleanup timeout, pending/failed/unknown refusal, late clean completion followed
+by manual restart, stale completion isolation, and Stop before startup begins.
+The native 0.1.3 wheel built offline; no deployment or physical acceptance was
+performed for this fix.
+
 ## What The Operator Sees
 
 The official app retains Start/Stop. Reception's embedded page shows run phase,
@@ -197,7 +268,7 @@ been checked. Official daemon app-manager sleep behavior is unchanged.
    confirm it no longer owns media. Record the current app/config/service state.
 2. Review the bundle and dependency/import checks on m1max. Confirm TLS reachability
    from the robot and that port 8877 is free. Do not start reception for this check.
-3. With installation approval, install the 0.1.2 lean wheel in the robot apps venv,
+3. With installation approval, install the matching 0.1.3 lean wheel in the robot apps venv,
    retaining the known-good wheel/config. No inference packages go onto the robot.
    Set native config to the bundle's service URL/config ID/robot ID. Copy only its
    config, control token and public CA; never the server/CA private key or `.env`.

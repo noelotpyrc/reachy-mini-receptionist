@@ -12,7 +12,10 @@ from typing import Any
 
 from websockets.asyncio.client import connect
 
-from .protocol import MAX_MESSAGE_BYTES, VERSION, Command, identifier, validate_token, validate_url
+from .protocol import (
+    MAX_MESSAGE_BYTES, VERSION, SERVICE_ERRORS, Command, ProtocolError,
+    identifier, validate_token, validate_url,
+)
 
 
 async def control_session(
@@ -51,6 +54,11 @@ async def control_session(
                 async def request() -> dict[str, Any]:
                     await websocket.send(command.encode())
                     status = json.loads(await websocket.recv())
+                    if isinstance(status, dict) and status.get("version") == VERSION and "error" in status:
+                        code = status.get("code")
+                        if not isinstance(code, str) or code not in SERVICE_ERRORS:
+                            code = "control_protocol_error"
+                        raise ProtocolError(SERVICE_ERRORS[code], code=code)
                     if (
                         not isinstance(status, dict) or status.get("version") != VERSION
                         or status.get("session_id") != session_id
@@ -78,6 +86,9 @@ async def control_session(
                         raise ValueError("Stop did not reach a terminal state")
                     return
                 status = await exchange(Command("heartbeat", session_id), request_timeout)
+    except ProtocolError as exc:
+        on_status({"phase": "faulted", "session_id": session_id, "reason": exc.code})
+        raise
     except Exception:
         # Never expose exception text containing URLs/credentials in the UI.
         on_status({"phase": "faulted", "session_id": session_id, "reason": "control_connection_failed"})

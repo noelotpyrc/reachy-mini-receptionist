@@ -26,7 +26,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from reachy_mini_reception_app.protocol import (
-    MAX_MESSAGE_BYTES, VERSION, Command, ProtocolError, identifier, validate_token,
+    MAX_MESSAGE_BYTES, VERSION, SERVICE_ERRORS, Command, ProtocolError, identifier, validate_token,
 )
 from reachy_mini_reception_app.settings import read_private_file
 
@@ -49,10 +49,13 @@ class Run:
     ended_at: float | None = None
     details: dict[str, Any] = field(default_factory=dict)
     status_reader: Callable[[str], dict[str, Any]] | None = None
+    cleanup_reader: Callable[[str], dict[str, Any]] | None = None
 
     def snapshot(self) -> dict[str, Any]:
         if self.ended_at is None and self.status_reader is not None:
             self.details = self.status_reader(self.session_id)
+        if self.cleanup_reader is not None:
+            self.details["cleanup"] = self.cleanup_reader(self.session_id)
         return {
             "version": VERSION, "session_id": self.session_id,
             "config_id": self.config_id, "robot_id": self.robot_id,
@@ -68,6 +71,7 @@ class SessionController:
 
     def __init__(self, configurations: dict[str, tuple[str, Runner]], *, stop_timeout: float = 5.0,
                  status_reader: Callable[[str], dict[str, Any]] | None = None,
+                 cleanup_reader: Callable[[str], dict[str, Any]] | None = None,
                  receipt_dir: Path | None = None):
         if not configurations or stop_timeout <= 0:
             raise ValueError("Configurations and a positive stop timeout are required")
@@ -80,12 +84,27 @@ class SessionController:
         self.fault_latched = False
         self.closing = False
         self.status_reader = status_reader
+        self.cleanup_reader = cleanup_reader
         self.receipt_dir = receipt_dir
 
     def start(self, owner: object, command: Command) -> Run:
-        if self.closing or self.fault_latched:
-            raise ProtocolError("Service unavailable; operator review required")
+        if self.closing:
+            raise ProtocolError(SERVICE_ERRORS["service_closing"], code="service_closing")
+        config = self.configurations.get(command.config_id or "")
+        if config is None or config[0] != command.robot_id:
+            raise ProtocolError("Unknown configuration or robot identity")
         existing = self.active
+        if self.fault_latched:
+            cleanup = self.cleanup_reader(existing.session_id) if existing and self.cleanup_reader else {}
+            if cleanup.get("state") == "pending":
+                raise ProtocolError(SERVICE_ERRORS["cleanup_pending"], code="cleanup_pending")
+            if (cleanup.get("state") != "complete" or existing is None
+                    or existing.task is None or not existing.task.done()):
+                raise ProtocolError(SERVICE_ERRORS["operator_review_required"], code="operator_review_required")
+            # This is explicit manual Start, not automatic recovery. Keep the old fault
+            # receipt and supplement it with eventual cleanup evidence before reuse.
+            self._receipt(existing)
+            self.fault_latched = False
         if existing is not None and existing.task is not None and not existing.task.done():
             if (
                 existing.owner is owner and existing.session_id == command.session_id
@@ -93,11 +112,14 @@ class SessionController:
             ):
                 return existing
             raise ProtocolError("Reception is already owned by another session")
-        config = self.configurations.get(command.config_id or "")
-        if config is None or config[0] != command.robot_id:
-            raise ProtocolError("Unknown configuration or robot identity")
+        if existing is not None and self.cleanup_reader is not None:
+            cleanup = self.cleanup_reader(existing.session_id)
+            if cleanup.get("state") != "complete":
+                code = "cleanup_pending" if cleanup.get("state") == "pending" else "operator_review_required"
+                raise ProtocolError(SERVICE_ERRORS[code], code=code)
         run = Run(owner, command.session_id, command.config_id or "", config[0])
         run.status_reader = self.status_reader
+        run.cleanup_reader = self.cleanup_reader
         self._receipt(run)
         self.active = run
         run.task = asyncio.create_task(self._run(run, config[1]), name="reception-service-runtime")
@@ -231,7 +253,7 @@ class ControlServer:
         except ProtocolError as exc:
             reason = "control_protocol_error"
             with contextlib.suppress(ConnectionClosed):
-                await websocket.send(json.dumps({"version": VERSION, "error": str(exc)}))
+                await websocket.send(json.dumps({"version": VERSION, "error": str(exc), "code": exc.code}))
         except ConnectionClosed:
             pass
         finally:
@@ -285,6 +307,7 @@ def main() -> None:
         tls.load_cert_chain(args.tls_cert, args.tls_key)
     runner = mock_runtime
     status_reader = None
+    cleanup_reader = None
     if args.mode == "av-probe":
         if not args.confirm_physical or not args.robot_host or args.probe_wav is None:
             parser.error("av-probe requires --confirm-physical, --robot-host and --probe-wav")
@@ -304,9 +327,11 @@ def main() -> None:
         options = load_runtime_options(args.runtime_config)
         public_status = ReceptionStatus(options)
         status_reader = public_status.snapshot
+        cleanup_reader = public_status.cleanup_snapshot
         runner = make_reception_runtime(options, status=public_status)
     controller = SessionController({args.config_id or args.mode: (args.robot_id, runner)},
-                                   status_reader=status_reader, receipt_dir=args.receipt_dir)
+                                   status_reader=status_reader, cleanup_reader=cleanup_reader,
+                                   receipt_dir=args.receipt_dir)
     server = ControlServer(controller, token)
 
     async def run() -> None:

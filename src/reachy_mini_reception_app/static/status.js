@@ -5,6 +5,10 @@ const reasons = {
   runtime_failed: 'Runtime fault; operator review required', stop_timeout: 'Cleanup not confirmed; operator review required',
   control_disconnected: 'Control connection closed', control_heartbeat_timeout: 'Control heartbeat expired',
   control_connection_failed: 'Service connection lost', service_shutdown: 'Service stopped',
+  cleanup_pending: 'Previous run is still cleaning up; retry Start after it finishes',
+  operator_review_required: 'Previous run cleanup failed or is unverified; operator review required',
+  service_closing: 'Reception service is shutting down',
+  control_protocol_error: 'Reception service rejected the control request',
   stopped_before_connect: 'Stopped before connecting', stopped_before_start: 'Stopped before starting'
 };
 const text = (id, value) => { document.getElementById(id).textContent = value ?? '--'; };

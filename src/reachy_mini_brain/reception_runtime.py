@@ -112,12 +112,13 @@ def make_reception_runtime(
 
     async def run(stop: asyncio.Event, ready: Callable[[], None], session_id: str) -> None:
         if stop.is_set():
+            if status is not None:
+                status.begin(session_id)
+                status.worker_finished(session_id, clean=True)
             return
         from reachy_mini_reception_app.protocol import identifier
 
         run_id = f"native-{identifier(session_id)}"
-        if status is not None:
-            status.begin(session_id)
         artifact_root = Path(options["artifact_root"])
         if (artifact_root / "runs" / f"run-{run_id}.json").exists():
             raise RuntimeError("Refusing to reuse an existing native run ID")
@@ -130,9 +131,11 @@ def make_reception_runtime(
         started = time.monotonic()
 
         def worker() -> None:
+            clean = False
+            failure: BaseException | None = None
             try:
                 if control.stop_requested.is_set():
-                    completed.set_result(None)
+                    clean = True
                     return
                 check_owner()
                 entry = session_entry
@@ -141,14 +144,34 @@ def make_reception_runtime(
 
                     entry = run_live_session
                 asyncio.run(entry(run_id=run_id, control=control, **options))
+                if control.cleanup_faults:
+                    raise RuntimeError("Runtime stop callbacks failed")
             except BaseException as exc:
-                completed.set_exception(exc)
+                failure = exc
             else:
-                completed.set_result(None)
+                clean = True
+            finally:
+                # The async wrapper can time out/cancel before this worker releases IO.
+                # Only returning from asyncio.run includes worker-loop/executor cleanup.
+                if status is not None:
+                    status.worker_finished(session_id, clean=clean)
+                LOGGER.info("service worker finished run_id=%s cleanup=%s", run_id,
+                            "complete" if clean else "failed")
+                if failure is not None:
+                    completed.set_exception(failure)
+                else:
+                    completed.set_result(None)
 
         thread = threading.Thread(target=worker, name=f"reception-{session_id}", daemon=True)
         LOGGER.info("service runtime starting run_id=%s", run_id)
-        thread.start()
+        if status is not None:
+            status.begin(session_id)
+        try:
+            thread.start()
+        except BaseException:
+            if status is not None:
+                status.worker_finished(session_id, clean=False)
+            raise
         stop_waiter = asyncio.create_task(stop.wait())
         fault = None
         try:
@@ -178,7 +201,7 @@ def make_reception_runtime(
                 finished, _ = await asyncio.wait({done}, timeout=cleanup_timeout)
                 if not finished:
                     # Python cannot safely kill a blocked native call or worker thread.
-                    # The controller must latch fault and refuse another physical session.
+                    # Refuse another session until eventual worker completion is verified.
                     raise RuntimeError("Runtime cleanup incomplete; worker may still own robot resources")
             try:
                 await asyncio.shield(done)

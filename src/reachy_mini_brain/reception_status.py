@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import threading
+import time
 from typing import Any
 
 
@@ -12,6 +13,7 @@ class ReceptionStatus:
         self._lock = threading.Lock()
         self._session_id: str | None = None
         self._health: dict[str, Any] = {}
+        self._cleanup: dict[str, Any] = {}
         self._configuration = {
             "profile": options["agent_profile_id"], "tools": options["agent_tools"],
             "vision_policy": options["visitor_trigger_profile"],
@@ -26,6 +28,16 @@ class ReceptionStatus:
         with self._lock:
             self._session_id = session_id
             self._health = {}
+            self._cleanup = {"state": "pending", "finished_at": None}
+
+    def worker_finished(self, session_id: str, *, clean: bool) -> None:
+        with self._lock:
+            if session_id == self._session_id:
+                self._cleanup = {"state": "complete" if clean else "failed", "finished_at": time.time()}
+
+    def cleanup_snapshot(self, session_id: str) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._cleanup) if session_id == self._session_id else {"state": "unknown"}
 
     def update(self, health: dict[str, Any] | None, *, fault: str | None = None) -> None:
         if health is None:
@@ -44,4 +56,5 @@ class ReceptionStatus:
             return {
                 "configuration": dict(self._configuration),
                 "health": copy.deepcopy(self._health) if session_id == self._session_id else {},
+                "cleanup": dict(self._cleanup) if session_id == self._session_id else {"state": "unknown"},
             }

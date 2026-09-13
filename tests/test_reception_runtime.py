@@ -21,6 +21,7 @@ from reachy_mini_brain.official_runtime.robot_io import ReachyRobotSession
 from reachy_mini_brain.official_runtime.session_supervisor import HealthThresholds
 from reachy_mini_brain.reception_runtime import load_runtime_options, make_reception_runtime
 from reachy_mini_brain.reception_service import SessionController
+from reachy_mini_brain.reception_status import ReceptionStatus
 from reachy_mini_reception_app.protocol import Command, ProtocolError
 
 
@@ -187,6 +188,28 @@ def test_failed_backend_start_closes_partial_session(tmp_path, fake_io, monkeypa
         assert calls.count("disconnect") == 1
         manifest = json.loads((tmp_path / "artifacts/runs/run-native-backend-failed.json").read_text())
         assert manifest["ended_ts"] is not None
+
+    asyncio.run(exercise())
+
+
+def test_immediate_stop_without_worker_allows_another_start(tmp_path):
+    status = ReceptionStatus({"agent_profile_id": "test", "agent_tools": "none",
+                              "visitor_trigger_profile": "test"})
+
+    async def unexpected_entry(**kwargs):
+        pytest.fail("Stop before scheduling must not initialize robot IO")
+
+    async def exercise():
+        runner = make_reception_runtime(
+            {"artifact_root": tmp_path}, status=status, session_entry=unexpected_entry,
+            check_owner=lambda: None,
+        )
+        service = SessionController({"test": ("robot", runner)}, cleanup_reader=status.cleanup_snapshot)
+        for session_id in ("first", "second"):
+            run = service.start(object(), Command("start", session_id, "test", "robot"))
+            await service.stop(run, "native_stop")
+            assert run.phase == "stopped"
+            assert run.snapshot()["cleanup"]["state"] == "complete"
 
     asyncio.run(exercise())
 
@@ -397,6 +420,82 @@ def test_stale_media_uses_existing_liveness_thresholds(tmp_path):
         assert run.phase == "faulted" and service.fault_latched
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("cleanup_timeout,stop_timeout", [(0.02, 0.1), (0.2, 0.02)])
+@pytest.mark.parametrize("failure", [None, "exception", "stop_callback"])
+def test_manual_restart_requires_eventual_worker_cleanup(tmp_path, cleanup_timeout, stop_timeout, failure):
+    release = threading.Event()
+    cleaning = threading.Event()
+    entered = []
+    status = ReceptionStatus({"agent_profile_id": "test", "agent_tools": "none",
+                              "visitor_trigger_profile": "test"})
+
+    async def entry(*, control, run_id, **options):
+        entered.append(run_id)
+        control.bind()
+        control.ready()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            if run_id == "native-first":
+                cleaning.set()
+                while not release.is_set():
+                    await asyncio.sleep(0.005)
+                if failure == "exception":
+                    raise RuntimeError("private cleanup exception")
+                if failure == "stop_callback":
+                    control.cleanup_faults.append("private callback exception")
+
+    async def exercise():
+        runner = make_reception_runtime(
+            {"artifact_root": tmp_path}, session_entry=entry, status=status,
+            check_owner=lambda: None, cleanup_timeout=cleanup_timeout,
+        )
+        service = SessionController(
+            {"test": ("robot", runner)}, stop_timeout=stop_timeout,
+            status_reader=status.snapshot, cleanup_reader=status.cleanup_snapshot,
+            receipt_dir=tmp_path / "receipts",
+        )
+        run = service.start(object(), Command("start", "first", "test", "robot"))
+        await eventually(lambda: run.phase == "ready")
+        await service.stop(run, "control_heartbeat_timeout")
+        await eventually(lambda: run.task.done())
+        assert cleaning.is_set()
+        assert run.phase == "faulted" and service.fault_latched
+        assert run.snapshot()["cleanup"]["state"] == "pending"
+        with pytest.raises(ProtocolError) as refused:
+            service.start(object(), Command("start", "too-early", "test", "robot"))
+        assert refused.value.code == "cleanup_pending"
+        release.set()
+        await eventually(lambda: status.cleanup_snapshot("first")["state"] != "pending")
+        # Finishing cleanup does not automatically create a new physical run.
+        assert entered == ["native-first"]
+        assert service.active is run and service.fault_latched
+        if failure:
+            with pytest.raises(ProtocolError) as refused:
+                service.start(object(), Command("start", "second", "test", "robot"))
+            assert refused.value.code == "operator_review_required"
+            assert "private" not in json.dumps(run.snapshot())
+            return
+        second = service.start(object(), Command("start", "second", "test", "robot"))
+        receipt = json.loads((tmp_path / "receipts/native-first.json").read_text())
+        assert receipt["phase"] == "faulted"
+        assert receipt["cleanup"]["state"] == "complete"
+        assert receipt["cleanup"]["finished_at"] > 0
+        await eventually(lambda: second.phase == "ready")
+        assert entered == ["native-first", "native-second"]
+        assert not service.fault_latched
+        # Stale completion reports cannot certify a later session's cleanup.
+        status.worker_finished("first", clean=True)
+        assert status.cleanup_snapshot("second")["state"] == "pending"
+        await service.stop(second, "native_stop")
+        assert second.phase == "stopped"
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
 
 
 def test_existing_cli_owner_prevents_sdk_initialization(tmp_path):
