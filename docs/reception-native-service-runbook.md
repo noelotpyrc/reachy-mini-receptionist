@@ -142,7 +142,7 @@ diagnosis. At the final check the daemon was stopped and the service fault-latch
 
 ### Manual Start Recovery Fix
 
-Local implementation, not yet deployed:
+Implementation (deployment recorded below):
 
 - Track actual reception-worker completion separately from controller-task
   completion. A cancelled/timed-out task is not evidence that SDK cleanup ended.
@@ -167,8 +167,39 @@ Offline verification: 507 passed, 1 skipped, 36 deselected; targeted Ruff and
 `git diff --check` passed. Tests cover both controller cancellation and runtime
 cleanup timeout, pending/failed/unknown refusal, late clean completion followed
 by manual restart, stale completion isolation, and Stop before startup begins.
-The native 0.1.3 wheel built offline; no deployment or physical acceptance was
-performed for this fix.
+The native 0.1.3 wheel built offline. These tests did not constitute physical
+acceptance.
+
+### September 13 Startup-Recovery Deployment
+
+- Commit `ee6eadb494b0d84794dd590deea62e71560afd01` pushed to the m1max
+  `native-candidate-20260913` branch only; GitHub origin and production unchanged.
+- Frozen release: `/Users/leon/projects/reachy_mini_receptionist_release_ee6eadb_frozen`.
+  A fresh Python 3.12.13 `.release-venv` was built offline from `uv.lock` with
+  vision, gesture, diagnosis and door-vision extras. Installed package versions
+  match the prior `33f3e08` candidate exactly; dependency checks passed.
+- Bundle: `native-service/native-candidate-20260913-ee6eadb/`. Only the idle
+  `com.reachy.reception.native-candidate` listener was replaced; new PID 13173,
+  port 8877, `ProcessType=Interactive`, no automatic run or service recovery.
+- Robot native client upgraded from 0.1.2 to 0.1.3 with `--no-deps --offline`.
+  SDK 1.10.0 and websockets 15.0.1 unchanged. Prior wheels/config and candidate
+  release/bundle retained. Native wheel SHA-256:
+  `1b0f7a447d90666beff20af5bef3d7f8a4136a05f93df5b86918c57cf0934eb7`.
+- Same approved production `.env`, private profile, control credentials and TLS
+  settings. Public-profile and vision-config paths now point to the new release;
+  their contents are unchanged. Audio recording on, video/Rerun off, vision
+  capture on, door v4, broker 15 FPS, time-web tools, duration until UI Stop.
+- Required vision/media imports and seven GStreamer factories passed. The scan
+  warned about optional `libgstpython.dylib` loading; all tested media factories
+  were available. No dependency or plugin patch was applied.
+- Existing S2S accepted an empty WebSocket session with `session.created`; it was
+  not restarted. Installed native client passed authenticated robot-to-service
+  TLS/ping without sending Start. Sanitized listener logs showed zero traceback
+  or ERROR markers. Raw service-log inspection was permission-blocked; no raw
+  conversation log was exported.
+- Ready for manual official-UI Start. Physical chat and Stop/Start acceptance
+  remain pending; deployment checks did not begin a robot reception run or
+  reproduce a physical network interruption.
 
 ## What The Operator Sees
 
@@ -229,7 +260,7 @@ receipt survives that exit. There is no hidden reconnect or automatic restart.
      --token-file /ABSOLUTE/PRIVATE/control.token \
      --cert /ABSOLUTE/PRIVATE/service.pem --key /ABSOLUTE/PRIVATE/service.key \
      --ca /ABSOLUTE/PRIVATE/ca.pem \
-     --wheel /ABSOLUTE/reachy_mini_reception_app-0.1.2-py3-none-any.whl \
+     --wheel /ABSOLUTE/reachy_mini_reception_app-0.1.3-py3-none-any.whl \
      --host M1MAX_LAN_IP --robot-id ROBOT_ID --config-id clinic-candidate
    ```
 
