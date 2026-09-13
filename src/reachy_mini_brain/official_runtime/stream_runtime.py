@@ -150,6 +150,7 @@ class OfficialStyleStreamRuntime:
         self._stop_event = asyncio.Event()
         self._input_done = asyncio.Event()
         self._assistant_audio_active = False
+        self._handler_closed = False
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -177,8 +178,9 @@ class OfficialStyleStreamRuntime:
             self._input_done.set()
             await output_task
             await self._drain_audio_sink()
-        except Exception as exc:
-            self._emit("runtime.failed", error=repr(exc))
+        except BaseException as exc:
+            self._emit("runtime.cancelled" if isinstance(exc, asyncio.CancelledError)
+                       else "runtime.failed", error=repr(exc))
             self.stop()
             if output_task is not None and not output_task.done():
                 output_task.cancel()
@@ -191,8 +193,14 @@ class OfficialStyleStreamRuntime:
             self.stop()
             await self._close_audio_sink()
             if handler_started:
-                await self.handler.shutdown()
+                await self.close_handler()
             self._emit("runtime.stopped")
+
+    async def close_handler(self) -> None:
+        """Also available to an embedding owner after interrupted startup."""
+        if not self._handler_closed:
+            await self.handler.shutdown()
+            self._handler_closed = True
 
     async def _input_loop(self) -> None:
         frames = 0

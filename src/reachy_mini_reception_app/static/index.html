@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reception</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/status.js" defer></script>
+</head>
+<body>
+<main>
+  <header><div class="brand"><img src="/static/reachy-icon.png" width="52" height="52" alt="Reachy Mini"><div><p class="eyebrow">REACHY MINI</p><h1>Reception</h1></div></div>
+    <span id="connection" class="connection">Connecting</span></header>
+  <section class="overview" aria-label="Run status">
+    <div><p class="label">Current run</p><div id="phase" data-phase="starting" role="status">Connecting</div>
+      <p id="reason" class="detail">Waiting for status</p></div>
+    <div class="timer"><p class="label">Elapsed</p><div id="elapsed_s">--:--:--</div>
+      <p id="duration" class="detail">--</p></div>
+  </section>
+  <section aria-labelledby="health-title"><h2 id="health-title">Runtime health</h2>
+    <div class="health-grid">
+      <div><p class="label">Microphone input</p><p id="audio" class="reading">--</p><p id="audio_detail" class="detail">--</p></div>
+      <div><p class="label">Camera input</p><p id="video" class="reading">--</p><p id="video_detail" class="detail">--</p></div>
+      <div><p class="label">Processing loop</p><p id="loop" class="reading">--</p><p id="loop_detail" class="detail">--</p></div>
+    </div>
+  </section>
+  <div class="columns">
+    <section aria-labelledby="config-title"><h2 id="config-title">Run configuration</h2><dl>
+      <div class="row"><dt>Configuration</dt><dd id="config_id">--</dd></div>
+      <div class="row"><dt>Profile</dt><dd id="profile">--</dd></div>
+      <div class="row"><dt>Tools</dt><dd id="tools">--</dd></div>
+      <div class="row"><dt>Vision policy</dt><dd id="vision_policy">--</dd></div>
+      <div class="row"><dt>Vision runtime</dt><dd id="vision_runtime">--</dd></div>
+    </dl></section>
+    <section aria-labelledby="record-title"><h2 id="record-title">Recording settings</h2><dl>
+      <div class="row"><dt>Audio</dt><dd id="record_audio">--</dd></div>
+      <div class="row"><dt>Video</dt><dd id="record_video">--</dd></div>
+      <div class="row"><dt>Vision metrics</dt><dd id="capture_vision">--</dd></div>
+    </dl></section>
+  </div>
+  <section aria-labelledby="session-title"><h2 id="session-title">Session details</h2><dl>
+    <div class="row"><dt>Run ID</dt><dd id="run_id" class="mono">--</dd></div>
+    <div class="row"><dt>Robot</dt><dd id="robot_id" class="mono">--</dd></div>
+    <div class="row"><dt>Runtime stage</dt><dd id="runtime_phase">--</dd></div>
+  </dl></section>
+  <footer>Reception service <span id="updated">No status received</span></footer>
+</main>
+</body>
+</html>

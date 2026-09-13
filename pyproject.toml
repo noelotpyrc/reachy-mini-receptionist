@@ -73,7 +73,7 @@ build-backend = "hatchling.build"
 environments = ["sys_platform == 'darwin'"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/reachy_mini_brain"]
+packages = ["src/reachy_mini_brain", "src/reachy_mini_reception_app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

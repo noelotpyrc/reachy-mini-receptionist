@@ -811,7 +811,8 @@ def recording_retention_report(
     due: list[tuple[float, Path, int]] = []
     scanned = 0
     trace_root = trace_root or artifact_root.parent / "s2s-backend-trace"
-    directories = [artifact_root / "audio", artifact_root / "video", trace_root]
+    directories = [artifact_root / "audio", artifact_root / "video", trace_root,
+                   artifact_root / "native-service", artifact_root / "service-receipts"]
     seen: set[Path] = set()
     for directory in directories:
         if not directory.exists():

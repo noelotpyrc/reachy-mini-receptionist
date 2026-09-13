@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "options": {
+    "robot_host": "192.0.2.10",
+    "artifact_root": "/ABSOLUTE/PATH/TO/candidate-artifacts",
+    "hf_realtime_ws_url": "ws://127.0.0.1:8765/v1/realtime",
+    "agent_profile_id": "reviewed-profile",
+    "agent_profile_format": "hermes",
+    "agent_profile_public_dir": "/ABSOLUTE/PATH/TO/profiles/clinic_receptionist",
+    "agent_profile_private_dir": "/ABSOLUTE/PATH/TO/private/profile",
+    "agent_tools": "time-web",
+    "visitor_trigger_profile": "door-v4-20260827",
+    "vision_runtime": "broker-v1",
+    "broker_capture_fps": 15.0,
+    "broker_policy_idle_s": 0.1,
+    "gesture_running_mode": "image",
+    "wave_detection_mode": "open_palm",
+    "perception": true,
+    "gestures": true,
+    "audio_gate": true,
+    "conversation_cues": true,
+    "record_audio": true,
+    "record_video": false,
+    "capture_vision": true,
+    "rerun_mode": "off",
+    "duration": null
+  }
+}

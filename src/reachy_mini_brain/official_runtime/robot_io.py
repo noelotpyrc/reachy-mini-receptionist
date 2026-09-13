@@ -90,7 +90,7 @@ class ReachyRobotSession:
             self._milestone("robot_video_warmup_skipped")
         return self.mini
 
-    def stop(self) -> None:
+    def stop(self, *, strict: bool = False, flush_audio: bool = False) -> None:
         """Close SDK media/client resources without sending sleep/motion commands."""
 
         from reachy_mini_brain import robot
@@ -98,23 +98,31 @@ class ReachyRobotSession:
         self._milestone("robot_session_stop_start")
         mini = self.mini
         self.mini = None
+        errors = []
         if mini is not None:
+            if flush_audio:
+                try:
+                    mini.media.audio.clear_player()
+                except Exception as exc:
+                    errors.append(exc)
             media_manager = getattr(mini, "media_manager", None)
             close = getattr(media_manager, "close", None)
             if callable(close):
                 try:
                     close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    errors.append(exc)
             client = getattr(mini, "client", None)
             disconnect = getattr(client, "disconnect", None)
             if callable(disconnect):
                 try:
                     disconnect()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    errors.append(exc)
         robot._session_active = False
-        self._milestone("robot_session_stop_done")
+        self._milestone("robot_session_stop_done", cleanup_errors=len(errors))
+        if strict and errors:
+            raise ExceptionGroup("SDK session cleanup failed", errors)
 
     def _milestone(self, name: str, **data: Any) -> None:
         callback = self.milestone_callback
@@ -213,8 +221,12 @@ class ReachyAudioSink:
         await asyncio.sleep(0)
 
     async def close(self) -> None:
-        self._closed = True
+        self.stop()
         await asyncio.sleep(0)
+
+    def stop(self) -> None:
+        """Reject subsequent output immediately; SDK close/flush owns queued audio."""
+        self._closed = True
 
 
 class ReachyCameraFrameProvider:

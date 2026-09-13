@@ -33,6 +33,7 @@ from .livekit_handler import LiveKitBackendConfig, LiveKitRealtimeHandler
 from .livekit_room_bridge import LiveKitRoomBridge
 from .live_rerun import RERUN_MODES, LiveRerunPublisher
 from .liveness import HeartbeatWriter, RuntimeLiveness, pulse_event_loop
+from .live_session import LiveSessionControl, SessionStopped, cancel_task, runtime_lease
 from .moves import AntennaCueController, PlaybackMovementGate
 from .perception import (
     GESTURE_RUNNING_MODES,
@@ -313,76 +314,124 @@ def cli(**kwargs: Any) -> None:
     """Run the ported official-runtime path on a live Reachy Mini."""
 
     run_id = kwargs["run_id"] or f"official-live-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    if (
+        not kwargs["agent_profile_id"]
+        and click.get_current_context().get_parameter_source("agent_tools")
+        == click.core.ParameterSource.DEFAULT
+    ):
+        kwargs["agent_tools"] = "none"
     try:
-        asyncio.run(_run_live(run_id=run_id, **{k: v for k, v in kwargs.items() if k != "run_id"}))
+        asyncio.run(run_live_session(run_id=run_id, **{k: v for k, v in kwargs.items() if k != "run_id"}))
     except KeyboardInterrupt:
         raise click.ClickException("Interrupted")
 
 
+async def run_live_session(*, control: LiveSessionControl | None = None, **options: Any) -> None:
+    """Run the shared processing path, optionally owned by an embedding service."""
+    with runtime_lease():
+        await _run_owned_session(control=control, **options)
+
+
+async def _run_owned_session(*, control: LiveSessionControl | None, **options: Any) -> None:
+    if control is None:
+        await _run_live(**options)
+        return
+    failed = False
+    try:
+        control.bind()
+        await _run_live(session_control=control, **options)
+    except SessionStopped:
+        pass
+    except asyncio.CancelledError:
+        if not control.stop_requested.is_set():
+            failed = True
+            raise
+    except BaseException as exc:
+        failed = True
+        if control.liveness is not None:
+            control.liveness.set_fault(repr(exc))
+        raise
+    finally:
+        control.begin_cleanup()
+        if control.liveness is not None:
+            control.liveness.set_phase("stopping")
+        try:
+            await control.close()
+        except BaseException:
+            if control.liveness is not None:
+                control.liveness.set_phase("failed")
+            raise
+        if control.liveness is not None:
+            control.liveness.set_phase("failed" if failed else "stopped")
+
+
 async def _run_live(
     *,
-    backend: str,
+    backend: str = "s2s-local",
     run_id: str,
-    artifact_root: Path,
-    duration: float,
-    heartbeat_path: Path | None,
-    heartbeat_interval_s: float,
-    robot_host: str | None,
-    warmup_audio: bool,
-    warmup_video: bool,
-    record_audio: bool,
-    record_video: bool,
-    capture_vision: bool,
-    perception: bool,
-    gestures: bool,
-    audio_gate: bool,
-    ready_cue: bool,
-    ready_cue_hold: float,
-    conversation_cues: bool,
-    conversation_cue_high_s: float,
-    conversation_cue_rest_s: float,
-    perception_threshold: float,
-    perception_smooth: int,
-    visitor_trigger_profile: str,
-    vision_interval: float,
-    vision_runtime: str,
-    broker_capture_fps: float,
-    broker_recorder_queue_size: int,
-    broker_gesture_queue_size: int,
-    broker_policy_idle_s: float,
-    gesture_running_mode: str,
-    wave_detection_mode: str,
-    vision_pipelines_config: Path | None,
-    rerun_mode: str,
-    rerun_grpc_url: str,
-    rerun_image_fps: float,
-    rerun_jpeg_quality: int,
-    rerun_queue_size: int,
-    instructions_file: Path,
-    instructions: str | None,
-    profile_owned_context: bool,
-    agent_profile_id: str,
-    agent_tools: str,
-    agent_profile_format: str,
-    agent_profile_public_dir: Path,
-    agent_profile_private_dir: Path | None,
-    hf_voice: str,
-    hf_realtime_ws_url: str,
-    policy_audio_cache_dir: Path,
-    livekit_url: str,
-    livekit_api_key: str,
-    livekit_api_secret: str,
-    livekit_token: str,
-    livekit_room: str,
-    livekit_agent_name: str,
-    livekit_dispatch_agent: bool,
-    scripted_policy_flow: str,
-    scripted_policy_gap_s: float,
-    scripted_policy_timeout_s: float,
-    scripted_policy_greeting: str | None,
-    scripted_playback_wav: Path | None,
-    scripted_playback_post_roll_s: float,
+    artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
+    duration: float | None = 120.0,
+    heartbeat_path: Path | None = None,
+    heartbeat_interval_s: float = 1.0,
+    robot_host: str | None = None,
+    warmup_audio: bool = True,
+    warmup_video: bool = False,
+    record_audio: bool = True,
+    record_video: bool = False,
+    capture_vision: bool = False,
+    perception: bool = False,
+    gestures: bool = False,
+    audio_gate: bool = True,
+    ready_cue: bool = False,
+    ready_cue_hold: float = 0.45,
+    conversation_cues: bool = False,
+    conversation_cue_high_s: float = 0.22,
+    conversation_cue_rest_s: float = 0.38,
+    perception_threshold: float = 0.5,
+    perception_smooth: int = 0,
+    visitor_trigger_profile: str = LEGACY_VISITOR_TRIGGER_PROFILE,
+    vision_interval: float = 0.2,
+    vision_runtime: str = "serial-v1",
+    broker_capture_fps: float = 15.0,
+    broker_recorder_queue_size: int = 30,
+    broker_gesture_queue_size: int = 30,
+    broker_policy_idle_s: float = 0.1,
+    gesture_running_mode: str = "image",
+    wave_detection_mode: str = "open_palm",
+    vision_pipelines_config: Path | None = None,
+    rerun_mode: str = "off",
+    rerun_grpc_url: str = "rerun+http://127.0.0.1:9876/proxy",
+    rerun_image_fps: float = 5.0,
+    rerun_jpeg_quality: int = 80,
+    rerun_queue_size: int = 3,
+    instructions_file: Path = DEFAULT_PROFILE_INSTRUCTIONS,
+    instructions: str | None = None,
+    profile_owned_context: bool = False,
+    agent_profile_id: str = "",
+    agent_tools: str | None = None,
+    agent_profile_format: str = "overlay",
+    agent_profile_public_dir: Path = DEFAULT_AGENT_PROFILE_PUBLIC_DIR,
+    agent_profile_private_dir: Path | None = None,
+    hf_voice: str = "Sohee",
+    hf_realtime_ws_url: str = "ws://100.127.86.67:8765/v1/realtime",
+    policy_audio_cache_dir: Path = DEFAULT_POLICY_AUDIO_CACHE_DIR,
+    livekit_url: str = "",
+    livekit_api_key: str = "",
+    livekit_api_secret: str = "",
+    livekit_token: str = "",
+    livekit_room: str = "reachy-mini-live",
+    livekit_agent_name: str = "reachy-mini-receptionist",
+    livekit_dispatch_agent: bool = True,
+    scripted_policy_flow: str = "none",
+    scripted_policy_gap_s: float = 0.25,
+    scripted_policy_timeout_s: float = 30.0,
+    scripted_policy_greeting: str | None = None,
+    scripted_playback_wav: Path | None = None,
+    scripted_playback_post_roll_s: float = 0.5,
+    session_control: LiveSessionControl | None = None,
 ) -> None:
+    if session_control is not None:
+        session_control.checkpoint()
     resolved_visitor_profile = resolve_visitor_trigger_profile(visitor_trigger_profile)
     door_policy_enabled = resolved_visitor_profile.implementation.startswith("door_policy_")
     if door_policy_enabled and not perception:
@@ -416,12 +465,8 @@ async def _run_live(
         raise click.ClickException(f"refusing to overwrite existing Rerun artifact: {rerun_save_path}")
     agent_profile: ComposedAgentProfile | None = None
     tool_registry: ToolRegistry | None = None
-    if (
-        not agent_profile_id
-        and click.get_current_context().get_parameter_source("agent_tools")
-        == click.core.ParameterSource.DEFAULT
-    ):
-        agent_tools = "none"
+    if agent_tools is None:
+        agent_tools = "time-web" if agent_profile_id else "none"
     if agent_tools != "none" and not agent_profile_id:
         raise click.ClickException("--agent-tools requires --agent-profile-id")
     if agent_profile_id:
@@ -538,6 +583,10 @@ async def _run_live(
         capture_detections=resolved_pipeline_config is not None,
         rerun_path=rerun_save_path,
     )
+    if session_control is not None:
+        session_control.recorder = recorder
+        session_control.on_cleanup(recorder.close)
+        recorder.realtime("service.session_started", session_id=run_id.removeprefix("native-"), run_id=run_id)
     video_expected = bool(
         perception
         or (vision_runtime == "broker-v1" and gestures)
@@ -551,6 +600,8 @@ async def _run_live(
         audio_expected=scripted_playback_wav is None,
         video_expected=video_expected,
     )
+    if session_control is not None:
+        session_control.liveness = liveness
     heartbeat_writer = (
         HeartbeatWriter(heartbeat_path, liveness, interval_s=heartbeat_interval_s)
         if heartbeat_path is not None
@@ -558,16 +609,22 @@ async def _run_live(
     )
     if heartbeat_writer is not None:
         heartbeat_writer.start()
+        if session_control is not None:
+            session_control.on_cleanup(heartbeat_writer.close)
     event_loop_pulse_task = asyncio.create_task(
         pulse_event_loop(liveness),
         name="official-runtime-event-loop-liveness",
     )
+    if session_control is not None:
+        session_control.on_cleanup(lambda: cancel_task(event_loop_pulse_task))
     rerun_publisher: LiveRerunPublisher | None = None
     detection_manager: LiveDetectionManager | None = None
     door_policy_coordinator_holder: dict[str, LiveDoorPolicyCoordinator] = {}
 
     def diagnosis_health(event: str, data: Any) -> None:
         recorder.realtime("vision.diagnosis", event=event, **dict(data))
+        if session_control is not None and event.endswith("close_timeout"):
+            session_control.cleanup_faults.append(event)
 
     try:
         if rerun_mode != "off":
@@ -581,6 +638,8 @@ async def _run_live(
                 queue_size=rerun_queue_size,
                 health_callback=diagnosis_health,
             )
+            if session_control is not None:
+                session_control.on_cleanup(rerun_publisher.close)
             rerun_publisher.start()
         if resolved_pipeline_config is not None:
             def detection_result(observation: Any) -> None:
@@ -597,7 +656,11 @@ async def _run_live(
                 result_callback=detection_result,
                 health_callback=diagnosis_health,
             )
-            detection_manager.start()
+            if session_control is not None:
+                session_control.on_cleanup(detection_manager.close)
+                await session_control.blocking(detection_manager.start)
+            else:
+                detection_manager.start()
     except Exception:
         liveness.set_fault("diagnosis_start_failed")
         liveness.set_phase("failed")
@@ -627,7 +690,11 @@ async def _run_live(
     stop_event = asyncio.Event()
     stop_callbacks: list[Callable[[], None]] = []
     loop = asyncio.get_running_loop()
-    _install_signal_handlers(loop, stop_event, stop_callbacks)
+    if session_control is None:
+        _install_signal_handlers(loop, stop_event, stop_callbacks)
+    else:
+        session_control.on_stop(stop_event.set)
+        session_control.checkpoint()
 
     robot_session = ReachyRobotSession(
         host=robot_host,
@@ -642,8 +709,22 @@ async def _run_live(
         ),
         milestone_callback=lambda name, data: _record_milestone(recorder, run_id, name, **data),
     )
+
+    async def stop_robot() -> None:
+        await asyncio.to_thread(
+            robot_session.stop,
+            strict=session_control is not None,
+            flush_audio=session_control is not None,
+        )
+
+    if session_control is not None:
+        session_control.on_cleanup(stop_robot)
     try:
-        mini = await asyncio.to_thread(robot_session.start)
+        mini = (
+            await session_control.blocking(robot_session.start)
+            if session_control is not None
+            else await asyncio.to_thread(robot_session.start)
+        )
         liveness.set_phase("robot_connected")
     except Exception as exc:
         liveness.set_fault(repr(exc))
@@ -670,6 +751,9 @@ async def _run_live(
         reason="disabled" if not audio_gate else "waiting_for_wave",
     )
     policy_sink = _AsyncPolicyEventSink()
+    if session_control is not None:
+        session_control.on_stop(policy_sink.discard_pending)
+        session_control.on_cleanup(policy_sink.abort)
     event_waiter = _RuntimeEventWaiter()
     event_waiter.bind(loop)
     console_sink = _ConsoleMilestoneSink(run_id)
@@ -703,6 +787,18 @@ async def _run_live(
         high_s=conversation_cue_high_s,
         rest_s=conversation_cue_rest_s,
     )
+    async def close_conversation_cue() -> None:
+        if conversation_cue_controller.active:
+            await conversation_cue_controller.stop(reason="session_cleanup")
+
+    if session_control is not None:
+        session_control.on_cleanup(close_conversation_cue)
+
+        async def close_pulse_tasks() -> None:
+            for task in list(antenna_pulse_tasks):
+                await cancel_task(task)
+
+        session_control.on_cleanup(close_pulse_tasks)
 
     async def start_thinking_cue(context: RuntimeContext, reason: str = "") -> bool:
         return await conversation_cue_controller.start(cue="thinking")
@@ -718,6 +814,16 @@ async def _run_live(
         policies.append(ConversationCuePolicy())
     policy_engine = PolicyEngine(policies, capabilities=capabilities, context=context)
     policy_sink.bind(policy_engine, loop)
+    policy_closed = False
+
+    async def close_policy() -> None:
+        nonlocal policy_closed
+        if not policy_closed:
+            policy_closed = True
+            await policy_engine.stop()
+
+    if session_control is not None:
+        session_control.on_cleanup(close_policy)
     door_policy_coordinator: LiveDoorPolicyCoordinator | None = None
     if door_policy_enabled:
         def door_policy_result(door_observation: Any, policy_observation: Any) -> None:
@@ -757,6 +863,9 @@ async def _run_live(
         on_frame=liveness.audio_frame,
     )
     audio_sink = ReachyAudioSink(mini)
+    if session_control is not None:
+        session_control.on_stop(audio_sink.stop)
+        session_control.on_cleanup(audio_sink.close)
     if scripted_playback_wav is not None:
         try:
             await _run_scripted_playback_wav(
@@ -772,7 +881,7 @@ async def _run_live(
             stop_event.set()
             try:
                 await audio_sink.close()
-                await asyncio.to_thread(robot_session.stop)
+                await stop_robot()
             finally:
                 close_diagnosis()
                 recorder.close()
@@ -810,10 +919,16 @@ async def _run_live(
 
     async def on_runtime_ready() -> None:
         nonlocal ready_cue_task, scripted_flow_task
+        if session_control is not None:
+            session_control.checkpoint()
         liveness.set_phase("ready")
         _record_milestone(recorder, run_id, "software_pipeline_initialized")
+        if session_control is not None:
+            session_control.ready()
         if ready_cue:
             ready_cue_task = await _trigger_ready_cue(event_sink=event_sink, hold_s=ready_cue_hold)
+            if session_control is not None:
+                session_control.on_cleanup(lambda: cancel_task(ready_cue_task))
         if scripted_policy_flow != "none":
             scripted_flow_task = asyncio.create_task(
                 _run_scripted_policy_flow(
@@ -844,6 +959,9 @@ async def _run_live(
         drain_idle_polls=200,
     )
     stop_callbacks.append(runtime.stop)
+    if session_control is not None:
+        session_control.on_stop(runtime.stop)
+        session_control.on_cleanup(runtime.close_handler)
     vision_task: asyncio.Task[None] | None = None
     policy_tick_task: asyncio.Task[None] | None = None
     vision_ready = asyncio.Event()
@@ -855,6 +973,8 @@ async def _run_live(
             _run_policy_tick_loop(event_sink=event_sink, stop_event=stop_event),
             name="official-runtime-policy-ticks",
         )
+        if session_control is not None:
+            session_control.on_cleanup(lambda: cancel_task(policy_tick_task))
         if (
             perception
             or (vision_runtime == "broker-v1" and gestures)
@@ -894,12 +1014,17 @@ async def _run_live(
                     policy_idle_s=broker_policy_idle_s,
                     gesture_running_mode=gesture_running_mode,
                     wave_detection_mode=wave_detection_mode,
+                    session_control=session_control,
                 )
             vision_task = asyncio.create_task(
                 vision_loop(**vision_kwargs),
                 name="official-runtime-vision",
             )
+            if session_control is not None:
+                session_control.on_cleanup(lambda: cancel_task(vision_task))
             ready_waiter = asyncio.create_task(vision_ready.wait(), name="official-runtime-vision-ready")
+            if session_control is not None:
+                session_control.on_cleanup(lambda: cancel_task(ready_waiter))
             done, pending = await asyncio.wait(
                 {ready_waiter, vision_task},
                 timeout=20.0,
@@ -917,10 +1042,16 @@ async def _run_live(
             await scripted_flow_task
     except BaseException as exc:
         runtime_error = exc
-        liveness.set_fault(repr(exc))
-        liveness.set_phase("failed")
+        if not (isinstance(exc, asyncio.CancelledError) and session_control is not None
+                and session_control.stop_requested.is_set()):
+            liveness.set_fault(repr(exc))
+            liveness.set_phase("failed")
         raise
     finally:
+        if session_control is not None:
+            session_control.begin_cleanup()
+            audio_sink.stop()
+            await policy_sink.abort()
         if runtime_error is None:
             liveness.set_phase("stopping")
         stop_event.set()
@@ -953,12 +1084,13 @@ async def _run_live(
                 await task
             except asyncio.CancelledError:
                 pass
-        await policy_sink.flush()
-        await policy_engine.stop()
+        if session_control is None:
+            await policy_sink.flush()
+        await close_policy()
         await policy_sink.drain()
         recorder.runtime_summary("policy_event_sink", policy_sink.snapshot())
         try:
-            await asyncio.to_thread(robot_session.stop)
+            await stop_robot()
         finally:
             close_diagnosis()
             recorder.close()
@@ -1696,6 +1828,7 @@ async def _broker_vision_loop(
     detection_manager: LiveDetectionManager | None = None,
     rerun_publisher: LiveRerunPublisher | None = None,
     door_policy_coordinator: LiveDoorPolicyCoordinator | None = None,
+    session_control: LiveSessionControl | None = None,
 ) -> None:
     policy_pipeline: dict[str, PerceptionPipeline] = {}
     gesture_pipeline: dict[str, PerceptionPipeline] = {}
@@ -1838,6 +1971,8 @@ async def _broker_vision_loop(
 
     def broker_health(event: str, data: Any) -> None:
         recorder.realtime("vision.broker", event=event, **dict(data))
+        if session_control is not None and event == "close_timeout":
+            session_control.cleanup_faults.append("vision_broker_close_timeout")
 
     runtime = BrokerVisionRuntime(
         frame_source=camera_provider.get_latest_frame,
@@ -1846,7 +1981,10 @@ async def _broker_vision_loop(
         health_callback=broker_health,
     )
     try:
-        await asyncio.to_thread(runtime.start)
+        if session_control is None:
+            await asyncio.to_thread(runtime.start)
+        else:
+            await session_control.blocking(runtime.start)
         if ready_event is not None:
             ready_event.set()
         while not stop_event.is_set():
@@ -1905,7 +2043,9 @@ class _AsyncPolicyEventSink:
                     return
                 await self.engine.handle_event(event)
                 self._handled_events += 1
-            except BaseException as exc:  # noqa: BLE001
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
                 self.errors.append(exc)
             finally:
                 self.queue.task_done()
@@ -1915,6 +2055,21 @@ class _AsyncPolicyEventSink:
             return
         await asyncio.sleep(0)
         await self.queue.join()
+
+    def discard_pending(self) -> None:
+        """Close policy ingress immediately; do not execute queued speech on Stop."""
+        self._closed = True
+        if self.worker is not None and not self.worker.done():
+            self.worker.cancel()
+
+    async def abort(self) -> None:
+        self.discard_pending()
+        if self.worker is not None:
+            await cancel_task(self.worker)
+        if self.queue is not None:
+            while not self.queue.empty():
+                self.queue.get_nowait()
+                self.queue.task_done()
 
     async def drain(self) -> None:
         if self.queue is None or self.worker is None or self._closed:

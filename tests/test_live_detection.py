@@ -112,6 +112,19 @@ def test_multiple_pipelines_receive_the_same_cadence_frames() -> None:
     assert by_pipeline == {"yolo": [0, 2], "dino": [0, 2]}
 
 
+def test_close_before_start_for_cancelled_session_initialization() -> None:
+    manager = LiveDetectionManager(
+        run_id="cancelled-start",
+        config=_config(PipelineSpec("dino", "grounding-dino", "model", ("door",), 0.3, 1.0)),
+        result_callback=lambda observation: None,
+        detector_factory=lambda spec: _FakeDetector(spec.id),
+        tracker_factory=lambda spec: NoopLayerTracker(),
+    )
+    manager.close()
+    manager.close()
+    assert manager.submit(FramePacket(0, 1.0, np.zeros((8, 10, 3), dtype=np.uint8))) == ()
+
+
 def test_slow_pipeline_replaces_stale_pending_frame() -> None:
     started = threading.Event()
     release = threading.Event()

@@ -527,7 +527,8 @@ class _PipelineWorker:
             except queue.Empty:
                 pass
             self.queue.put_nowait(None)
-        self.thread.join(timeout=10.0)
+        if self.thread.ident is not None:
+            self.thread.join(timeout=10.0)
         if self.thread.is_alive():
             self._health(
                 "pipeline_close_timeout",
